@@ -1042,23 +1042,25 @@ function DiffViewer({ change }: { change: CodeChange }): ReactElement {
         <span>{change.language || languageFromPath(change.filePath)}</span>
       </header>
       <div className="diff-table" role="table" aria-label={`${change.filePath} diff`}>
-        {lines.map((line, index) => {
-          const kind = diffLineKind(line)
-          const displayLine = kind === 'hunk' ? line : line.slice(1)
-          const language = normalizeLanguage(change.language || languageFromPath(change.filePath))
+        <div className="diff-rows">
+          {lines.map((line, index) => {
+            const kind = diffLineKind(line)
+            const displayLine = kind === 'hunk' ? line : line.slice(1)
+            const language = normalizeLanguage(change.language || languageFromPath(change.filePath))
 
-          return (
-            <div key={`${index}-${line}`} className={`diff-line ${kind}`} role="row">
-              <span className="diff-gutter">{kind === 'context' ? ' ' : line[0]}</span>
-              <span className="diff-number">{kind === 'hunk' ? '' : index + 1}</span>
-              <code
-                dangerouslySetInnerHTML={{
-                  __html: kind === 'hunk' ? escapeHtml(displayLine) : highlightCode(displayLine, language)
-                }}
-              />
-            </div>
-          )
-        })}
+            return (
+              <div key={`${index}-${line}`} className={`diff-line ${kind}`} role="row">
+                <span className="diff-gutter">{kind === 'context' ? ' ' : line[0]}</span>
+                <span className="diff-number">{kind === 'hunk' ? '' : index + 1}</span>
+                <code
+                  dangerouslySetInnerHTML={{
+                    __html: kind === 'hunk' ? escapeHtml(displayLine) : highlightCode(displayLine, language)
+                  }}
+                />
+              </div>
+            )
+          })}
+        </div>
       </div>
     </article>
   )
