@@ -1142,7 +1142,7 @@ button:focus-visible {
 .task-detail {
   display: grid;
   grid-template-rows: auto 1fr;
-  min-height: 620px;
+  height: min(780px, 90vh);
   overflow: hidden;
 }
 
@@ -1150,6 +1150,7 @@ button:focus-visible {
   display: grid;
   grid-template-columns: 1fr 1fr;
   min-height: 0;
+  overflow: hidden;
 }
 
 .detail-column {
@@ -1158,6 +1159,7 @@ button:focus-visible {
   min-height: 0;
   gap: 12px;
   padding: 16px;
+  overflow: hidden;
 }
 
 .detail-column + .detail-column {
@@ -1180,6 +1182,7 @@ button:focus-visible {
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 12px;
   min-height: 0;
+  overflow: hidden;
 }
 
 .detail-column:first-child {
@@ -1191,6 +1194,8 @@ button:focus-visible {
   border: 1px solid var(--line-soft);
   border-radius: 8px;
   background: #242424;
+  max-height: 128px;
+  overflow-y: auto;
 }
 
 .prompt-panel p {
@@ -1250,9 +1255,15 @@ button:focus-visible {
 }
 
 .thread-composer textarea {
+  height: 44px;
   min-height: 44px;
-  max-height: 132px;
-  resize: vertical;
+  max-height: 44px;
+  resize: none;
+}
+
+.thread-composer textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .thread-composer .icon-button {

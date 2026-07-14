@@ -288,11 +288,15 @@ export function App(): ReactElement {
   }
 
   const runTaskWithCursor = async (taskId: string): Promise<void> => {
+    const task = state.tasks.find((item) => item.id === taskId)
+    if (!cursorStatus.available || !task?.projectId) return
     await window.vibeboard.runTaskWithCursor(taskId)
     await refresh()
   }
 
   const sendTaskMessage = async (taskId: string, content: string): Promise<void> => {
+    const task = state.tasks.find((item) => item.id === taskId)
+    if (!cursorStatus.available || !task?.projectId) return
     await window.vibeboard.sendTaskMessage({ taskId, content })
     await refresh()
   }
@@ -472,6 +476,7 @@ export function App(): ReactElement {
           project={state.projects.find((project) => project.id === selectedTask.projectId) ?? null}
           conversations={state.conversations.filter((entry) => entry.taskId === selectedTask.id)}
           changes={state.changes.filter((change) => change.taskId === selectedTask.id)}
+          canUseCursor={cursorStatus.available}
           onRunWithCursor={runTaskWithCursor}
           onSendMessage={sendTaskMessage}
           onClose={() => setSelectedTaskId(null)}
@@ -1069,6 +1074,7 @@ function TaskDetailModal({
   project,
   conversations,
   changes,
+  canUseCursor,
   onRunWithCursor,
   onSendMessage,
   onClose
@@ -1077,10 +1083,15 @@ function TaskDetailModal({
   project: Project | null
   conversations: ConversationEntry[]
   changes: CodeChange[]
+  canUseCursor: boolean
   onRunWithCursor: (taskId: string) => void
   onSendMessage: (taskId: string, content: string) => void
   onClose: () => void
 }): ReactElement {
+  const canRunTask = Boolean(project) && canUseCursor && task.status !== 'processing'
+  const canChat = Boolean(project) && canUseCursor
+  const runTitle = !canUseCursor ? 'Connect Cursor first' : !project ? 'Select a project first' : 'Run with Cursor'
+
   return (
     <div className="modal-backdrop">
       <section className="modal-panel task-detail">
@@ -1094,8 +1105,8 @@ function TaskDetailModal({
               className="icon-text-button"
               type="button"
               onClick={() => onRunWithCursor(task.id)}
-              disabled={!project || task.status === 'processing'}
-              title={!project ? 'Select a project first' : 'Run with Cursor'}
+              disabled={!canRunTask}
+              title={runTitle}
             >
               <Play size={16} />
               <span>{task.status === 'processing' ? 'Running' : 'Run'}</span>
@@ -1112,7 +1123,13 @@ function TaskDetailModal({
               <MessageSquare size={16} />
               <span>Prompt</span>
             </div>
-            <CodexThread conversations={conversations} task={task} onSendMessage={onSendMessage} />
+            <CodexThread
+              conversations={conversations}
+              task={task}
+              canSend={canChat}
+              disabledLabel={!canUseCursor ? 'Cursor not connected' : 'No project selected'}
+              onSendMessage={onSendMessage}
+            />
           </section>
 
           <section className="detail-column">
@@ -1138,10 +1155,14 @@ function TaskDetailModal({
 function CodexThread({
   conversations,
   task,
+  canSend,
+  disabledLabel,
   onSendMessage
 }: {
   conversations: ConversationEntry[]
   task: Task
+  canSend: boolean
+  disabledLabel: string
   onSendMessage: (taskId: string, content: string) => void
 }): ReactElement {
   const [draft, setDraft] = useState('')
@@ -1151,7 +1172,7 @@ function CodexThread({
 
   const send = (): void => {
     const content = draft.trim()
-    if (!content) return
+    if (!canSend || !content) return
     onSendMessage(task.id, content)
     setDraft('')
   }
@@ -1188,8 +1209,9 @@ function CodexThread({
         <textarea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
+          disabled={!canSend}
           rows={2}
-          placeholder="Message"
+          placeholder={canSend ? 'Message' : disabledLabel}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault()
@@ -1197,7 +1219,7 @@ function CodexThread({
             }
           }}
         />
-        <button className="icon-button" type="button" onClick={send} disabled={!draft.trim()} title="Send">
+        <button className="icon-button" type="button" onClick={send} disabled={!canSend || !draft.trim()} title="Send">
           <Send size={16} />
         </button>
       </div>
