@@ -25,6 +25,8 @@ import javascript from 'highlight.js/lib/languages/javascript'
 import json from 'highlight.js/lib/languages/json'
 import typescript from 'highlight.js/lib/languages/typescript'
 import xml from 'highlight.js/lib/languages/xml'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   AlertTriangle,
   Check,
@@ -1245,9 +1247,7 @@ function CodexThread({
               {entry.role === 'user' ? <MessageSquare size={16} /> : <Code2 size={16} />}
               <div>
                 <strong>{entry.role === 'user' ? 'You' : entry.role === 'assistant' ? 'Agent' : 'System'}</strong>
-                {entry.content.split(/\n{2,}/).map((paragraph) => (
-                  <p key={paragraph}>{paragraph}</p>
-                ))}
+                <MessageMarkdown content={entry.content} />
               </div>
             </div>
           ))
@@ -1272,6 +1272,43 @@ function CodexThread({
           <Send size={16} />
         </button>
       </div>
+    </div>
+  )
+}
+
+function MessageMarkdown({ content }: { content: string }): ReactElement {
+  return (
+    <div className="message-markdown">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a({ href, children }) {
+            return (
+              <a href={href} target="_blank" rel="noreferrer">
+                {children}
+              </a>
+            )
+          },
+          code({ className, children }) {
+            const rawCode = String(children).replace(/\n$/, '')
+            const language = normalizeLanguage((className ?? '').replace(/^language-/, ''))
+            const isBlock = rawCode.includes('\n') || Boolean(className)
+
+            if (!isBlock) {
+              return <code className="inline-code">{children}</code>
+            }
+
+            return (
+              <code
+                className="markdown-code"
+                dangerouslySetInnerHTML={{ __html: highlightCode(rawCode, language) }}
+              />
+            )
+          }
+        }}
+      >
+        {content}
+      </ReactMarkdown>
     </div>
   )
 }
