@@ -115,7 +115,19 @@ const startCursorTask = (taskId: string): { started: boolean; message: string } 
 }
 
 const openCursorInstallTerminal = async (): Promise<void> => {
-  const command = `if ! command -v agent >/dev/null 2>&1; then ${cursorInstallCommand}; fi; agent login; echo; echo "Done. Return to VibeBoard."; read -k 1 "?Press any key to close."`
+  const command = [
+    'if ! command -v agent >/dev/null 2>&1; then',
+    cursorInstallCommand,
+    'fi',
+    'echo "Cursor Agent login"',
+    'echo "If the browser is blank, copy the link printed below into another tab."',
+    'NO_OPEN_BROWSER=1 agent login',
+    'echo',
+    'agent status',
+    'echo',
+    'echo "Done. Return to VibeBoard."',
+    'read -k 1 "?Press any key to close."'
+  ].join('; ')
   if (process.platform === 'darwin') {
     await execFileAsync('osascript', ['-e', `tell application "Terminal" to do script ${JSON.stringify(command)}`])
     await execFileAsync('osascript', ['-e', 'tell application "Terminal" to activate'])
