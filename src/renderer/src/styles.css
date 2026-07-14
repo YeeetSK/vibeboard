@@ -55,7 +55,7 @@ button {
   align-items: end;
   gap: 8px;
   min-width: 0;
-  padding: 8px 12px 0 86px;
+  padding: 8px 16px 0 86px;
   border-bottom: 1px solid var(--line-soft);
   background: #151515;
   -webkit-app-region: drag;
@@ -75,6 +75,15 @@ button {
 
 .tabs::-webkit-scrollbar {
   display: none;
+}
+
+.tabs-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 2px;
+  -webkit-app-region: no-drag;
 }
 
 .tab {
@@ -98,8 +107,8 @@ button {
   -webkit-app-region: no-drag;
 }
 
-.tabs-bar > .icon-button,
-.tabs-bar > .closed-tabs-wrap {
+.tabs-actions > .icon-button,
+.tabs-actions > .closed-tabs-wrap {
   flex: 0 0 auto;
 }
 

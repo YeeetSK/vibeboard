@@ -650,59 +650,61 @@ function TopBar({
           </div>
         ))}
       </div>
-      <button className="icon-button" type="button" onClick={onCreateTab} title="Add project">
-        <Plus size={17} />
-      </button>
-      {closedTabs.length > 0 && (
-        <div className="closed-tabs-wrap" onClick={(event) => event.stopPropagation()}>
-          <button
-            className="icon-button"
-            type="button"
-            onClick={() => {
-              setMenuState(null)
-              setClosedMenuOpen((value) => !value)
-            }}
-            title="Closed projects"
-          >
-            <History size={17} />
-          </button>
-          {closedMenuOpen && (
-            <div className="closed-tabs-menu">
-              <div className="closed-tabs-head">
-                <span>Closed projects</span>
-                <small>{closedTabs.length}</small>
-              </div>
-              {closedTabs.map((tab) => (
-                <div className="closed-tab-row" key={tab.id}>
-                  <button
-                    className="closed-tab-restore"
-                    type="button"
-                    title={tab.name}
-                    onClick={() => {
-                      onReopenTab(tab.id)
-                      setClosedMenuOpen(false)
-                    }}
-                  >
-                    <RotateCcw size={14} />
-                    <span>{tab.name}</span>
-                  </button>
-                  <button
-                    className="closed-tab-delete"
-                    type="button"
-                    title="Delete permanently"
-                    onClick={() => {
-                      onDeleteTab(tab.id)
-                      setClosedMenuOpen(false)
-                    }}
-                  >
-                    <Trash2 size={14} />
-                  </button>
+      <div className="tabs-actions">
+        <button className="icon-button" type="button" onClick={onCreateTab} title="Add project">
+          <Plus size={17} />
+        </button>
+        {closedTabs.length > 0 && (
+          <div className="closed-tabs-wrap" onClick={(event) => event.stopPropagation()}>
+            <button
+              className="icon-button"
+              type="button"
+              onClick={() => {
+                setMenuState(null)
+                setClosedMenuOpen((value) => !value)
+              }}
+              title="Closed projects"
+            >
+              <History size={17} />
+            </button>
+            {closedMenuOpen && (
+              <div className="closed-tabs-menu">
+                <div className="closed-tabs-head">
+                  <span>Closed projects</span>
+                  <small>{closedTabs.length}</small>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+                {closedTabs.map((tab) => (
+                  <div className="closed-tab-row" key={tab.id}>
+                    <button
+                      className="closed-tab-restore"
+                      type="button"
+                      title={tab.name}
+                      onClick={() => {
+                        onReopenTab(tab.id)
+                        setClosedMenuOpen(false)
+                      }}
+                    >
+                      <RotateCcw size={14} />
+                      <span>{tab.name}</span>
+                    </button>
+                    <button
+                      className="closed-tab-delete"
+                      type="button"
+                      title="Delete permanently"
+                      onClick={() => {
+                        onDeleteTab(tab.id)
+                        setClosedMenuOpen(false)
+                      }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
       {menuTab && (
         <div
           className="tab-menu"
