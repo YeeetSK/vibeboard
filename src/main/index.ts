@@ -73,33 +73,45 @@ const registerIpc = (): void => {
   ipcMain.handle('lane:create', (_event, input: CreateLaneInput) => store.createLane(input))
   ipcMain.handle('lane:rename', (_event, input: RenameInput) => store.renameLane(input))
   ipcMain.handle('lane:delete', (_event, laneId: string) => store.deleteLane(laneId))
-  ipcMain.handle('task:create', (_event, input: CreateTaskInput) => store.createTask(input))
+  ipcMain.handle('task:create', (_event, input: CreateTaskInput) => {
+    const task = store.createTask(input)
+    if (input.prompt.trim() && input.projectId) {
+      startCursorTask(task.id)
+    }
+    return task
+  })
   ipcMain.handle('task:move', (_event, input: MoveTaskInput) => store.moveTask(input))
   ipcMain.handle('task:delete', (_event, taskId: string) => store.deleteTask(taskId))
-  ipcMain.handle('task:message', (_event, input: SendTaskMessageInput) => store.sendTaskMessage(input))
-  ipcMain.handle('task:runCursor', (_event, taskId: string) => {
-    if (runningTasks.has(taskId)) {
-      return { started: false, message: 'Task is already running.' }
-    }
-
-    runningTasks.add(taskId)
-    runCursorTask({
-      taskId,
-      store,
-      onStateChanged: broadcastStateChanged
-    }).finally(() => {
-      runningTasks.delete(taskId)
-      broadcastStateChanged()
-    })
-
-    return { started: true, message: 'Cursor agent started.' }
+  ipcMain.handle('task:message', (_event, input: SendTaskMessageInput) => {
+    store.sendTaskMessage(input)
+    return startCursorTask(input.taskId)
   })
+  ipcMain.handle('task:runCursor', (_event, taskId: string) => startCursorTask(taskId))
   ipcMain.handle('task:status', (_event, input: UpdateTaskStatusInput) => store.updateTaskStatus(input))
   ipcMain.handle('task:read', (_event, taskId: string) => store.markTaskRead(taskId))
   ipcMain.handle('cursor:status', () => cursorAdapter.status())
   ipcMain.handle('cursor:installCli', () => cursorAdapter.installCli())
   ipcMain.handle('cursor:installTerminal', () => openCursorInstallTerminal())
   ipcMain.handle('cursor:setup', () => openCursorSetup())
+}
+
+const startCursorTask = (taskId: string): { started: boolean; message: string } => {
+  if (runningTasks.has(taskId)) {
+    return { started: false, message: 'Task is already running.' }
+  }
+
+  runningTasks.add(taskId)
+  runCursorTask({
+    taskId,
+    store,
+    onStateChanged: broadcastStateChanged
+  }).finally(() => {
+    runningTasks.delete(taskId)
+    broadcastStateChanged()
+  })
+
+  broadcastStateChanged()
+  return { started: true, message: 'Cursor agent started.' }
 }
 
 const openCursorInstallTerminal = async (): Promise<void> => {

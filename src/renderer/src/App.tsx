@@ -39,7 +39,6 @@ import {
   PanelLeftOpen,
   PanelsTopLeft,
   Plus,
-  Play,
   Pin,
   RadioTower,
   RotateCcw,
@@ -311,13 +310,6 @@ export function App(): ReactElement {
     }
   }
 
-  const runTaskWithCursor = async (taskId: string): Promise<void> => {
-    const task = state.tasks.find((item) => item.id === taskId)
-    if (!cursorStatus.available || !task?.projectId) return
-    await window.vibeboard.runTaskWithCursor(taskId)
-    await refresh()
-  }
-
   const sendTaskMessage = async (taskId: string, content: string): Promise<void> => {
     const task = state.tasks.find((item) => item.id === taskId)
     if (!cursorStatus.available || !task?.projectId) return
@@ -503,7 +495,6 @@ export function App(): ReactElement {
           conversations={state.conversations.filter((entry) => entry.taskId === selectedTask.id)}
           changes={state.changes.filter((change) => change.taskId === selectedTask.id)}
           canUseCursor={cursorStatus.available}
-          onRunWithCursor={runTaskWithCursor}
           onSendMessage={sendTaskMessage}
           onClose={() => setSelectedTaskId(null)}
         />
@@ -1143,7 +1134,6 @@ function TaskDetailModal({
   conversations,
   changes,
   canUseCursor,
-  onRunWithCursor,
   onSendMessage,
   onClose
 }: {
@@ -1152,13 +1142,10 @@ function TaskDetailModal({
   conversations: ConversationEntry[]
   changes: CodeChange[]
   canUseCursor: boolean
-  onRunWithCursor: (taskId: string) => void
   onSendMessage: (taskId: string, content: string) => void
   onClose: () => void
 }): ReactElement {
-  const canRunTask = Boolean(project) && canUseCursor && task.status !== 'processing'
-  const canChat = Boolean(project) && canUseCursor
-  const runTitle = !canUseCursor ? 'Connect Cursor first' : !project ? 'Select a project first' : 'Run with Cursor'
+  const canChat = Boolean(project) && canUseCursor && task.status !== 'processing'
 
   return (
     <div className="modal-backdrop">
@@ -1169,16 +1156,6 @@ function TaskDetailModal({
             <p>{project?.name ?? 'No project'}</p>
           </div>
           <div className="modal-head-actions">
-            <button
-              className="icon-text-button"
-              type="button"
-              onClick={() => onRunWithCursor(task.id)}
-              disabled={!canRunTask}
-              title={runTitle}
-            >
-              <Play size={16} />
-              <span>{task.status === 'processing' ? 'Running' : 'Run'}</span>
-            </button>
             <button className="icon-button" type="button" onClick={onClose} title="Close">
               <X size={18} />
             </button>
@@ -1195,7 +1172,7 @@ function TaskDetailModal({
               conversations={conversations}
               task={task}
               canSend={canChat}
-              disabledLabel={!canUseCursor ? 'Cursor not connected' : 'No project selected'}
+              disabledLabel={!canUseCursor ? 'Cursor not connected' : !project ? 'No project selected' : 'Running'}
               onSendMessage={onSendMessage}
             />
           </section>

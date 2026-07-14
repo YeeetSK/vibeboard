@@ -26,6 +26,7 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
   const projectPath = context.project.path
 
   store.updateTaskStatus({ taskId, status: 'processing' })
+  store.replaceCodeChanges(taskId, [])
   store.appendConversation(taskId, 'system', 'Starting Cursor CLI agent in the project folder.')
   onStateChanged()
 
@@ -101,12 +102,9 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
         }
       }
 
-      const changes = await collectGitDiff(projectPath)
-      if (changes.length > 0) {
-        store.replaceCodeChanges(taskId, changes)
-      }
-
       if (code === 0) {
+        const changes = await collectGitDiff(projectPath)
+        store.replaceCodeChanges(taskId, changes)
         store.updateTaskStatus({ taskId, status: 'done_unread' })
         store.appendConversation(
           taskId,

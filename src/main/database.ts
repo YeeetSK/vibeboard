@@ -76,7 +76,7 @@ export class VibeBoardStore {
       ? (this.db.prepare('SELECT * FROM projects WHERE id = ?').get(task.projectId) as Project | undefined)
       : null
     const promptRow = this.db
-      .prepare("SELECT content FROM conversations WHERE taskId = ? AND role = 'user' ORDER BY createdAt LIMIT 1")
+      .prepare("SELECT content FROM conversations WHERE taskId = ? AND role = 'user' ORDER BY createdAt DESC LIMIT 1")
       .get(taskId) as { content: string } | undefined
 
     return {
