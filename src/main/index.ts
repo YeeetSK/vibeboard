@@ -23,7 +23,7 @@ const createWindow = (): void => {
     minWidth: 1080,
     minHeight: 720,
     title: 'VibeBoard',
-    backgroundColor: '#0f1115',
+    backgroundColor: '#111111',
     show: false,
     titleBarStyle: 'hiddenInset',
     webPreferences: {
