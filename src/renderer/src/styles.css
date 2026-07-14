@@ -54,6 +54,7 @@ button {
   display: flex;
   align-items: end;
   gap: 8px;
+  min-width: 0;
   padding: 8px 12px 0 86px;
   border-bottom: 1px solid var(--line-soft);
   background: #151515;
@@ -66,15 +67,25 @@ button {
   gap: 4px;
   min-width: 0;
   flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-app-region: no-drag;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .tab {
+  position: relative;
+  flex: 0 0 168px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   max-width: 190px;
-  min-width: 112px;
+  min-width: 126px;
   height: 36px;
   padding: 0 14px;
   overflow: hidden;
@@ -85,6 +96,11 @@ button {
   background: var(--tab-tint);
   color: var(--muted);
   -webkit-app-region: no-drag;
+}
+
+.tabs-bar > .icon-button,
+.tabs-bar > .closed-tabs-wrap {
+  flex: 0 0 auto;
 }
 
 .tab-select {
@@ -108,6 +124,28 @@ button {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.tab-status-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.tab.status-processing .tab-status-dot {
+  background: var(--orange);
+  box-shadow: 0 0 0 3px rgba(255, 122, 26, 0.14);
+}
+
+.tab.status-attention .tab-status-dot {
+  background: var(--red);
+}
+
+.tab.status-done_unread .tab-status-dot,
+.tab.status-done_read .tab-status-dot {
+  background: var(--green);
 }
 
 .tab-select:focus-visible {
@@ -152,6 +190,40 @@ button {
 
 .tab:hover {
   border-color: color-mix(in srgb, var(--tab-color) 32%, var(--line-soft));
+}
+
+.tab.status-processing {
+  border-color: var(--orange);
+}
+
+.tab.status-processing::after {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--orange);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  content: "";
+  opacity: 0.36;
+  animation: pulse-border 1.1s linear infinite;
+  pointer-events: none;
+}
+
+.tab.status-attention {
+  border-color: var(--red);
+}
+
+.tab.status-done_unread {
+  border-color: var(--green);
+}
+
+.tab.status-done_read {
+  border-color: rgba(47, 207, 117, 0.58);
+  border-style: dashed;
+  opacity: 0.82;
+}
+
+.tab.active.status-done_read {
+  opacity: 1;
 }
 
 .tab-menu {

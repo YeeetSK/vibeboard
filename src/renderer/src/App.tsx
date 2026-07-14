@@ -247,6 +247,7 @@ export function App(): ReactElement {
       <TopBar
         tabs={state.tabs}
         closedTabs={state.closedTabs}
+        tasks={state.tasks}
         activeTabId={activeTab?.id}
         onCloseTab={closeTab}
         onCreateTab={createTab}
@@ -406,6 +407,7 @@ export function App(): ReactElement {
 function TopBar({
   tabs,
   closedTabs,
+  tasks,
   activeTabId,
   onCloseTab,
   onCreateTab,
@@ -416,6 +418,7 @@ function TopBar({
 }: {
   tabs: BoardTab[]
   closedTabs: BoardTab[]
+  tasks: Task[]
   activeTabId?: string
   onCloseTab: (id: string) => void
   onCreateTab: () => void
@@ -444,7 +447,7 @@ function TopBar({
         {tabs.map((tab) => (
           <div
             key={tab.id}
-            className={tab.id === activeTabId ? 'tab active' : 'tab'}
+            className={`tab status-${tabStatus(tab.id, tasks)} ${tab.id === activeTabId ? 'active' : ''}`}
             style={
               {
                 '--tab-color': tab.color ?? 'transparent',
@@ -459,6 +462,7 @@ function TopBar({
           >
             <button className="tab-select" type="button" onClick={() => onSelectTab(tab.id)}>
               {tab.isPinned ? <Pin size={12} /> : null}
+              <span className="tab-status-dot" aria-hidden="true" />
               <span>{tab.name}</span>
             </button>
             {tabs.length > 1 && (
@@ -1118,6 +1122,15 @@ function compactPath(path: string): string {
   const parts = path.split('/').filter(Boolean)
   if (parts.length <= 3) return path
   return `.../${parts.slice(-3).join('/')}`
+}
+
+function tabStatus(tabId: string, tasks: Task[]): Task['status'] {
+  const tabTasks = tasks.filter((task) => task.tabId === tabId)
+  if (tabTasks.some((task) => task.status === 'attention')) return 'attention'
+  if (tabTasks.some((task) => task.status === 'processing')) return 'processing'
+  if (tabTasks.some((task) => task.status === 'done_unread')) return 'done_unread'
+  if (tabTasks.length > 0 && tabTasks.every((task) => task.status === 'done_read')) return 'done_read'
+  return 'idle'
 }
 
 function byPosition<T extends { position: number }>(a: T, b: T): number {
