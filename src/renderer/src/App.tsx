@@ -499,10 +499,14 @@ function TopBar({
           </button>
           {closedMenuOpen && (
             <div className="closed-tabs-menu">
-              <div className="tab-menu-label">Closed boards</div>
+              <div className="closed-tabs-head">
+                <span>Closed boards</span>
+                <small>{closedTabs.length}</small>
+              </div>
               {closedTabs.map((tab) => (
                 <div className="closed-tab-row" key={tab.id}>
                   <button
+                    className="closed-tab-restore"
                     type="button"
                     title={tab.name}
                     onClick={() => {
