@@ -17,6 +17,7 @@ import type {
   RenameInput,
   Task,
   TaskStatus,
+  UpdateTabMetaInput,
   UpdateTaskStatusInput
 } from '../shared/types'
 
@@ -43,7 +44,9 @@ export class VibeBoardStore {
 
     return {
       projects: this.db.prepare('SELECT * FROM projects ORDER BY createdAt DESC').all() as Project[],
-      tabs: this.db.prepare('SELECT * FROM tabs ORDER BY createdAt').all() as BoardTab[],
+      tabs: this.db
+        .prepare('SELECT * FROM tabs ORDER BY isPinned DESC, createdAt')
+        .all() as BoardTab[],
       lanes: this.db.prepare('SELECT * FROM lanes ORDER BY position').all() as Lane[],
       tasks: this.db.prepare('SELECT * FROM tasks ORDER BY position').all() as Task[],
       conversations: this.db
@@ -134,18 +137,20 @@ export class VibeBoardStore {
       id: id(),
       name: input.name.trim() || 'Board',
       activeProjectId: null,
+      isPinned: 0,
+      color: null,
       createdAt: now()
     }
 
     const insertTab = this.db.prepare(
-      'INSERT INTO tabs (id, name, activeProjectId, createdAt) VALUES (?, ?, ?, ?)'
+      'INSERT INTO tabs (id, name, activeProjectId, isPinned, color, createdAt) VALUES (?, ?, ?, ?, ?, ?)'
     )
     const insertLane = this.db.prepare(
       'INSERT INTO lanes (id, tabId, name, position) VALUES (?, ?, ?, ?)'
     )
 
     const transaction = this.db.transaction(() => {
-      insertTab.run(tab.id, tab.name, tab.activeProjectId, tab.createdAt)
+      insertTab.run(tab.id, tab.name, tab.activeProjectId, tab.isPinned, tab.color, tab.createdAt)
       ;['Backlog', 'Active', 'Review', 'Done'].forEach((name, position) => {
         insertLane.run(id(), tab.id, name, position)
       })
@@ -160,8 +165,20 @@ export class VibeBoardStore {
     this.db.prepare('UPDATE tabs SET name = ? WHERE id = ?').run(input.name.trim(), input.id)
   }
 
+  updateTabMeta(input: UpdateTabMetaInput): void {
+    if (input.isPinned !== undefined) {
+      this.db.prepare('UPDATE tabs SET isPinned = ? WHERE id = ?').run(input.isPinned ? 1 : 0, input.id)
+    }
+
+    if (input.color !== undefined) {
+      this.db.prepare('UPDATE tabs SET color = ? WHERE id = ?').run(input.color, input.id)
+    }
+  }
+
   closeTab(tabId: string): void {
-    const tabs = this.db.prepare('SELECT id FROM tabs ORDER BY createdAt').all() as Array<{ id: string }>
+    const tabs = this.db
+      .prepare('SELECT id FROM tabs ORDER BY isPinned DESC, createdAt')
+      .all() as Array<{ id: string }>
     if (tabs.length <= 1) {
       return
     }
@@ -349,6 +366,8 @@ export class VibeBoardStore {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         activeProjectId TEXT,
+        isPinned INTEGER NOT NULL DEFAULT 0,
+        color TEXT,
         createdAt TEXT NOT NULL
       );
 
@@ -397,6 +416,8 @@ export class VibeBoardStore {
         FOREIGN KEY (taskId) REFERENCES tasks(id) ON DELETE CASCADE
       );
     `)
+    this.ensureColumn('tabs', 'isPinned', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('tabs', 'color', 'TEXT')
     this.ensureColumn('code_changes', 'language', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('code_changes', 'diffText', "TEXT NOT NULL DEFAULT ''")
   }

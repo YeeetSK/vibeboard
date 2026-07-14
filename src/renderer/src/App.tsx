@@ -36,6 +36,7 @@ import {
   PanelsTopLeft,
   Plus,
   Play,
+  Pin,
   Trash2,
   X
 } from 'lucide-react'
@@ -75,6 +76,8 @@ const statusOptions: Array<{ value: TaskStatus; label: string }> = [
   { value: 'done_unread', label: 'Done' },
   { value: 'done_read', label: 'Read' }
 ]
+
+const tabColors = ['#ff7a1a', '#f7c56b', '#2fcf75', '#42b883', '#9b8cff', '#ff5f57']
 
 export function App(): ReactElement {
   const [state, setState] = useState<AppState>(emptyState)
@@ -121,6 +124,11 @@ export function App(): ReactElement {
   const closeTab = async (tabId: string): Promise<void> => {
     if (state.tabs.length <= 1) return
     await window.vibeboard.closeTab(tabId)
+    await refresh()
+  }
+
+  const updateTabMeta = async (input: { id: string; isPinned?: boolean; color?: string | null }): Promise<void> => {
+    await window.vibeboard.updateTabMeta(input)
     await refresh()
   }
 
@@ -220,6 +228,7 @@ export function App(): ReactElement {
         onCloseTab={closeTab}
         onCreateTab={createTab}
         onSelectTab={setActiveTab}
+        onUpdateTabMeta={updateTabMeta}
       />
 
       <main className="workspace">
@@ -337,14 +346,26 @@ function TopBar({
   activeTabId,
   onCloseTab,
   onCreateTab,
-  onSelectTab
+  onSelectTab,
+  onUpdateTabMeta
 }: {
   tabs: BoardTab[]
   activeTabId?: string
   onCloseTab: (id: string) => void
   onCreateTab: () => void
   onSelectTab: (id: string) => void
+  onUpdateTabMeta: (input: { id: string; isPinned?: boolean; color?: string | null }) => void
 }): ReactElement {
+  const [menuState, setMenuState] = useState<{ tabId: string; x: number; y: number } | null>(null)
+  const menuTab = tabs.find((tab) => tab.id === menuState?.tabId) ?? null
+
+  useEffect(() => {
+    if (!menuState) return
+    const close = (): void => setMenuState(null)
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [menuState])
+
   return (
     <div className="tabs-bar">
       <div className="tabs">
@@ -352,10 +373,16 @@ function TopBar({
           <div
             key={tab.id}
             className={tab.id === activeTabId ? 'tab active' : 'tab'}
+            style={{ '--tab-color': tab.color ?? 'transparent' } as React.CSSProperties}
             title={tab.name}
+            onContextMenu={(event) => {
+              event.preventDefault()
+              setMenuState({ tabId: tab.id, x: event.clientX, y: event.clientY })
+            }}
           >
             <button className="tab-select" type="button" onClick={() => onSelectTab(tab.id)}>
-              {tab.name}
+              {tab.isPinned ? <Pin size={12} /> : null}
+              <span>{tab.name}</span>
             </button>
             {tabs.length > 1 && (
               <button
@@ -367,7 +394,7 @@ function TopBar({
                   onCloseTab(tab.id)
                 }}
               >
-                <X size={14} />
+                ×
               </button>
             )}
           </div>
@@ -376,6 +403,59 @@ function TopBar({
       <button className="icon-button" type="button" onClick={onCreateTab} title="New board">
         <Plus size={17} />
       </button>
+      {menuTab && (
+        <div
+          className="tab-menu"
+          style={{ left: menuState?.x ?? 12, top: menuState?.y ?? 42 }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              onUpdateTabMeta({ id: menuTab.id, isPinned: !menuTab.isPinned })
+              setMenuState(null)
+            }}
+          >
+            {menuTab.isPinned ? 'Unpin tab' : 'Pin tab'}
+          </button>
+          <div className="tab-menu-label">Color</div>
+          <div className="tab-color-grid">
+            {tabColors.map((color) => (
+              <button
+                key={color}
+                type="button"
+                className="tab-color-swatch"
+                style={{ background: color }}
+                title={color}
+                onClick={() => {
+                  onUpdateTabMeta({ id: menuTab.id, color })
+                  setMenuState(null)
+                }}
+              />
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              onUpdateTabMeta({ id: menuTab.id, color: null })
+              setMenuState(null)
+            }}
+          >
+            Clear color
+          </button>
+          {tabs.length > 1 && (
+            <button
+              type="button"
+              onClick={() => {
+                onCloseTab(menuTab.id)
+                setMenuState(null)
+              }}
+            >
+              Close tab
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

@@ -50,6 +50,7 @@ button {
 }
 
 .tabs-bar {
+  position: relative;
   display: flex;
   align-items: end;
   gap: 8px;
@@ -79,6 +80,7 @@ button {
   overflow: hidden;
   border: 1px solid transparent;
   border-bottom: 0;
+  border-top: 2px solid var(--tab-color);
   border-radius: 8px 8px 0 0;
   background: #202020;
   color: var(--muted);
@@ -86,6 +88,9 @@ button {
 }
 
 .tab-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
   height: 100%;
   padding: 0;
@@ -99,25 +104,37 @@ button {
   white-space: nowrap;
 }
 
-.tab-select:focus-visible {
-  outline: none;
-}
-
-.tab-select:first-child {
+.tab-select span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.tab-select:focus-visible {
+  outline: none;
 }
 
 .tab-close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
   color: var(--muted-2);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0;
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close,
+.tab-close:focus-visible {
+  opacity: 1;
 }
 
 .tab-close:hover,
@@ -131,6 +148,59 @@ button {
   background: var(--surface);
   color: var(--text);
   border-color: var(--line-soft);
+}
+
+.tab-menu {
+  position: fixed;
+  display: grid;
+  gap: 4px;
+  width: 184px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #242424;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
+  z-index: 30;
+  -webkit-app-region: no-drag;
+}
+
+.tab-menu button {
+  min-height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.tab-menu button:hover,
+.tab-menu button:focus-visible {
+  background: var(--surface-2);
+  outline: none;
+}
+
+.tab-menu-label {
+  padding: 6px 8px 2px;
+  color: var(--muted-2);
+  font-size: 12px;
+}
+
+.tab-color-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+  padding: 4px 8px 8px;
+}
+
+.tab-menu .tab-color-swatch {
+  width: 18px;
+  min-height: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 50%;
 }
 
 .icon-button,

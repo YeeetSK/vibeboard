@@ -11,6 +11,8 @@ export interface BoardTab {
   id: string
   name: string
   activeProjectId: string | null
+  isPinned: number
+  color: string | null
   createdAt: string
 }
 
@@ -76,6 +78,12 @@ export interface RenameInput {
   name: string
 }
 
+export interface UpdateTabMetaInput {
+  id: string
+  isPinned?: boolean
+  color?: string | null
+}
+
 export interface CreateLaneInput {
   tabId: string
   name: string
@@ -112,6 +120,7 @@ export interface VibeBoardApi {
   createProject: (input: CreateProjectInput) => Promise<Project | null>
   createTab: (input: CreateTabInput) => Promise<BoardTab>
   renameTab: (input: RenameInput) => Promise<void>
+  updateTabMeta: (input: UpdateTabMetaInput) => Promise<void>
   closeTab: (tabId: string) => Promise<void>
   setActiveTab: (tabId: string) => Promise<void>
   createLane: (input: CreateLaneInput) => Promise<Lane>

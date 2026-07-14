@@ -6,6 +6,7 @@ import type {
   CreateTaskInput,
   MoveTaskInput,
   RenameInput,
+  UpdateTabMetaInput,
   UpdateTaskStatusInput,
   VibeBoardApi
 } from '../shared/types'
@@ -20,6 +21,7 @@ const api: VibeBoardApi = {
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke('project:create', input),
   createTab: (input: CreateTabInput) => ipcRenderer.invoke('tab:create', input),
   renameTab: (input: RenameInput) => ipcRenderer.invoke('tab:rename', input),
+  updateTabMeta: (input: UpdateTabMetaInput) => ipcRenderer.invoke('tab:updateMeta', input),
   closeTab: (tabId: string) => ipcRenderer.invoke('tab:close', tabId),
   setActiveTab: (tabId: string) => ipcRenderer.invoke('tab:active', tabId),
   createLane: (input: CreateLaneInput) => ipcRenderer.invoke('lane:create', input),
