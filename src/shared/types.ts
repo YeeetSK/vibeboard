@@ -120,6 +120,23 @@ export interface RunTaskResult {
   message: string
 }
 
+export interface CursorDebugInfo {
+  cursorCommand: string | null
+  cursorAgentCommand: string | null
+  checkedCursorCommands: string[]
+  checkedCursorAgentCommands: string[]
+  installCommand: string
+  lastInstallOutput: string
+  processPath: string
+  shellPath: string
+}
+
+export interface CursorStatus {
+  available: boolean
+  label: string
+  debug: CursorDebugInfo
+}
+
 export interface VibeBoardApi {
   getState: () => Promise<AppState>
   onStateChanged: (callback: () => void) => () => void
@@ -140,7 +157,7 @@ export interface VibeBoardApi {
   runTaskWithCursor: (taskId: string) => Promise<RunTaskResult>
   updateTaskStatus: (input: UpdateTaskStatusInput) => Promise<void>
   markTaskRead: (taskId: string) => Promise<void>
-  getCursorAdapterStatus: () => Promise<{ available: boolean; label: string }>
+  getCursorAdapterStatus: () => Promise<CursorStatus>
   installCursorCli: () => Promise<RunTaskResult>
   openCursorSetup: () => Promise<void>
 }

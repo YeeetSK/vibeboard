@@ -3,26 +3,24 @@ import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import type { RunTaskResult } from '../shared/types'
+import type { CursorDebugInfo, CursorStatus, RunTaskResult } from '../shared/types'
 
 const execFileAsync = promisify(execFile)
-
-export interface CursorAdapterStatus {
-  available: boolean
-  label: string
-}
+let lastInstallOutput = ''
 
 export interface CursorAdapter {
-  status(): Promise<CursorAdapterStatus>
+  status(): Promise<CursorStatus>
   installCli(): Promise<RunTaskResult>
 }
 
 export class PlaceholderCursorAdapter implements CursorAdapter {
-  async status(): Promise<CursorAdapterStatus> {
-    const command = await resolveCursorAgentCommand()
+  async status(): Promise<CursorStatus> {
+    const debug = await getCursorDebugInfo()
+    console.info('[VibeBoard Cursor debug]', debug)
     return {
-      available: Boolean(command),
-      label: command ? 'cursor-agent ready' : 'cursor-agent missing'
+      available: Boolean(debug.cursorAgentCommand),
+      label: debug.cursorAgentCommand ? 'cursor-agent ready' : 'cursor-agent missing',
+      debug
     }
   }
 
@@ -42,12 +40,34 @@ export async function resolveCursorAgentCommand(): Promise<string | null> {
   return null
 }
 
+export async function getCursorDebugInfo(): Promise<CursorDebugInfo> {
+  return {
+    cursorCommand: await resolveCursorCommand(),
+    cursorAgentCommand: await resolveCursorAgentCommand(),
+    checkedCursorCommands: cursorCommandCandidates(),
+    checkedCursorAgentCommands: cursorAgentCandidates(),
+    installCommand: 'cursor agent --help, fallback: curl https://cursor.com/install -fsS | bash',
+    lastInstallOutput,
+    processPath: process.env.PATH ?? '',
+    shellPath: await getShellPath()
+  }
+}
+
 async function resolveFromShell(command: string): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync('/bin/zsh', ['-lc', `command -v ${command}`])
     return stdout.trim() || null
   } catch {
     return null
+  }
+}
+
+async function getShellPath(): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('/bin/zsh', ['-lc', 'printf "%s" "$PATH"'])
+    return stdout.trim()
+  } catch {
+    return ''
   }
 }
 
@@ -72,6 +92,10 @@ function cursorAgentCandidates(): string[] {
 
 async function installCursorCli(): Promise<RunTaskResult> {
   const cursorCommand = await resolveCursorCommand()
+  lastInstallOutput = cursorCommand
+    ? `Running: ${cursorCommand} agent --help`
+    : 'Running: curl https://cursor.com/install -fsS | bash'
+  console.info('[VibeBoard Cursor install]', lastInstallOutput)
   const result = cursorCommand
     ? await runInstallCommand(cursorCommand, ['agent', '--help'])
     : await runInstallCommand('/bin/zsh', ['-lc', 'curl https://cursor.com/install -fsS | bash'])
@@ -123,6 +147,7 @@ function runInstallCommand(command: string, args: string[]): Promise<RunTaskResu
 
     const timeout = setTimeout(() => {
       child.kill('SIGTERM')
+      lastInstallOutput = output.trim() || lastInstallOutput
       finish({
         started: false,
         message: 'Still waiting for Cursor CLI install. If Cursor opened a sign-in prompt, finish it there, then click Connect.'
@@ -131,10 +156,12 @@ function runInstallCommand(command: string, args: string[]): Promise<RunTaskResu
 
     child.stdout.on('data', (chunk: Buffer) => {
       output += chunk.toString()
+      lastInstallOutput = output.trim()
     })
 
     child.stderr.on('data', (chunk: Buffer) => {
       output += chunk.toString()
+      lastInstallOutput = output.trim()
     })
 
     child.on('error', (error) => {
@@ -142,6 +169,7 @@ function runInstallCommand(command: string, args: string[]): Promise<RunTaskResu
     })
 
     child.on('close', (code) => {
+      lastInstallOutput = output.trim()
       finish({
         started: code === 0,
         message: output.trim() || `Cursor CLI installer exited with code ${code ?? 'unknown'}.`

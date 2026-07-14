@@ -54,6 +54,7 @@ import type {
   BoardTab,
   CodeChange,
   ConversationEntry,
+  CursorStatus,
   Lane,
   Project,
   Task,
@@ -79,16 +80,27 @@ const emptyState: AppState = {
 }
 
 const tabColors = ['#ff7a1a', '#f7c56b', '#2fcf75', '#42b883', '#9b8cff', '#ff5f57']
+const emptyCursorStatus: CursorStatus = {
+  available: false,
+  label: 'Checking Cursor',
+  debug: {
+    cursorCommand: null,
+    cursorAgentCommand: null,
+    checkedCursorCommands: [],
+    checkedCursorAgentCommands: [],
+    installCommand: '',
+    lastInstallOutput: '',
+    processPath: '',
+    shellPath: ''
+  }
+}
 
 export function App(): ReactElement {
   const [state, setState] = useState<AppState>(emptyState)
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [newTaskLaneId, setNewTaskLaneId] = useState<string | null>(null)
   const [activeDragTaskId, setActiveDragTaskId] = useState<string | null>(null)
-  const [cursorStatus, setCursorStatus] = useState<{ available: boolean; label: string }>({
-    available: false,
-    label: 'Checking Cursor'
-  })
+  const [cursorStatus, setCursorStatus] = useState<CursorStatus>(emptyCursorStatus)
   const [isInstallingCursorCli, setInstallingCursorCli] = useState(false)
   const [cursorFeedback, setCursorFeedback] = useState('')
   const [isSidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -451,7 +463,7 @@ function CursorConnection({
 }: {
   feedback: string
   isInstalling: boolean
-  status: { available: boolean; label: string }
+  status: CursorStatus
   onInstallCli: () => void
   onOpenSetup: () => void
   onRefresh: () => void
@@ -495,7 +507,35 @@ function CursorConnection({
           </ol>
         )}
       </div>
+      {import.meta.env.DEV && <CursorDebugPanel status={status} />}
     </div>
+  )
+}
+
+function CursorDebugPanel({ status }: { status: CursorStatus }): ReactElement {
+  const debugLines = [
+    ['cursor', status.debug.cursorCommand ?? 'not found'],
+    ['cursor-agent', status.debug.cursorAgentCommand ?? 'not found'],
+    ['install', status.debug.installCommand],
+    ['checked cursor', status.debug.checkedCursorCommands.join('\n')],
+    ['checked agent', status.debug.checkedCursorAgentCommands.join('\n')],
+    ['process PATH', status.debug.processPath],
+    ['shell PATH', status.debug.shellPath],
+    ['last output', status.debug.lastInstallOutput || 'none']
+  ]
+
+  return (
+    <details className="cursor-debug">
+      <summary>Debug</summary>
+      <div>
+        {debugLines.map(([label, value]) => (
+          <section key={label}>
+            <strong>{label}</strong>
+            <pre>{value}</pre>
+          </section>
+        ))}
+      </div>
+    </details>
   )
 }
 

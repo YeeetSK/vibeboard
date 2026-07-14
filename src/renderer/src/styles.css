@@ -731,6 +731,50 @@ button {
   display: none;
 }
 
+.cursor-debug {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cursor-debug summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.cursor-debug div {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.cursor-debug section {
+  display: grid;
+  gap: 3px;
+}
+
+.cursor-debug strong {
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.cursor-debug pre {
+  max-height: 92px;
+  margin: 0;
+  overflow: auto;
+  padding: 7px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: #111111;
+  color: var(--muted-2);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .board-area {
   display: grid;
   grid-template-rows: auto 1fr;
