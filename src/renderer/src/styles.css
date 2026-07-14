@@ -575,14 +575,6 @@ button {
   color: var(--green);
 }
 
-.project-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-height: 0;
-  overflow: auto;
-}
-
 .project-row,
 .empty-panel,
 .muted-line {
@@ -597,25 +589,8 @@ button {
   padding: 10px;
 }
 
-.project-row-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-}
-
-.project-row-head small {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 22px;
-  height: 20px;
-  padding: 0 6px;
-  border: 1px solid var(--line-soft);
-  border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--muted);
+.active-project-row {
+  gap: 6px;
 }
 
 .project-row span,

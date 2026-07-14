@@ -109,6 +109,9 @@ export function App(): ReactElement {
   const [deleteTabId, setDeleteTabId] = useState<string | null>(null)
 
   const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0]
+  const activeProject = activeTab?.activeProjectId
+    ? state.projects.find((project) => project.id === activeTab.activeProjectId) ?? null
+    : null
   const activeLanes = useMemo(
     () => state.lanes.filter((lane) => lane.tabId === activeTab?.id).sort(byPosition),
     [state.lanes, activeTab?.id]
@@ -123,13 +126,6 @@ export function App(): ReactElement {
     const done = activeTasks.filter((task) => task.status === 'done_read' || task.status === 'done_unread').length
     return { running, attention, done, total: activeTasks.length }
   }, [activeTasks])
-  const tasksByProject = useMemo(() => {
-    return state.tasks.reduce<Record<string, number>>((counts, task) => {
-      if (!task.projectId) return counts
-      counts[task.projectId] = (counts[task.projectId] ?? 0) + 1
-      return counts
-    }, {})
-  }, [state.tasks])
   const selectedTask = state.tasks.find((task) => task.id === selectedTaskId) ?? null
   const activeDragTask = state.tasks.find((task) => task.id === activeDragTaskId) ?? null
 
@@ -218,8 +214,7 @@ export function App(): ReactElement {
   }
 
   const createTab = async (): Promise<void> => {
-    await window.vibeboard.createTab({ name: `Board ${state.tabs.length + 1}` })
-    await refresh()
+    await createProject()
   }
 
   const closeTab = async (tabId: string): Promise<void> => {
@@ -296,7 +291,7 @@ export function App(): ReactElement {
     await window.vibeboard.createTask({
       tabId: activeTab.id,
       laneId: newTaskLaneId,
-      projectId: null,
+      projectId: activeProject?.id ?? null,
       title: input.title
     })
     setNewTaskLaneId(null)
@@ -398,17 +393,16 @@ export function App(): ReactElement {
           <section className="panel project-panel">
             <div className="panel-title">
               <PanelsTopLeft size={16} />
-              <span>Projects</span>
+              <span>Project</span>
             </div>
-            <div className="project-list">
-              {state.projects.length === 0 ? (
-                <div className="muted-line">Add a project folder</div>
-              ) : (
-                state.projects.map((project) => (
-                  <ProjectRow key={project.id} project={project} taskCount={tasksByProject[project.id] ?? 0} />
-                ))
-              )}
-            </div>
+            {activeProject ? (
+              <div className="project-row active-project-row" title={activeProject.path}>
+                <span>{activeProject.name}</span>
+                <small>{compactPath(activeProject.path)}</small>
+              </div>
+            ) : (
+              <div className="muted-line">No project linked</div>
+            )}
           </section>
 
           <section className="panel integration-panel">
@@ -437,7 +431,7 @@ export function App(): ReactElement {
                 value={activeTab?.name ?? 'Main Board'}
                 onCommit={renameActiveTab}
               />
-              <p>{activeLanes.length} lanes</p>
+              <p>{activeProject ? compactPath(activeProject.path) : 'No project linked'} / {activeLanes.length} lanes</p>
             </div>
             <button className="icon-text-button" type="button" onClick={createLane}>
               <Plus size={17} />
@@ -641,7 +635,7 @@ function TopBar({
               <button
                 className="tab-close"
                 type="button"
-                title="Close board"
+                title="Close project"
                 onClick={(event) => {
                   event.stopPropagation()
                   onCloseTab(tab.id)
@@ -653,7 +647,7 @@ function TopBar({
           </div>
         ))}
       </div>
-      <button className="icon-button" type="button" onClick={onCreateTab} title="New board">
+      <button className="icon-button" type="button" onClick={onCreateTab} title="Add project">
         <Plus size={17} />
       </button>
       {closedTabs.length > 0 && (
@@ -665,14 +659,14 @@ function TopBar({
               setMenuState(null)
               setClosedMenuOpen((value) => !value)
             }}
-            title="Closed boards"
+            title="Closed projects"
           >
             <History size={17} />
           </button>
           {closedMenuOpen && (
             <div className="closed-tabs-menu">
               <div className="closed-tabs-head">
-                <span>Closed boards</span>
+                <span>Closed projects</span>
                 <small>{closedTabs.length}</small>
               </div>
               {closedTabs.map((tab) => (
@@ -719,7 +713,7 @@ function TopBar({
               setMenuState(null)
             }}
           >
-            {menuTab.isPinned ? 'Unpin tab' : 'Pin tab'}
+            {menuTab.isPinned ? 'Unpin project' : 'Pin project'}
           </button>
           <div className="tab-menu-label">Color</div>
           <div className="tab-color-grid">
@@ -754,7 +748,7 @@ function TopBar({
                 setMenuState(null)
               }}
             >
-              Close tab
+              Close project
             </button>
           )}
           <button
@@ -764,7 +758,7 @@ function TopBar({
               setMenuState(null)
             }}
           >
-            Delete tab
+            Delete project tab
           </button>
         </div>
       )}
@@ -791,15 +785,15 @@ function DeleteTabModal({
       <section className="modal-panel compact confirm-modal" role="dialog" aria-modal="true">
         <header className="modal-head">
           <div>
-            <h2>Delete tab</h2>
-            <p>{tab?.name ?? 'Board'}</p>
+            <h2>Delete project tab</h2>
+            <p>{tab?.name ?? 'Project'}</p>
           </div>
           <button className="icon-button" type="button" onClick={onClose} title="Close">
             <X size={18} />
           </button>
         </header>
         <div className="confirm-body">
-          <p>Permanent delete removes this board, its lanes, tasks, chat, and code changes.</p>
+          <p>Permanent delete removes this project tab, its lanes, tasks, chat, and code changes.</p>
           <input
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
@@ -837,18 +831,6 @@ function SidebarStat({
     <div className={`sidebar-stat tone-${tone}`}>
       <strong>{value}</strong>
       <span>{label}</span>
-    </div>
-  )
-}
-
-function ProjectRow({ project, taskCount }: { project: Project; taskCount: number }): ReactElement {
-  return (
-    <div className="project-row" title={project.path}>
-      <div className="project-row-head">
-        <span>{project.name}</span>
-        <small>{taskCount}</small>
-      </div>
-      <small>{compactPath(project.path)}</small>
     </div>
   )
 }

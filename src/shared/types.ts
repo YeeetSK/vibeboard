@@ -73,6 +73,7 @@ export interface CreateProjectInput {
 
 export interface CreateTabInput {
   name: string
+  projectId?: string | null
 }
 
 export interface RenameInput {

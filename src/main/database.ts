@@ -141,6 +141,25 @@ export class VibeBoardStore {
     }
 
     const folderPath = result.filePaths[0]
+    const existingProject = this.db.prepare('SELECT * FROM projects WHERE path = ?').get(folderPath) as Project | undefined
+    if (existingProject) {
+      const existingTab = this.db
+        .prepare('SELECT id, isClosed FROM tabs WHERE activeProjectId = ? ORDER BY createdAt LIMIT 1')
+        .get(existingProject.id) as { id: string; isClosed: number } | undefined
+
+      if (existingTab) {
+        if (existingTab.isClosed) {
+          this.reopenTab(existingTab.id)
+        } else {
+          this.setActiveTab(existingTab.id)
+        }
+      } else {
+        this.createTab({ name: existingProject.name, projectId: existingProject.id })
+      }
+
+      return existingProject
+    }
+
     const project: Project = {
       id: id(),
       name: input.name?.trim() || path.basename(folderPath),
@@ -152,14 +171,15 @@ export class VibeBoardStore {
       .prepare('INSERT INTO projects (id, name, path, createdAt) VALUES (?, ?, ?, ?)')
       .run(project.id, project.name, project.path, project.createdAt)
 
+    this.createTab({ name: project.name, projectId: project.id })
     return project
   }
 
   createTab(input: CreateTabInput): BoardTab {
     const tab: BoardTab = {
       id: id(),
-      name: input.name.trim() || 'Board',
-      activeProjectId: null,
+      name: input.name.trim() || 'Project',
+      activeProjectId: input.projectId ?? null,
       isPinned: 0,
       isClosed: 0,
       color: null,
@@ -247,9 +267,20 @@ export class VibeBoardStore {
 
     const activeTabId = this.getSetting('activeTabId')
     const fallbackTab = tabs.find((tab) => tab.id !== tabId && tab.isClosed === 0)
+    const projectRow = this.db.prepare('SELECT activeProjectId FROM tabs WHERE id = ?').get(tabId) as
+      | { activeProjectId: string | null }
+      | undefined
 
     const transaction = this.db.transaction(() => {
       this.db.prepare('DELETE FROM tabs WHERE id = ?').run(tabId)
+      if (projectRow?.activeProjectId) {
+        const remainingProjectTabs = this.db
+          .prepare('SELECT COUNT(*) as count FROM tabs WHERE activeProjectId = ?')
+          .get(projectRow.activeProjectId) as { count: number }
+        if (remainingProjectTabs.count === 0) {
+          this.db.prepare('DELETE FROM projects WHERE id = ?').run(projectRow.activeProjectId)
+        }
+      }
       if (activeTabId === tabId && fallbackTab) {
         this.setSetting('activeTabId', fallbackTab.id)
       }
@@ -311,6 +342,9 @@ export class VibeBoardStore {
   }
 
   createTask(input: CreateTaskInput): Task {
+    const tab = this.db.prepare('SELECT activeProjectId FROM tabs WHERE id = ?').get(input.tabId) as
+      | { activeProjectId: string | null }
+      | undefined
     const positionRow = this.db
       .prepare('SELECT COALESCE(MAX(position), -1) + 1 as position FROM tasks WHERE laneId = ?')
       .get(input.laneId) as { position: number }
@@ -319,7 +353,7 @@ export class VibeBoardStore {
       id: id(),
       tabId: input.tabId,
       laneId: input.laneId,
-      projectId: input.projectId,
+      projectId: tab?.activeProjectId ?? input.projectId,
       title: input.title.trim() || 'Untitled task',
       summary: input.prompt?.trim() ?? '',
       status: 'idle',
@@ -489,8 +523,10 @@ export class VibeBoardStore {
     this.ensureColumn('tabs', 'isPinned', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('tabs', 'isClosed', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('tabs', 'color', 'TEXT')
+    this.ensureColumn('tabs', 'activeProjectId', 'TEXT')
     this.ensureColumn('code_changes', 'language', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('code_changes', 'diffText', "TEXT NOT NULL DEFAULT ''")
+    this.linkLegacyTabsToProjects()
   }
 
   private seed(): void {
@@ -509,9 +545,9 @@ export class VibeBoardStore {
       .prepare('INSERT INTO projects (id, name, path, createdAt) VALUES (?, ?, ?, ?)')
       .run(project.id, project.name, project.path, project.createdAt)
 
-    const productTab = this.createTab({ name: 'VibeBoard' })
+    const productTab = this.createTab({ name: 'VibeBoard', projectId: project.id })
     this.updateTabMeta({ id: productTab.id, isPinned: true, color: '#ff7a1a' })
-    const releaseTab = this.createTab({ name: 'Release' })
+    const releaseTab = this.createTab({ name: 'Release', projectId: project.id })
     this.updateTabMeta({ id: releaseTab.id, color: '#9b8cff' })
 
     const productLanes = this.getLanesForTab(productTab.id)
@@ -648,6 +684,42 @@ export class VibeBoardStore {
     if (!columns.some((column) => column.name === columnName)) {
       this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
     }
+  }
+
+  private linkLegacyTabsToProjects(): void {
+    this.db.exec(`
+      UPDATE tabs
+      SET activeProjectId = (
+        SELECT projectId
+        FROM tasks
+        WHERE tasks.tabId = tabs.id
+          AND projectId IS NOT NULL
+        GROUP BY projectId
+        ORDER BY COUNT(*) DESC
+        LIMIT 1
+      )
+      WHERE activeProjectId IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM tasks
+          WHERE tasks.tabId = tabs.id
+            AND projectId IS NOT NULL
+        );
+
+      UPDATE tasks
+      SET projectId = (
+        SELECT activeProjectId
+        FROM tabs
+        WHERE tabs.id = tasks.tabId
+      )
+      WHERE projectId IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM tabs
+          WHERE tabs.id = tasks.tabId
+            AND activeProjectId IS NOT NULL
+        );
+    `)
   }
 
   private getSetting(key: string): string | null {
