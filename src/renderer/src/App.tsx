@@ -1289,6 +1289,13 @@ function MessageMarkdown({ content }: { content: string }): ReactElement {
               </a>
             )
           },
+          table({ children }) {
+            return (
+              <div className="markdown-table-wrap">
+                <table>{children}</table>
+              </div>
+            )
+          },
           code({ className, children }) {
             const rawCode = String(children).replace(/\n$/, '')
             const language = normalizeLanguage((className ?? '').replace(/^language-/, ''))

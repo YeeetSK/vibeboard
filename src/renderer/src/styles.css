@@ -1366,14 +1366,20 @@ button:focus-visible {
   margin: 4px 0;
 }
 
-.message-markdown table {
-  display: block;
+.markdown-table-wrap {
+  width: fit-content;
   max-width: 100%;
   margin: 12px 0;
   overflow: auto;
   border: 1px solid var(--line);
-  border-collapse: collapse;
   border-radius: 8px;
+  background: #191919;
+}
+
+.message-markdown table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
   background: #191919;
 }
 
