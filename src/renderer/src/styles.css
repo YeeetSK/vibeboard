@@ -260,18 +260,35 @@ button {
 
 .workspace {
   display: grid;
-  grid-template-columns: 270px 1fr;
+  grid-template-columns: 286px 1fr;
   min-height: 0;
+}
+
+.workspace.sidebar-collapsed {
+  grid-template-columns: 62px 1fr;
 }
 
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
   min-height: 0;
-  padding: 22px 16px;
+  padding: 18px 14px;
   border-right: 1px solid var(--line-soft);
   background: #202124;
+}
+
+.sidebar-collapsed .sidebar {
+  align-items: center;
+  padding: 12px 10px;
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
 }
 
 .brand {
@@ -281,6 +298,38 @@ button {
   height: 36px;
   font-size: 18px;
   font-weight: 700;
+}
+
+.sidebar-toggle {
+  flex: 0 0 auto;
+  background: transparent;
+}
+
+.sidebar-project-button {
+  width: 100%;
+}
+
+.sidebar-collapsed .sidebar-head {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+
+.sidebar-collapsed .brand {
+  justify-content: center;
+  width: 38px;
+}
+
+.sidebar-collapsed .brand span,
+.sidebar-collapsed .sidebar-project-button span,
+.sidebar-collapsed .panel {
+  display: none;
+}
+
+.sidebar-collapsed .sidebar-project-button {
+  width: 38px;
+  height: 38px;
+  padding: 0;
 }
 
 .panel {
@@ -298,6 +347,48 @@ button {
   color: var(--muted);
   font-size: 13px;
   font-weight: 650;
+}
+
+.sidebar-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.sidebar-stat {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.sidebar-stat strong {
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.sidebar-stat span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-stat.tone-orange strong {
+  color: var(--orange);
+}
+
+.sidebar-stat.tone-red strong {
+  color: var(--red);
+}
+
+.sidebar-stat.tone-green strong {
+  color: var(--green);
 }
 
 .project-list {
@@ -323,6 +414,27 @@ button {
   padding: 10px;
 }
 
+.project-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-row-head small {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
 .project-row span,
 .project-row small {
   overflow: hidden;
@@ -340,6 +452,12 @@ button {
 .adapter-row,
 .muted-line {
   padding: 10px;
+}
+
+.adapter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .board-area {

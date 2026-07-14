@@ -28,14 +28,18 @@ import xml from 'highlight.js/lib/languages/xml'
 import {
   AlertTriangle,
   Check,
+  CheckCircle2,
   Code2,
   FolderPlus,
   LayoutDashboard,
   MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
   PanelsTopLeft,
   Plus,
   Play,
   Pin,
+  RadioTower,
   Trash2,
   X
 } from 'lucide-react'
@@ -75,12 +79,30 @@ export function App(): ReactElement {
   const [newTaskLaneId, setNewTaskLaneId] = useState<string | null>(null)
   const [activeDragTaskId, setActiveDragTaskId] = useState<string | null>(null)
   const [cursorLabel, setCursorLabel] = useState('Cursor adapter ready')
+  const [isSidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0]
   const activeLanes = useMemo(
     () => state.lanes.filter((lane) => lane.tabId === activeTab?.id).sort(byPosition),
     [state.lanes, activeTab?.id]
   )
+  const activeTasks = useMemo(
+    () => state.tasks.filter((task) => task.tabId === activeTab?.id),
+    [state.tasks, activeTab?.id]
+  )
+  const activeBoardStats = useMemo(() => {
+    const running = activeTasks.filter((task) => task.status === 'processing').length
+    const attention = activeTasks.filter((task) => task.status === 'attention').length
+    const done = activeTasks.filter((task) => task.status === 'done_read' || task.status === 'done_unread').length
+    return { running, attention, done, total: activeTasks.length }
+  }, [activeTasks])
+  const tasksByProject = useMemo(() => {
+    return state.tasks.reduce<Record<string, number>>((counts, task) => {
+      if (!task.projectId) return counts
+      counts[task.projectId] = (counts[task.projectId] ?? 0) + 1
+      return counts
+    }, {})
+  }, [state.tasks])
   const selectedTask = state.tasks.find((task) => task.id === selectedTaskId) ?? null
   const activeDragTask = state.tasks.find((task) => task.id === activeDragTaskId) ?? null
 
@@ -216,38 +238,64 @@ export function App(): ReactElement {
         onUpdateTabMeta={updateTabMeta}
       />
 
-      <main className="workspace">
+      <main className={isSidebarCollapsed ? 'workspace sidebar-collapsed' : 'workspace'}>
         <aside className="sidebar">
-          <div className="brand">
-            <LayoutDashboard size={22} />
-            <span>VibeBoard</span>
+          <div className="sidebar-head">
+            <div className="brand">
+              <LayoutDashboard size={22} />
+              <span>VibeBoard</span>
+            </div>
+            <button
+              className="icon-button sidebar-toggle"
+              type="button"
+              title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              onClick={() => setSidebarCollapsed((value) => !value)}
+            >
+              {isSidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+            </button>
           </div>
 
-          <button className="primary-action" type="button" onClick={createProject}>
+          <button className="primary-action sidebar-project-button" type="button" onClick={createProject} title="Add project">
             <FolderPlus size={18} />
-            <span>Project</span>
+            <span>Add project</span>
           </button>
 
-          <section className="panel">
+          <section className="panel board-snapshot">
+            <div className="panel-title">
+              <CheckCircle2 size={16} />
+              <span>Board</span>
+            </div>
+            <div className="sidebar-stat-grid">
+              <SidebarStat label="Tasks" value={activeBoardStats.total} />
+              <SidebarStat label="Running" value={activeBoardStats.running} tone="orange" />
+              <SidebarStat label="Issues" value={activeBoardStats.attention} tone="red" />
+              <SidebarStat label="Done" value={activeBoardStats.done} tone="green" />
+            </div>
+          </section>
+
+          <section className="panel project-panel">
             <div className="panel-title">
               <PanelsTopLeft size={16} />
               <span>Projects</span>
             </div>
             <div className="project-list">
               {state.projects.length === 0 ? (
-                <div className="muted-line">No projects</div>
+                <div className="muted-line">Add a project folder</div>
               ) : (
-                state.projects.map((project) => <ProjectRow key={project.id} project={project} />)
+                state.projects.map((project) => (
+                  <ProjectRow key={project.id} project={project} taskCount={tasksByProject[project.id] ?? 0} />
+                ))
               )}
             </div>
           </section>
 
-          <section className="panel">
+          <section className="panel integration-panel">
             <div className="panel-title">
-              <Code2 size={16} />
-              <span>Integration</span>
+              <RadioTower size={16} />
+              <span>Cursor</span>
             </div>
             <div className="adapter-row">
+              <Code2 size={15} />
               <span>{cursorLabel}</span>
             </div>
           </section>
@@ -449,11 +497,31 @@ function TopBar({
   )
 }
 
-function ProjectRow({ project }: { project: Project }): ReactElement {
+function SidebarStat({
+  label,
+  value,
+  tone = 'neutral'
+}: {
+  label: string
+  value: number
+  tone?: 'neutral' | 'orange' | 'red' | 'green'
+}): ReactElement {
+  return (
+    <div className={`sidebar-stat tone-${tone}`}>
+      <strong>{value}</strong>
+      <span>{label}</span>
+    </div>
+  )
+}
+
+function ProjectRow({ project, taskCount }: { project: Project; taskCount: number }): ReactElement {
   return (
     <div className="project-row" title={project.path}>
-      <span>{project.name}</span>
-      <small>{project.path}</small>
+      <div className="project-row-head">
+        <span>{project.name}</span>
+        <small>{taskCount}</small>
+      </div>
+      <small>{compactPath(project.path)}</small>
     </div>
   )
 }
@@ -897,6 +965,12 @@ function hexToRgba(hex: string, alpha: number): string {
   const green = Number.parseInt(value.slice(2, 4), 16)
   const blue = Number.parseInt(value.slice(4, 6), 16)
   return `rgba(${red}, ${green}, ${blue}, ${alpha})`
+}
+
+function compactPath(path: string): string {
+  const parts = path.split('/').filter(Boolean)
+  if (parts.length <= 3) return path
+  return `.../${parts.slice(-3).join('/')}`
 }
 
 function byPosition<T extends { position: number }>(a: T, b: T): number {
