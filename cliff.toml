@@ -1,0 +1,37 @@
+[changelog]
+header = "# VibeBoard\n\n"
+body = """
+{% if version %}## {{ version | trim_start_matches(pat="v") }}{% else %}## Unreleased{% endif %}
+{% for group, commits in commits | group_by(attribute="group") %}
+
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {{ commit.message | upper_first }}\
+{% endfor %}
+{% endfor %}
+"""
+trim = true
+footer = ""
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+split_commits = false
+commit_parsers = [
+  { message = "^feat", group = "features" },
+  { message = "^fix", group = "fixes" },
+  { message = "^perf", group = "performance" },
+  { message = "^refactor", group = "refactors" },
+  { message = "^docs", group = "documentation" },
+  { message = "^style", group = "style" },
+  { message = "^test", group = "tests" },
+  { message = "^chore", group = "maintenance" },
+  { message = ".*", group = "changes" }
+]
+protect_breaking_commits = true
+filter_commits = false
+tag_pattern = "v[0-9]*"
+skip_tags = ""
+ignore_tags = ""
+topo_order = false
+sort_commits = "oldest"
