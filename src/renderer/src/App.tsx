@@ -85,9 +85,9 @@ const emptyCursorStatus: CursorStatus = {
   label: 'Checking Cursor',
   debug: {
     cursorCommand: null,
-    cursorAgentCommand: null,
+    agentCommand: null,
     checkedCursorCommands: [],
-    checkedCursorAgentCommands: [],
+    checkedAgentCommands: [],
     installCommand: '',
     lastInstallOutput: '',
     processPath: '',
@@ -147,7 +147,7 @@ export function App(): ReactElement {
   const refreshCursorStatus = async (): Promise<void> => {
     const nextStatus = await window.vibeboard.getCursorAdapterStatus()
     setCursorStatus(nextStatus)
-    setCursorFeedback(nextStatus.available ? 'Cursor CLI is ready.' : 'cursor-agent is still missing.')
+    setCursorFeedback(nextStatus.available ? 'Cursor CLI is ready.' : 'Cursor CLI command `agent` is still missing.')
   }
 
   const installCursorCli = async (): Promise<void> => {
@@ -524,10 +524,10 @@ function CursorConnection({
 function CursorDebugPanel({ status }: { status: CursorStatus }): ReactElement {
   const debugLines = [
     ['cursor', status.debug.cursorCommand ?? 'not found'],
-    ['cursor-agent', status.debug.cursorAgentCommand ?? 'not found'],
+    ['agent', status.debug.agentCommand ?? 'not found'],
     ['install', status.debug.installCommand],
     ['checked cursor', status.debug.checkedCursorCommands.join('\n')],
-    ['checked agent', status.debug.checkedCursorAgentCommands.join('\n')],
+    ['checked agent', status.debug.checkedAgentCommands.join('\n')],
     ['process PATH', status.debug.processPath],
     ['shell PATH', status.debug.shellPath],
     ['last output', status.debug.lastInstallOutput || 'none']

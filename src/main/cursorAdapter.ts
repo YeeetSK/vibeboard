@@ -19,8 +19,8 @@ export class PlaceholderCursorAdapter implements CursorAdapter {
     const debug = await getCursorDebugInfo()
     console.info('[VibeBoard Cursor debug]', debug)
     return {
-      available: Boolean(debug.cursorAgentCommand),
-      label: debug.cursorAgentCommand ? 'cursor-agent ready' : 'cursor-agent missing',
+      available: Boolean(debug.agentCommand),
+      label: debug.agentCommand ? 'agent ready' : 'agent missing',
       debug
     }
   }
@@ -30,11 +30,18 @@ export class PlaceholderCursorAdapter implements CursorAdapter {
   }
 }
 
-export async function resolveCursorAgentCommand(): Promise<string | null> {
-  const fromShell = await resolveFromShell('cursor-agent')
+export async function resolveAgentCommand(): Promise<string | null> {
+  const fromShell = await resolveFromShell('agent')
   if (fromShell) return fromShell
 
-  for (const candidate of cursorAgentCandidates()) {
+  for (const candidate of agentCandidates()) {
+    if (await canRun(candidate)) return candidate
+  }
+
+  const legacyFromShell = await resolveFromShell('cursor-agent')
+  if (legacyFromShell) return legacyFromShell
+
+  for (const candidate of legacyCursorAgentCandidates()) {
     if (await canRun(candidate)) return candidate
   }
 
@@ -44,9 +51,9 @@ export async function resolveCursorAgentCommand(): Promise<string | null> {
 export async function getCursorDebugInfo(): Promise<CursorDebugInfo> {
   return {
     cursorCommand: await resolveCursorCommand(),
-    cursorAgentCommand: await resolveCursorAgentCommand(),
+    agentCommand: await resolveAgentCommand(),
     checkedCursorCommands: cursorCommandCandidates(),
-    checkedCursorAgentCommands: cursorAgentCandidates(),
+    checkedAgentCommands: [...agentCandidates(), ...legacyCursorAgentCandidates()],
     installCommand: cursorInstallCommand,
     lastInstallOutput,
     processPath: process.env.PATH ?? '',
@@ -81,7 +88,17 @@ async function canRun(command: string): Promise<boolean> {
   }
 }
 
-function cursorAgentCandidates(): string[] {
+function agentCandidates(): string[] {
+  const home = os.homedir()
+  return [
+    path.join(home, '.local', 'bin', 'agent'),
+    path.join(home, '.cursor', 'bin', 'agent'),
+    '/opt/homebrew/bin/agent',
+    '/usr/local/bin/agent'
+  ]
+}
+
+function legacyCursorAgentCandidates(): string[] {
   const home = os.homedir()
   return [
     path.join(home, '.local', 'bin', 'cursor-agent'),
@@ -95,7 +112,7 @@ async function installCursorCli(): Promise<RunTaskResult> {
   lastInstallOutput = `Running: ${cursorInstallCommand}`
   console.info('[VibeBoard Cursor install]', lastInstallOutput)
   const result = await runInstallCommand('/bin/zsh', ['-lc', cursorInstallCommand])
-  const command = await resolveCursorAgentCommand()
+  const command = await resolveAgentCommand()
 
   if (command) {
     return { started: true, message: 'Connected to Cursor CLI.' }

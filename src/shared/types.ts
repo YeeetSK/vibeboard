@@ -122,9 +122,9 @@ export interface RunTaskResult {
 
 export interface CursorDebugInfo {
   cursorCommand: string | null
-  cursorAgentCommand: string | null
+  agentCommand: string | null
   checkedCursorCommands: string[]
-  checkedCursorAgentCommands: string[]
+  checkedAgentCommands: string[]
   installCommand: string
   lastInstallOutput: string
   processPath: string

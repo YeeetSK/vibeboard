@@ -513,7 +513,7 @@ export class VibeBoardStore {
       prompt: 'Wire the task Run button so Cursor runs headlessly in the selected project folder and captured diffs appear on the right.'
     })
     this.updateTaskStatus({ taskId: runningTask.id, status: 'processing' })
-    this.appendConversation(runningTask.id, 'system', 'Starting Cursor agent in the project folder.')
+    this.appendConversation(runningTask.id, 'system', 'Starting Cursor CLI agent in the project folder.')
     this.appendConversation(runningTask.id, 'assistant', 'Reading the task prompt and preparing a headless run.')
 
     const doneTask = this.createTask({

@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { CodeChange } from '../shared/types'
-import { resolveCursorAgentCommand } from './cursorAdapter'
+import { resolveAgentCommand } from './cursorAdapter'
 import { VibeBoardStore } from './database'
 
 interface RunCursorTaskInput {
@@ -26,13 +26,13 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
   const projectPath = context.project.path
 
   store.updateTaskStatus({ taskId, status: 'processing' })
-  store.appendConversation(taskId, 'system', 'Starting Cursor agent in the project folder.')
+  store.appendConversation(taskId, 'system', 'Starting Cursor CLI agent in the project folder.')
   onStateChanged()
 
-  const cursorAgentCommand = await resolveCursorAgentCommand()
-  if (!cursorAgentCommand) {
+  const agentCommand = await resolveAgentCommand()
+  if (!agentCommand) {
     store.updateTaskStatus({ taskId, status: 'attention' })
-    store.appendConversation(taskId, 'system', 'cursor-agent is not installed or is not available on PATH.')
+    store.appendConversation(taskId, 'system', 'Cursor CLI command `agent` is not installed or is not available on PATH.')
     onStateChanged()
     return
   }
@@ -41,7 +41,7 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
   store.appendConversation(taskId, 'system', 'Prepared a focused project brief to reduce unnecessary repo exploration.')
   onStateChanged()
 
-  const child = spawn(cursorAgentCommand, ['--print', '--force', '--output-format', 'stream-json', optimizedPrompt], {
+  const child = spawn(agentCommand, ['--print', '--force', '--output-format', 'stream-json', optimizedPrompt], {
     cwd: projectPath,
     env: process.env
   })
@@ -112,7 +112,7 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
         store.appendConversation(
           taskId,
           'system',
-          stderrBuffer.trim() || `Cursor agent exited with code ${code ?? 'unknown'}.`
+          stderrBuffer.trim() || `Cursor CLI agent exited with code ${code ?? 'unknown'}.`
         )
       }
       onStateChanged()
