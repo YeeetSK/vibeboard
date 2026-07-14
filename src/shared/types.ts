@@ -104,6 +104,7 @@ export interface VibeBoardApi {
   createProject: (input: CreateProjectInput) => Promise<Project | null>
   createTab: (input: CreateTabInput) => Promise<BoardTab>
   renameTab: (input: RenameInput) => Promise<void>
+  closeTab: (tabId: string) => Promise<void>
   setActiveTab: (tabId: string) => Promise<void>
   createLane: (input: CreateLaneInput) => Promise<Lane>
   renameLane: (input: RenameInput) => Promise<void>

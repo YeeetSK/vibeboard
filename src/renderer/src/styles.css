@@ -68,6 +68,10 @@ button {
 }
 
 .tab {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
   max-width: 190px;
   min-width: 112px;
   height: 36px;
@@ -78,10 +82,49 @@ button {
   border-radius: 8px 8px 0 0;
   background: #151922;
   color: var(--muted);
+  -webkit-app-region: no-drag;
+}
+
+.tab-select {
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: pointer;
-  -webkit-app-region: no-drag;
+}
+
+.tab-select:focus-visible {
+  outline: none;
+}
+
+.tab-select:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--muted-2);
+}
+
+.tab-close:hover,
+.tab-close:focus-visible {
+  background: var(--surface-2);
+  color: var(--text);
+  outline: none;
 }
 
 .tab.active {

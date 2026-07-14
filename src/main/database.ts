@@ -108,6 +108,26 @@ export class VibeBoardStore {
     this.db.prepare('UPDATE tabs SET name = ? WHERE id = ?').run(input.name.trim(), input.id)
   }
 
+  closeTab(tabId: string): void {
+    const tabs = this.db.prepare('SELECT id FROM tabs ORDER BY createdAt').all() as Array<{ id: string }>
+    if (tabs.length <= 1) {
+      return
+    }
+
+    const activeTabId = this.getSetting('activeTabId')
+    const tabIndex = tabs.findIndex((tab) => tab.id === tabId)
+    const fallbackTab = tabs[tabIndex + 1] ?? tabs[tabIndex - 1] ?? tabs.find((tab) => tab.id !== tabId)
+
+    const transaction = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM tabs WHERE id = ?').run(tabId)
+      if (activeTabId === tabId && fallbackTab) {
+        this.setSetting('activeTabId', fallbackTab.id)
+      }
+    })
+
+    transaction()
+  }
+
   setActiveTab(tabId: string): void {
     this.setSetting('activeTabId', tabId)
   }

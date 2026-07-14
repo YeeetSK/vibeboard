@@ -98,6 +98,12 @@ export function App(): ReactElement {
     await refresh()
   }
 
+  const closeTab = async (tabId: string): Promise<void> => {
+    if (state.tabs.length <= 1) return
+    await window.vibeboard.closeTab(tabId)
+    await refresh()
+  }
+
   const setActiveTab = async (tabId: string): Promise<void> => {
     await window.vibeboard.setActiveTab(tabId)
     await refresh()
@@ -180,6 +186,7 @@ export function App(): ReactElement {
       <TopBar
         tabs={state.tabs}
         activeTabId={activeTab?.id}
+        onCloseTab={closeTab}
         onCreateTab={createTab}
         onSelectTab={setActiveTab}
       />
@@ -294,11 +301,13 @@ export function App(): ReactElement {
 function TopBar({
   tabs,
   activeTabId,
+  onCloseTab,
   onCreateTab,
   onSelectTab
 }: {
   tabs: BoardTab[]
   activeTabId?: string
+  onCloseTab: (id: string) => void
   onCreateTab: () => void
   onSelectTab: (id: string) => void
 }): ReactElement {
@@ -306,15 +315,28 @@ function TopBar({
     <div className="tabs-bar">
       <div className="tabs">
         {tabs.map((tab) => (
-          <button
+          <div
             key={tab.id}
             className={tab.id === activeTabId ? 'tab active' : 'tab'}
-            type="button"
-            onClick={() => onSelectTab(tab.id)}
             title={tab.name}
           >
-            {tab.name}
-          </button>
+            <button className="tab-select" type="button" onClick={() => onSelectTab(tab.id)}>
+              {tab.name}
+            </button>
+            {tabs.length > 1 && (
+              <button
+                className="tab-close"
+                type="button"
+                title="Close board"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onCloseTab(tab.id)
+                }}
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
         ))}
       </div>
       <button className="icon-button" type="button" onClick={onCreateTab} title="New board">

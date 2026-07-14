@@ -15,6 +15,7 @@ const api: VibeBoardApi = {
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke('project:create', input),
   createTab: (input: CreateTabInput) => ipcRenderer.invoke('tab:create', input),
   renameTab: (input: RenameInput) => ipcRenderer.invoke('tab:rename', input),
+  closeTab: (tabId: string) => ipcRenderer.invoke('tab:close', tabId),
   setActiveTab: (tabId: string) => ipcRenderer.invoke('tab:active', tabId),
   createLane: (input: CreateLaneInput) => ipcRenderer.invoke('lane:create', input),
   renameLane: (input: RenameInput) => ipcRenderer.invoke('lane:rename', input),
