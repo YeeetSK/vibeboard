@@ -12,6 +12,11 @@ import type {
 
 const api: VibeBoardApi = {
   getState: () => ipcRenderer.invoke('state:get'),
+  onStateChanged: (callback: () => void) => {
+    const listener = (): void => callback()
+    ipcRenderer.on('state:changed', listener)
+    return () => ipcRenderer.removeListener('state:changed', listener)
+  },
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke('project:create', input),
   createTab: (input: CreateTabInput) => ipcRenderer.invoke('tab:create', input),
   renameTab: (input: RenameInput) => ipcRenderer.invoke('tab:rename', input),
@@ -22,6 +27,7 @@ const api: VibeBoardApi = {
   deleteLane: (laneId: string) => ipcRenderer.invoke('lane:delete', laneId),
   createTask: (input: CreateTaskInput) => ipcRenderer.invoke('task:create', input),
   moveTask: (input: MoveTaskInput) => ipcRenderer.invoke('task:move', input),
+  runTaskWithCursor: (taskId: string) => ipcRenderer.invoke('task:runCursor', taskId),
   updateTaskStatus: (input: UpdateTaskStatusInput) => ipcRenderer.invoke('task:status', input),
   markTaskRead: (taskId: string) => ipcRenderer.invoke('task:read', taskId),
   getCursorAdapterStatus: () => ipcRenderer.invoke('cursor:status')

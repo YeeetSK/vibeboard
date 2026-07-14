@@ -101,8 +101,14 @@ export interface UpdateTaskStatusInput {
   status: TaskStatus
 }
 
+export interface RunTaskResult {
+  started: boolean
+  message: string
+}
+
 export interface VibeBoardApi {
   getState: () => Promise<AppState>
+  onStateChanged: (callback: () => void) => () => void
   createProject: (input: CreateProjectInput) => Promise<Project | null>
   createTab: (input: CreateTabInput) => Promise<BoardTab>
   renameTab: (input: RenameInput) => Promise<void>
@@ -113,6 +119,7 @@ export interface VibeBoardApi {
   deleteLane: (laneId: string) => Promise<void>
   createTask: (input: CreateTaskInput) => Promise<Task>
   moveTask: (input: MoveTaskInput) => Promise<void>
+  runTaskWithCursor: (taskId: string) => Promise<RunTaskResult>
   updateTaskStatus: (input: UpdateTaskStatusInput) => Promise<void>
   markTaskRead: (taskId: string) => Promise<void>
   getCursorAdapterStatus: () => Promise<{ available: boolean; label: string }>

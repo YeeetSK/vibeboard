@@ -29,6 +29,7 @@ export class VibeBoardStore {
   constructor() {
     const dbPath = path.join(app.getPath('userData'), 'vibeboard.sqlite')
     this.db = new Database(dbPath)
+    this.db.pragma('foreign_keys = ON')
     this.db.pragma('journal_mode = WAL')
     this.migrate()
     this.seed()
@@ -51,6 +52,56 @@ export class VibeBoardStore {
       changes: this.db.prepare('SELECT * FROM code_changes ORDER BY createdAt').all() as CodeChange[],
       activeTabId
     }
+  }
+
+  getTaskRunContext(taskId: string): { task: Task; project: Project | null; prompt: string } | null {
+    const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as Task | undefined
+    if (!task) return null
+
+    const project = task.projectId
+      ? (this.db.prepare('SELECT * FROM projects WHERE id = ?').get(task.projectId) as Project | undefined)
+      : null
+    const promptRow = this.db
+      .prepare("SELECT content FROM conversations WHERE taskId = ? AND role = 'user' ORDER BY createdAt LIMIT 1")
+      .get(taskId) as { content: string } | undefined
+
+    return {
+      task,
+      project: project ?? null,
+      prompt: promptRow?.content || task.summary || task.title
+    }
+  }
+
+  appendConversation(taskId: string, role: ConversationEntry['role'], content: string): void {
+    this.db
+      .prepare('INSERT INTO conversations (id, taskId, role, content, createdAt) VALUES (?, ?, ?, ?, ?)')
+      .run(id(), taskId, role, content, now())
+  }
+
+  replaceCodeChanges(
+    taskId: string,
+    changes: Array<Pick<CodeChange, 'filePath' | 'summary' | 'changeType' | 'language' | 'diffText'>>
+  ): void {
+    const transaction = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM code_changes WHERE taskId = ?').run(taskId)
+      const insert = this.db.prepare(
+        'INSERT INTO code_changes (id, taskId, filePath, summary, changeType, language, diffText, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      )
+      changes.forEach((change) => {
+        insert.run(
+          id(),
+          taskId,
+          change.filePath,
+          change.summary,
+          change.changeType,
+          change.language,
+          change.diffText,
+          now()
+        )
+      })
+    })
+
+    transaction()
   }
 
   async createProject(input: CreateProjectInput): Promise<Project | null> {

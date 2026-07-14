@@ -35,6 +35,7 @@ import {
   MessageSquare,
   PanelsTopLeft,
   Plus,
+  Play,
   Trash2,
   X
 } from 'lucide-react'
@@ -98,6 +99,9 @@ export function App(): ReactElement {
   useEffect(() => {
     refresh()
     window.vibeboard.getCursorAdapterStatus().then((status) => setCursorLabel(status.label))
+    return window.vibeboard.onStateChanged(() => {
+      refresh()
+    })
   }, [])
 
   const refresh = async (): Promise<void> => {
@@ -173,6 +177,11 @@ export function App(): ReactElement {
 
   const updateTaskStatus = async (taskId: string, status: TaskStatus): Promise<void> => {
     await window.vibeboard.updateTaskStatus({ taskId, status })
+    await refresh()
+  }
+
+  const runTaskWithCursor = async (taskId: string): Promise<void> => {
+    await window.vibeboard.runTaskWithCursor(taskId)
     await refresh()
   }
 
@@ -315,6 +324,7 @@ export function App(): ReactElement {
           project={state.projects.find((project) => project.id === selectedTask.projectId) ?? null}
           conversations={state.conversations.filter((entry) => entry.taskId === selectedTask.id)}
           changes={state.changes.filter((change) => change.taskId === selectedTask.id)}
+          onRunWithCursor={runTaskWithCursor}
           onClose={() => setSelectedTaskId(null)}
         />
       )}
@@ -642,12 +652,14 @@ function TaskDetailModal({
   project,
   conversations,
   changes,
+  onRunWithCursor,
   onClose
 }: {
   task: Task
   project: Project | null
   conversations: ConversationEntry[]
   changes: CodeChange[]
+  onRunWithCursor: (taskId: string) => void
   onClose: () => void
 }): ReactElement {
   return (
@@ -658,9 +670,21 @@ function TaskDetailModal({
             <h2>{task.title}</h2>
             <p>{project?.name ?? 'No project'}</p>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} title="Close">
-            <X size={18} />
-          </button>
+          <div className="modal-head-actions">
+            <button
+              className="icon-text-button"
+              type="button"
+              onClick={() => onRunWithCursor(task.id)}
+              disabled={!project || task.status === 'processing'}
+              title={!project ? 'Select a project first' : 'Run with Cursor'}
+            >
+              <Play size={16} />
+              <span>{task.status === 'processing' ? 'Running' : 'Run'}</span>
+            </button>
+            <button className="icon-button" type="button" onClick={onClose} title="Close">
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         <div className="detail-grid">

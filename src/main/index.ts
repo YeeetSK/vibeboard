@@ -3,6 +3,7 @@ import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import path from 'node:path'
 import { VibeBoardStore } from './database'
 import { PlaceholderCursorAdapter } from './cursorAdapter'
+import { runCursorTask } from './cursorRunner'
 import type {
   CreateLaneInput,
   CreateProjectInput,
@@ -15,6 +16,8 @@ import type {
 
 let store: VibeBoardStore
 const cursorAdapter = new PlaceholderCursorAdapter()
+const runningTasks = new Set<string>()
+const windows = new Set<BrowserWindow>()
 
 const createWindow = (): void => {
   const mainWindow = new BrowserWindow({
@@ -37,6 +40,10 @@ const createWindow = (): void => {
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
   })
+  mainWindow.on('closed', () => {
+    windows.delete(mainWindow)
+  })
+  windows.add(mainWindow)
 
   if (is.dev && process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -57,9 +64,32 @@ const registerIpc = (): void => {
   ipcMain.handle('lane:delete', (_event, laneId: string) => store.deleteLane(laneId))
   ipcMain.handle('task:create', (_event, input: CreateTaskInput) => store.createTask(input))
   ipcMain.handle('task:move', (_event, input: MoveTaskInput) => store.moveTask(input))
+  ipcMain.handle('task:runCursor', (_event, taskId: string) => {
+    if (runningTasks.has(taskId)) {
+      return { started: false, message: 'Task is already running.' }
+    }
+
+    runningTasks.add(taskId)
+    runCursorTask({
+      taskId,
+      store,
+      onStateChanged: broadcastStateChanged
+    }).finally(() => {
+      runningTasks.delete(taskId)
+      broadcastStateChanged()
+    })
+
+    return { started: true, message: 'Cursor agent started.' }
+  })
   ipcMain.handle('task:status', (_event, input: UpdateTaskStatusInput) => store.updateTaskStatus(input))
   ipcMain.handle('task:read', (_event, taskId: string) => store.markTaskRead(taskId))
   ipcMain.handle('cursor:status', () => cursorAdapter.status())
+}
+
+const broadcastStateChanged = (): void => {
+  for (const window of windows) {
+    window.webContents.send('state:changed')
+  }
 }
 
 app.whenReady().then(() => {
