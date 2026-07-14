@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { CodeChange } from '../shared/types'
-import { resolveAgentCommand } from './cursorAdapter'
+import { isAgentAuthenticated, resolveAgentCommand } from './cursorAdapter'
 import { VibeBoardStore } from './database'
 
 interface RunCursorTaskInput {
@@ -37,14 +37,22 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
     return
   }
 
+  if (!(await isAgentAuthenticated(agentCommand))) {
+    store.updateTaskStatus({ taskId, status: 'attention' })
+    store.appendConversation(taskId, 'system', 'Cursor Agent is installed but not signed in. Use the sidebar login action, then run this task again.')
+    onStateChanged()
+    return
+  }
+
   const optimizedPrompt = await buildFocusedPrompt(projectPath, context.prompt)
   store.appendConversation(taskId, 'system', 'Prepared a focused project brief to reduce unnecessary repo exploration.')
   onStateChanged()
 
-  const child = spawn(agentCommand, ['--print', '--force', '--output-format', 'stream-json', optimizedPrompt], {
+  const child = spawn(agentCommand, ['--print', '--force', '--trust', '--output-format', 'stream-json', optimizedPrompt], {
     cwd: projectPath,
     env: process.env
   })
+  console.info('[VibeBoard Cursor run]', { taskId, projectPath, agentCommand })
 
   let stdoutBuffer = ''
   let stderrBuffer = ''

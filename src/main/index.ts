@@ -103,7 +103,7 @@ const registerIpc = (): void => {
 }
 
 const openCursorInstallTerminal = async (): Promise<void> => {
-  const command = `${cursorInstallCommand}; echo; echo "Done. Return to VibeBoard and click Connect."; read -k 1 "?Press any key to close."`
+  const command = `if ! command -v agent >/dev/null 2>&1; then ${cursorInstallCommand}; fi; agent login; echo; echo "Done. Return to VibeBoard."; read -k 1 "?Press any key to close."`
   if (process.platform === 'darwin') {
     await execFileAsync('osascript', ['-e', `tell application "Terminal" to do script ${JSON.stringify(command)}`])
     await execFileAsync('osascript', ['-e', 'tell application "Terminal" to activate'])

@@ -37,9 +37,10 @@ export class PlaceholderCursorAdapter implements CursorAdapter {
   async status(): Promise<CursorStatus> {
     const debug = await getCursorDebugInfo()
     console.info('[VibeBoard Cursor debug]', debug)
+    const isReady = Boolean(debug.agentCommand) && isAuthenticatedStatus(debug.authStatus)
     return {
-      available: Boolean(debug.agentCommand),
-      label: debug.agentCommand ? 'agent ready' : 'agent missing',
+      available: isReady,
+      label: isReady ? 'agent signed in' : debug.agentCommand ? 'agent login required' : 'agent missing',
       debug
     }
   }
@@ -68,9 +69,11 @@ export async function resolveAgentCommand(): Promise<string | null> {
 }
 
 export async function getCursorDebugInfo(): Promise<CursorDebugInfo> {
+  const agentCommand = await resolveAgentCommand()
   return {
     cursorCommand: await resolveCursorCommand(),
-    agentCommand: await resolveAgentCommand(),
+    agentCommand,
+    authStatus: agentCommand ? await getAgentAuthStatus(agentCommand) : 'agent not installed',
     checkedCursorCommands: cursorCommandCandidates(),
     checkedAgentCommands: [...agentCandidates(), ...legacyCursorAgentCandidates()],
     installCommand: cursorInstallCommand,
@@ -78,6 +81,26 @@ export async function getCursorDebugInfo(): Promise<CursorDebugInfo> {
     processPath: process.env.PATH ?? '',
     shellPath: await getShellPath()
   }
+}
+
+export async function isAgentAuthenticated(command?: string | null): Promise<boolean> {
+  const agentCommand = command ?? (await resolveAgentCommand())
+  if (!agentCommand) return false
+  return isAuthenticatedStatus(await getAgentAuthStatus(agentCommand))
+}
+
+async function getAgentAuthStatus(command: string): Promise<string> {
+  try {
+    const { stdout, stderr } = await execFileAsync(command, ['status'], { timeout: 5000 })
+    return [stdout, stderr].join('').trim() || 'status unavailable'
+  } catch (error) {
+    const output = error instanceof Error ? error.message : String(error)
+    return output.trim() || 'status failed'
+  }
+}
+
+function isAuthenticatedStatus(status: string): boolean {
+  return !/not logged in|authentication required|login required|run 'agent login'|run `agent login`|status failed|status unavailable/i.test(status)
 }
 
 async function resolveFromShell(command: string): Promise<string | null> {

@@ -85,6 +85,7 @@ const emptyCursorStatus: CursorStatus = {
   debug: {
     cursorCommand: null,
     agentCommand: null,
+    authStatus: 'checking',
     checkedCursorCommands: [],
     checkedAgentCommands: [],
     installCommand: '',
@@ -160,6 +161,11 @@ export function App(): ReactElement {
       setCursorFeedback('')
       return
     }
+    if (nextStatus.debug.agentCommand) {
+      setCursorSetupPhase('failed')
+      setCursorFeedback('Cursor Agent needs login.')
+      return
+    }
 
     setCursorSetupPhase('preparing')
     setCursorFeedback('')
@@ -187,7 +193,7 @@ export function App(): ReactElement {
 
     setCursorSetupPhase('failed')
     if (!options.quiet) {
-      setCursorFeedback('Cursor CLI command `agent` is still missing.')
+      setCursorFeedback(nextStatus.debug.agentCommand ? 'Cursor Agent needs login.' : 'Cursor Agent is missing.')
     }
   }
 
@@ -529,6 +535,7 @@ function CursorConnection({
   status: CursorStatus
   onRepair: () => void
 }): ReactElement {
+  const hasAgent = Boolean(status.debug.agentCommand)
   return (
     <div className="cursor-card missing">
       <div className="cursor-status-row">
@@ -536,12 +543,12 @@ function CursorConnection({
           <Code2 size={15} />
           <span>Needs setup</span>
         </div>
-        <span className="connection-pill missing">Missing</span>
+        <span className="connection-pill missing">{hasAgent ? 'Login' : 'Missing'}</span>
       </div>
       <div className="cursor-actions">
         <button className="primary-action setup-button" type="button" onClick={onRepair} disabled={isInstalling}>
           <ExternalLink size={15} />
-          <span>{isInstalling ? 'Opening' : 'Fix in Terminal'}</span>
+          <span>{isInstalling ? 'Opening' : hasAgent ? 'Login in Terminal' : 'Fix in Terminal'}</span>
         </button>
       </div>
       {feedback && <div className="cursor-feedback">{feedback}</div>}
@@ -554,6 +561,7 @@ function CursorDebugPanel({ status }: { status: CursorStatus }): ReactElement {
   const debugLines = [
     ['cursor', status.debug.cursorCommand ?? 'not found'],
     ['agent', status.debug.agentCommand ?? 'not found'],
+    ['auth', status.debug.authStatus],
     ['install', status.debug.installCommand],
     ['checked cursor', status.debug.checkedCursorCommands.join('\n')],
     ['checked agent', status.debug.checkedAgentCommands.join('\n')],

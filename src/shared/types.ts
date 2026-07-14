@@ -123,6 +123,7 @@ export interface RunTaskResult {
 export interface CursorDebugInfo {
   cursorCommand: string | null
   agentCommand: string | null
+  authStatus: string
   checkedCursorCommands: string[]
   checkedAgentCommands: string[]
   installCommand: string
