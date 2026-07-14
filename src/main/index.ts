@@ -28,6 +28,7 @@ const createWindow = (): void => {
     minHeight: 720,
     title: 'VibeBoard',
     backgroundColor: '#111111',
+    icon: path.join(app.getAppPath(), 'build', 'icon.png'),
     show: false,
     titleBarStyle: 'hiddenInset',
     webPreferences: {

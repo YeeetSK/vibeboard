@@ -8,6 +8,7 @@
   "private": true,
   "scripts": {
     "dev": "electron-vite dev",
+    "icons": "node scripts/generate-icons.mjs",
     "postinstall": "electron-builder install-app-deps",
     "reset:data": "node scripts/reset-data.mjs",
     "typecheck": "tsc --noEmit",
@@ -40,6 +41,7 @@
     "electron-builder": "^26.0.12",
     "electron-vite": "^4.0.0",
     "eslint": "^9.31.0",
+    "png-to-ico": "^3.0.2",
     "typescript": "^5.8.3",
     "vite": "^7.0.4"
   },
@@ -51,12 +53,14 @@
     },
     "files": [
       "out/**/*",
+      "build/icon.png",
       "package.json"
     ],
     "asarUnpack": [
       "node_modules/better-sqlite3/**/*"
     ],
     "mac": {
+      "icon": "build/icon.icns",
       "identity": null,
       "target": [
         {
@@ -70,6 +74,7 @@
       "category": "public.app-category.developer-tools"
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",
