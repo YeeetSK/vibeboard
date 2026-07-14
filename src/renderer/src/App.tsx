@@ -619,8 +619,7 @@ function TopBar({
             className={`tab status-${tabStatus(tab.id, tasks)} ${tab.id === activeTabId ? 'active' : ''}`}
             style={
               {
-                '--tab-color': tab.color ?? 'transparent',
-                '--tab-tint': tab.color ? hexToRgba(tab.color, tab.id === activeTabId ? 0.24 : 0.14) : '#202020'
+                '--tab-bg': tab.color ? hexToRgba(tab.color, tab.id === activeTabId ? 0.24 : 0.14) : '#202020'
               } as React.CSSProperties
             }
             title={tab.name}
