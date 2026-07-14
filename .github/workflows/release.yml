@@ -21,15 +21,11 @@ jobs:
             artifact-name: windows
             artifact-path: |
               release/*.exe
-              release/*.blockmap
-              release/latest.yml
           - os: macos-latest
             build-command: npm run dist -- --mac --publish never
             artifact-name: macos
             artifact-path: |
               release/*.dmg
-              release/*.blockmap
-              release/latest-mac.yml
 
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +44,11 @@ jobs:
         run: ${{ matrix.build-command }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
