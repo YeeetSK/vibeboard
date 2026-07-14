@@ -321,13 +321,12 @@ export class VibeBoardStore {
       laneId: input.laneId,
       projectId: input.projectId,
       title: input.title.trim() || 'Untitled task',
-      summary: input.prompt.trim(),
+      summary: input.prompt?.trim() ?? '',
       status: 'idle',
       position: positionRow.position,
       createdAt: timestamp,
       updatedAt: timestamp
     }
-    const prompt = input.prompt.trim()
 
     const transaction = this.db.transaction(() => {
       this.db
@@ -346,13 +345,6 @@ export class VibeBoardStore {
           task.createdAt,
           task.updatedAt
         )
-      if (prompt) {
-        this.db
-          .prepare(
-            'INSERT INTO conversations (id, taskId, role, content, createdAt) VALUES (?, ?, ?, ?, ?)'
-          )
-          .run(id(), task.id, 'user', prompt, timestamp)
-      }
     })
 
     transaction()

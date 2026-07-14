@@ -75,9 +75,6 @@ const registerIpc = (): void => {
   ipcMain.handle('lane:delete', (_event, laneId: string) => store.deleteLane(laneId))
   ipcMain.handle('task:create', (_event, input: CreateTaskInput) => {
     const task = store.createTask(input)
-    if (input.prompt.trim() && input.projectId) {
-      startCursorTask(task.id)
-    }
     return task
   })
   ipcMain.handle('task:move', (_event, input: MoveTaskInput) => store.moveTask(input))

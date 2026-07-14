@@ -296,9 +296,8 @@ export function App(): ReactElement {
     await window.vibeboard.createTask({
       tabId: activeTab.id,
       laneId: newTaskLaneId,
-      projectId: input.projectId,
-      title: input.title,
-      prompt: input.prompt
+      projectId: null,
+      title: input.title
     })
     setNewTaskLaneId(null)
     await refresh()
@@ -484,7 +483,6 @@ export function App(): ReactElement {
 
       {newTaskLaneId && (
         <TaskFormModal
-          projects={state.projects}
           onClose={() => setNewTaskLaneId(null)}
           onSubmit={createTask}
         />
@@ -1055,23 +1053,17 @@ function TaskCardPreview({ task, project }: { task: Task; project: Project | nul
 }
 
 interface NewTaskInput {
-  projectId: string | null
   title: string
-  prompt: string
 }
 
 function TaskFormModal({
-  projects,
   onClose,
   onSubmit
 }: {
-  projects: Project[]
   onClose: () => void
   onSubmit: (input: NewTaskInput) => void
 }): ReactElement {
   const [title, setTitle] = useState('')
-  const [prompt, setPrompt] = useState('')
-  const [projectId, setProjectId] = useState<string | null>(projects[0]?.id ?? null)
 
   return (
     <div className="modal-backdrop">
@@ -1079,7 +1071,7 @@ function TaskFormModal({
         className="task-form modal-panel compact"
         onSubmit={(event) => {
           event.preventDefault()
-          onSubmit({ projectId, title, prompt })
+          onSubmit({ title })
         }}
       >
         <div className="modal-head">
@@ -1092,28 +1084,6 @@ function TaskFormModal({
         <label>
           <span>Title</span>
           <input value={title} onChange={(event) => setTitle(event.target.value)} autoFocus />
-        </label>
-
-        <label>
-          <span>Project</span>
-          <select value={projectId ?? ''} onChange={(event) => setProjectId(event.target.value || null)}>
-            <option value="">No project</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label>
-          <span>Prompt</span>
-          <textarea
-            className="fixed-prompt-input"
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            rows={5}
-          />
         </label>
 
         <div className="modal-actions">

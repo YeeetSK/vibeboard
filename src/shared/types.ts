@@ -96,7 +96,7 @@ export interface CreateTaskInput {
   laneId: string
   projectId: string | null
   title: string
-  prompt: string
+  prompt?: string
 }
 
 export interface MoveTaskInput {
