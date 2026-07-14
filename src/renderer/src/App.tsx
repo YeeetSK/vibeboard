@@ -357,7 +357,12 @@ function TopBar({
           <div
             key={tab.id}
             className={tab.id === activeTabId ? 'tab active' : 'tab'}
-            style={{ '--tab-color': tab.color ?? 'transparent' } as React.CSSProperties}
+            style={
+              {
+                '--tab-color': tab.color ?? 'transparent',
+                '--tab-tint': tab.color ? hexToRgba(tab.color, tab.id === activeTabId ? 0.24 : 0.14) : '#202020'
+              } as React.CSSProperties
+            }
             title={tab.name}
             onContextMenu={(event) => {
               event.preventDefault()
@@ -884,6 +889,14 @@ function escapeHtml(value: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;')
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const value = hex.replace('#', '')
+  const red = Number.parseInt(value.slice(0, 2), 16)
+  const green = Number.parseInt(value.slice(2, 4), 16)
+  const blue = Number.parseInt(value.slice(4, 6), 16)
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`
 }
 
 function byPosition<T extends { position: number }>(a: T, b: T): number {
