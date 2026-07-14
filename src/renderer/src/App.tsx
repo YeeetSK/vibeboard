@@ -1,4 +1,4 @@
-import { ReactElement, useEffect, useMemo, useState } from 'react'
+import { ReactElement, useEffect, useMemo, useRef, useState } from 'react'
 import {
   DndContext,
   DragEndEvent,
@@ -58,6 +58,7 @@ import type {
   Lane,
   Project,
   Task,
+  TaskDetail,
 } from '../../shared/types'
 
 hljs.registerLanguage('bash', bash)
@@ -74,10 +75,15 @@ const emptyState: AppState = {
   closedTabs: [],
   lanes: [],
   tasks: [],
-  conversations: [],
-  changes: [],
   activeTabId: ''
 }
+
+const emptyTaskDetail: TaskDetail = {
+  conversations: [],
+  changes: [],
+  hasOlderConversations: false
+}
+const conversationPageSize = 5
 
 const tabColors = ['#ff7a1a', '#f7c56b', '#2fcf75', '#42b883', '#9b8cff', '#ff5f57']
 const emptyCursorStatus: CursorStatus = {
@@ -107,6 +113,8 @@ export function App(): ReactElement {
   const [cursorFeedback, setCursorFeedback] = useState('')
   const [isSidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [deleteTabId, setDeleteTabId] = useState<string | null>(null)
+  const [selectedTaskDetail, setSelectedTaskDetail] = useState<TaskDetail>(emptyTaskDetail)
+  const [isLoadingOlderConversations, setLoadingOlderConversations] = useState(false)
 
   const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0]
   const activeProject = activeTab?.activeProjectId
@@ -122,6 +130,22 @@ export function App(): ReactElement {
     () => state.tasks.filter((task) => task.tabId === activeTab?.id),
     [state.tasks, activeTab?.id]
   )
+  const tasksByLaneId = useMemo(() => {
+    const grouped = new Map<string, Task[]>()
+    for (const task of state.tasks) {
+      const laneTasks = grouped.get(task.laneId)
+      if (laneTasks) {
+        laneTasks.push(task)
+      } else {
+        grouped.set(task.laneId, [task])
+      }
+    }
+    for (const laneTasks of grouped.values()) {
+      laneTasks.sort(byPosition)
+    }
+    return grouped
+  }, [state.tasks])
+  const tabStatuses = useMemo(() => buildTabStatusMap(state.tasks), [state.tasks])
   const activeBoardStats = useMemo(() => {
     const running = activeTasks.filter((task) => task.status === 'processing').length
     const attention = activeTasks.filter((task) => task.status === 'attention').length
@@ -147,10 +171,64 @@ export function App(): ReactElement {
   useEffect(() => {
     if (cursorSetupPhase !== 'failed') return
     const intervalId = window.setInterval(() => {
+      if (document.hidden) return
       refreshCursorStatus({ quiet: true })
-    }, 5000)
+    }, 15000)
     return () => window.clearInterval(intervalId)
   }, [cursorSetupPhase])
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (!selectedTask) {
+      setSelectedTaskDetail(emptyTaskDetail)
+      setLoadingOlderConversations(false)
+      return
+    }
+
+    window.vibeboard
+      .getTaskDetail({ taskId: selectedTask.id, limit: conversationPageSize, includeChanges: true })
+      .then((detail) => {
+        if (!cancelled) {
+          setSelectedTaskDetail((current) => {
+            const isSameTask = current.conversations.every((entry) => entry.taskId === selectedTask.id)
+            if (!isSameTask) return detail
+            return {
+              conversations: mergeConversationEntries(current.conversations, detail.conversations),
+              changes: detail.changes,
+              hasOlderConversations: current.hasOlderConversations || detail.hasOlderConversations
+            }
+          })
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedTask?.id, selectedTask?.status, selectedTask?.updatedAt])
+
+  const loadOlderSelectedTaskConversations = async (): Promise<void> => {
+    if (!selectedTask || !selectedTaskDetail.hasOlderConversations || isLoadingOlderConversations) return
+    const oldestConversation = selectedTaskDetail.conversations[0]
+    if (!oldestConversation) return
+
+    setLoadingOlderConversations(true)
+    try {
+      const detail = await window.vibeboard.getTaskDetail({
+        taskId: selectedTask.id,
+        beforeCreatedAt: oldestConversation.createdAt,
+        limit: conversationPageSize,
+        includeChanges: false
+      })
+      setSelectedTaskDetail((current) => ({
+        conversations: mergeConversationEntries(detail.conversations, current.conversations),
+        changes: current.changes,
+        hasOlderConversations: detail.hasOlderConversations
+      }))
+    } finally {
+      setLoadingOlderConversations(false)
+    }
+  }
 
   const prepareCursorOnLaunch = async (): Promise<void> => {
     const nextStatus = await window.vibeboard.getCursorAdapterStatus()
@@ -320,6 +398,76 @@ export function App(): ReactElement {
     await refresh()
   }
 
+  useEffect(() => {
+    const switchToTab = async (tabId: string): Promise<void> => {
+      await window.vibeboard.setActiveTab(tabId)
+      await refresh()
+    }
+
+    const switchRelativeTab = (direction: 1 | -1): void => {
+      if (state.tabs.length <= 1 || !activeTab) return
+      const currentIndex = state.tabs.findIndex((tab) => tab.id === activeTab.id)
+      if (currentIndex < 0) return
+      const nextIndex = (currentIndex + direction + state.tabs.length) % state.tabs.length
+      void switchToTab(state.tabs[nextIndex].id)
+    }
+
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || event.isComposing) return
+
+      if (event.key === 'Escape') {
+        if (deleteTabId) {
+          event.preventDefault()
+          setDeleteTabId(null)
+          return
+        }
+        if (newTaskLaneId) {
+          event.preventDefault()
+          setNewTaskLaneId(null)
+          return
+        }
+        if (selectedTaskId) {
+          event.preventDefault()
+          setSelectedTaskId(null)
+        }
+        return
+      }
+
+      const hasTabModifier = event.metaKey || event.ctrlKey
+      if (!hasTabModifier || state.tabs.length <= 1) return
+
+      if (event.key === 'Tab') {
+        event.preventDefault()
+        switchRelativeTab(event.shiftKey ? -1 : 1)
+        return
+      }
+
+      if (event.altKey && (event.key === 'ArrowRight' || event.key === 'ArrowLeft')) {
+        event.preventDefault()
+        switchRelativeTab(event.key === 'ArrowRight' ? 1 : -1)
+        return
+      }
+
+      if (event.key === 'PageDown' || event.key === 'PageUp') {
+        event.preventDefault()
+        switchRelativeTab(event.key === 'PageDown' ? 1 : -1)
+        return
+      }
+
+      if (/^[1-9]$/.test(event.key)) {
+        event.preventDefault()
+        const targetIndex = event.key === '9' ? state.tabs.length - 1 : Number(event.key) - 1
+        const targetTab = state.tabs[targetIndex]
+        if (targetTab) {
+          void switchToTab(targetTab.id)
+        }
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [activeTab, deleteTabId, newTaskLaneId, selectedTaskId, state.tabs])
+
   const onDragStart = (event: DragStartEvent): void => {
     setActiveDragTaskId(String(event.active.id))
   }
@@ -352,7 +500,7 @@ export function App(): ReactElement {
       <TopBar
         tabs={state.tabs}
         closedTabs={state.closedTabs}
-        tasks={state.tasks}
+        tabStatuses={tabStatuses}
         activeTabId={activeTab?.id}
         onCloseTab={closeTab}
         onCreateTab={createTab}
@@ -454,8 +602,7 @@ export function App(): ReactElement {
                 <LaneColumn
                   key={lane.id}
                   lane={lane}
-                  tasks={state.tasks.filter((task) => task.laneId === lane.id).sort(byPosition)}
-                  projects={state.projects}
+                  tasks={tasksByLaneId.get(lane.id) ?? []}
                   onOpenTask={openTask}
                   onAddTask={() => setNewTaskLaneId(lane.id)}
                   onDeleteLane={deleteLane}
@@ -468,10 +615,7 @@ export function App(): ReactElement {
             </div>
             <DragOverlay dropAnimation={null}>
               {activeDragTask ? (
-                <TaskCardPreview
-                  task={activeDragTask}
-                  project={state.projects.find((project) => project.id === activeDragTask.projectId) ?? null}
-                />
+                <TaskCardPreview task={activeDragTask} />
               ) : null}
             </DragOverlay>
           </DndContext>
@@ -489,9 +633,12 @@ export function App(): ReactElement {
         <TaskDetailModal
           task={selectedTask}
           project={state.projects.find((project) => project.id === selectedTask.projectId) ?? null}
-          conversations={state.conversations.filter((entry) => entry.taskId === selectedTask.id)}
-          changes={state.changes.filter((change) => change.taskId === selectedTask.id)}
+          conversations={selectedTaskDetail.conversations}
+          changes={selectedTaskDetail.changes}
+          hasOlderConversations={selectedTaskDetail.hasOlderConversations}
+          isLoadingOlderConversations={isLoadingOlderConversations}
           canUseCursor={cursorStatus.available}
+          onLoadOlderConversations={loadOlderSelectedTaskConversations}
           onSendMessage={sendTaskMessage}
           onClose={() => setSelectedTaskId(null)}
         />
@@ -576,7 +723,7 @@ function CursorDebugPanel({ status }: { status: CursorStatus }): ReactElement {
 function TopBar({
   tabs,
   closedTabs,
-  tasks,
+  tabStatuses,
   activeTabId,
   onCloseTab,
   onCreateTab,
@@ -587,7 +734,7 @@ function TopBar({
 }: {
   tabs: BoardTab[]
   closedTabs: BoardTab[]
-  tasks: Task[]
+  tabStatuses: Map<string, Task['status']>
   activeTabId?: string
   onCloseTab: (id: string) => void
   onCreateTab: () => void
@@ -616,7 +763,7 @@ function TopBar({
         {tabs.map((tab) => (
           <div
             key={tab.id}
-            className={`tab status-${tabStatus(tab.id, tasks)} ${tab.id === activeTabId ? 'active' : ''}`}
+            className={`tab status-${tabStatuses.get(tab.id) ?? 'idle'} ${tab.id === activeTabId ? 'active' : ''}`}
             style={
               {
                 '--tab-bg': tab.color ? hexToRgba(tab.color, tab.id === activeTabId ? 0.24 : 0.14) : '#202020'
@@ -842,7 +989,6 @@ function SidebarStat({
 function LaneColumn({
   lane,
   tasks,
-  projects,
   onOpenTask,
   onAddTask,
   onDeleteLane,
@@ -853,7 +999,6 @@ function LaneColumn({
 }: {
   lane: Lane
   tasks: Task[]
-  projects: Project[]
   onOpenTask: (task: Task) => void
   onAddTask: () => void
   onDeleteLane: (id: string) => void
@@ -892,7 +1037,6 @@ function LaneColumn({
             <TaskCard
               key={task.id}
               task={task}
-              project={projects.find((project) => project.id === task.projectId) ?? null}
               onOpen={() => onOpenTask(task)}
               onDelete={() => onDeleteTask(task.id)}
               onFinish={() => onFinishTask(task.id)}
@@ -954,13 +1098,11 @@ function EditableTitle({
 
 function TaskCard({
   task,
-  project,
   onOpen,
   onDelete,
   onFinish
 }: {
   task: Task
-  project: Project | null
   onOpen: () => void
   onDelete: () => void
   onFinish: () => void
@@ -1017,13 +1159,12 @@ function TaskCard({
           <h3>{task.title}</h3>
         </div>
         {task.summary && <p>{task.summary}</p>}
-        <small>{project?.name ?? 'No project'}</small>
       </button>
     </article>
   )
 }
 
-function TaskCardPreview({ task, project }: { task: Task; project: Project | null }): ReactElement {
+function TaskCardPreview({ task }: { task: Task }): ReactElement {
   return (
     <article className={`task-card drag-preview status-${task.status}`}>
       <TaskStatusIcon status={task.status} />
@@ -1031,7 +1172,6 @@ function TaskCardPreview({ task, project }: { task: Task; project: Project | nul
         <h3>{task.title}</h3>
       </div>
       {task.summary && <p>{task.summary}</p>}
-      <small>{project?.name ?? 'No project'}</small>
     </article>
   )
 }
@@ -1109,7 +1249,10 @@ function TaskDetailModal({
   project,
   conversations,
   changes,
+  hasOlderConversations,
+  isLoadingOlderConversations,
   canUseCursor,
+  onLoadOlderConversations,
   onSendMessage,
   onClose
 }: {
@@ -1117,7 +1260,10 @@ function TaskDetailModal({
   project: Project | null
   conversations: ConversationEntry[]
   changes: CodeChange[]
+  hasOlderConversations: boolean
+  isLoadingOlderConversations: boolean
   canUseCursor: boolean
+  onLoadOlderConversations: () => void
   onSendMessage: (taskId: string, content: string) => void
   onClose: () => void
 }): ReactElement {
@@ -1147,8 +1293,11 @@ function TaskDetailModal({
             <CodexThread
               conversations={conversations}
               task={task}
+              hasOlderConversations={hasOlderConversations}
+              isLoadingOlderConversations={isLoadingOlderConversations}
               canSend={canChat}
               disabledLabel={!canUseCursor ? 'Cursor not connected' : !project ? 'No project selected' : 'Running'}
+              onLoadOlderConversations={onLoadOlderConversations}
               onSendMessage={onSendMessage}
             />
           </section>
@@ -1176,22 +1325,79 @@ function TaskDetailModal({
 function CodexThread({
   conversations,
   task,
+  hasOlderConversations,
+  isLoadingOlderConversations,
   canSend,
   disabledLabel,
+  onLoadOlderConversations,
   onSendMessage
 }: {
   conversations: ConversationEntry[]
   task: Task
+  hasOlderConversations: boolean
+  isLoadingOlderConversations: boolean
   canSend: boolean
   disabledLabel: string
+  onLoadOlderConversations: () => void
   onSendMessage: (taskId: string, content: string) => void
 }): ReactElement {
   const [draft, setDraft] = useState('')
+  const streamRef = useRef<HTMLDivElement | null>(null)
+  const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const olderScrollSnapshotRef = useRef<{ height: number; top: number } | null>(null)
   const userEntries = conversations.filter((entry) => entry.role === 'user')
   const prompt = userEntries[0]?.content ?? ''
+  const showSystemEntries = task.status === 'processing' || task.status === 'attention'
   const threadEntries = compactConversationEntries(
-    conversations.filter((entry) => entry.id !== userEntries[0]?.id && !isNoisyConversationEntry(entry))
+    conversations
+      .filter(
+        (entry) =>
+          entry.id !== userEntries[0]?.id &&
+          !isNoisyConversationEntry(entry) &&
+          (showSystemEntries || entry.role !== 'system')
+      )
+      .map((entry) => ({
+        ...entry,
+        content: entry.role === 'user' ? entry.content.trim() : cleanConversationContent(entry.content)
+      }))
+      .filter((entry) => entry.content)
   )
+  const scrollKey = `${task.status}:${prompt}:${threadEntries.map((entry) => `${entry.id}:${entry.content.length}`).join('|')}`
+
+  useEffect(() => {
+    const composer = composerRef.current
+    if (!composer) return
+    composer.style.height = '0px'
+    composer.style.height = `${Math.min(composer.scrollHeight, 150)}px`
+  }, [draft])
+
+  useEffect(() => {
+    const stream = streamRef.current
+    if (!stream) return
+
+    const frameId = window.requestAnimationFrame(() => {
+      const olderSnapshot = olderScrollSnapshotRef.current
+      if (olderSnapshot) {
+        olderScrollSnapshotRef.current = null
+        stream.scrollTop = stream.scrollHeight - olderSnapshot.height + olderSnapshot.top
+        return
+      }
+      stream.scrollTop = stream.scrollHeight
+    })
+
+    return () => window.cancelAnimationFrame(frameId)
+  }, [scrollKey])
+
+  const maybeLoadOlder = (): void => {
+    const stream = streamRef.current
+    if (!stream || !hasOlderConversations || isLoadingOlderConversations) return
+    if (stream.scrollTop > 24) return
+    olderScrollSnapshotRef.current = {
+      height: stream.scrollHeight,
+      top: stream.scrollTop
+    }
+    onLoadOlderConversations()
+  }
 
   const send = (): void => {
     const content = draft.trim()
@@ -1208,7 +1414,8 @@ function CodexThread({
         </section>
       )}
 
-      <div className="agent-stream">
+      <div className="agent-stream" ref={streamRef} onScroll={maybeLoadOlder}>
+        {isLoadingOlderConversations && <div className="thread-empty-state">Loading earlier messages</div>}
         {!prompt && threadEntries.length === 0 ? (
           <div className="thread-empty-state">
             Chat is empty
@@ -1238,6 +1445,7 @@ function CodexThread({
 
       <div className="thread-composer">
         <textarea
+          ref={composerRef}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           disabled={!canSend}
@@ -1305,10 +1513,48 @@ function MessageMarkdown({ content }: { content: string }): ReactElement {
 function isNoisyConversationEntry(entry: ConversationEntry): boolean {
   const content = entry.content.trim()
   if (!content) return true
-  if (/^(system|user|assistant|thinking|tool_call|result|metadata|start|end|done)$/i.test(content)) return true
+  if (/^(system|user|assistant|thinking|tool_call|result|metadata|init|start|started|end|done|completed|success)$/i.test(content)) return true
   if (content.includes('You are running inside VibeBoard as a background coding agent.')) return true
   if (content.includes('Token and exploration rules:')) return true
   return false
+}
+
+function cleanConversationContent(content: string): string {
+  return content
+    .split(/\r?\n/)
+    .map((line) => cleanConversationLine(line))
+    .filter((line) => line && !isProgressNarrationLine(line))
+    .join('\n')
+    .trim()
+}
+
+function cleanConversationLine(line: string): string {
+  return line
+    .trim()
+    .replace(
+      /^(?:init|start|started|completed|success|done|end)\s+(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s+)?/i,
+      ''
+    )
+    .replace(/^(?:(?:started|completed|success|done|end)\s+)+/i, '')
+    .replace(/\s+(?:(?:started|completed|success|done|end)\s*)+$/i, '')
+    .trim()
+}
+
+function isProgressNarrationLine(line: string): boolean {
+  return /^(i('|’)?m|i am|i('|’)?ll|i will|reading|reviewing|examining|checking|running|looking|scanning|opening|inspecting)\b/i.test(
+    line
+  ) || /^the project structure is now clear\b/i.test(line)
+}
+
+function mergeConversationEntries(left: ConversationEntry[], right: ConversationEntry[]): ConversationEntry[] {
+  const entriesById = new Map<string, ConversationEntry>()
+  for (const entry of left) {
+    entriesById.set(entry.id, entry)
+  }
+  for (const entry of right) {
+    entriesById.set(entry.id, entry)
+  }
+  return Array.from(entriesById.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
 
 function compactConversationEntries(entries: ConversationEntry[]): ConversationEntry[] {
@@ -1355,9 +1601,12 @@ function ChangeSummary({ changes }: { changes: CodeChange[] }): ReactElement {
 }
 
 function DiffViewer({ change }: { change: CodeChange }): ReactElement {
-  const diffText = change.diffText.trim() || fallbackDiff(change)
-  const rows = parseDiffRows(diffText)
-  const language = normalizeLanguage(change.language || languageFromPath(change.filePath))
+  const diffText = useMemo(() => change.diffText.trim() || fallbackDiff(change), [change])
+  const rows = useMemo(() => parseDiffRows(diffText), [diffText])
+  const language = useMemo(
+    () => normalizeLanguage(change.language || languageFromPath(change.filePath)),
+    [change.filePath, change.language]
+  )
 
   return (
     <article className="diff-file">
@@ -1374,8 +1623,7 @@ function DiffViewer({ change }: { change: CodeChange }): ReactElement {
             return (
               <div key={`${index}-${row.raw}`} className={`diff-line ${row.kind}`} role="row">
                 <span className="diff-gutter">{row.kind === 'context' ? ' ' : (row.raw[0] ?? ' ')}</span>
-                <span className="diff-number">{row.oldLine ?? ''}</span>
-                <span className="diff-number">{row.newLine ?? ''}</span>
+                <span className="diff-number">{row.newLine ?? row.oldLine ?? ''}</span>
                 <code
                   dangerouslySetInnerHTML={{
                     __html: row.kind === 'hunk' ? escapeHtml(row.text) : highlightCode(row.text, language)
@@ -1496,13 +1744,43 @@ function compactPath(path: string): string {
   return `.../${parts.slice(-3).join('/')}`
 }
 
-function tabStatus(tabId: string, tasks: Task[]): Task['status'] {
-  const tabTasks = tasks.filter((task) => task.tabId === tabId)
-  if (tabTasks.some((task) => task.status === 'attention')) return 'attention'
-  if (tabTasks.some((task) => task.status === 'processing')) return 'processing'
-  if (tabTasks.some((task) => task.status === 'done_unread')) return 'done_unread'
-  if (tabTasks.length > 0 && tabTasks.every((task) => task.status === 'done_read')) return 'done_read'
-  return 'idle'
+function buildTabStatusMap(tasks: Task[]): Map<string, Task['status']> {
+  const statuses = new Map<string, Task['status']>()
+  const taskCounts = new Map<string, number>()
+
+  for (const task of tasks) {
+    const current = statuses.get(task.tabId) ?? 'idle'
+    taskCounts.set(task.tabId, (taskCounts.get(task.tabId) ?? 0) + 1)
+
+    if (current === 'attention') continue
+    if (task.status === 'attention') {
+      statuses.set(task.tabId, 'attention')
+      continue
+    }
+    if (current === 'processing') continue
+    if (task.status === 'processing') {
+      statuses.set(task.tabId, 'processing')
+      continue
+    }
+    if (current === 'done_unread') continue
+    if (task.status === 'done_unread') {
+      statuses.set(task.tabId, 'done_unread')
+      continue
+    }
+    if (task.status === 'done_read') {
+      statuses.set(task.tabId, current === 'idle' ? 'done_read' : current)
+      continue
+    }
+    statuses.set(task.tabId, 'idle')
+  }
+
+  for (const [tabId, status] of statuses) {
+    if (status === 'done_read' && !taskCounts.get(tabId)) {
+      statuses.set(tabId, 'idle')
+    }
+  }
+
+  return statuses
 }
 
 function byPosition<T extends { position: number }>(a: T, b: T): number {

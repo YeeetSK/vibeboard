@@ -12,6 +12,7 @@ import type {
   CreateProjectInput,
   CreateTabInput,
   CreateTaskInput,
+  GetTaskDetailInput,
   MoveTaskInput,
   RenameInput,
   SendTaskMessageInput,
@@ -62,6 +63,7 @@ const createWindow = (): void => {
 
 const registerIpc = (): void => {
   ipcMain.handle('state:get', () => store.getState())
+  ipcMain.handle('task:detail', (_event, input: GetTaskDetailInput) => store.getTaskDetail(input))
   ipcMain.handle('project:create', (_event, input: CreateProjectInput) => store.createProject(input))
   ipcMain.handle('project:openFolder', async (_event, projectId: string) => {
     const project = store.getProject(projectId)

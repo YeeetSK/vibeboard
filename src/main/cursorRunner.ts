@@ -105,13 +105,6 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
         const changes = nextDiff === baselineDiff ? [] : parseGitDiff(nextDiff, baselineDiff)
         store.replaceCodeChanges(taskId, changes)
         store.updateTaskStatus({ taskId, status: 'done_unread' })
-        store.appendConversation(
-          taskId,
-          'system',
-          changes.length > 0
-            ? `Captured ${changes.length} changed file${changes.length === 1 ? '' : 's'}.`
-            : 'Cursor finished without file changes.'
-        )
       } else {
         store.updateTaskStatus({ taskId, status: 'attention' })
         store.appendConversation(
@@ -253,7 +246,7 @@ function summarizeCursorRun(lines: string[]): string {
 
   for (const line of lines) {
     const text = summarizeCursorLine(line)
-    if (text) fragments.push(text)
+    if (text && !isProgressNarration(text)) fragments.push(text)
   }
 
   return mergeTextFragments(fragments).trim()
@@ -264,9 +257,9 @@ function summarizeCursorLine(line: string): string {
   if (!trimmed) return ''
 
   try {
-    return findReadableText(JSON.parse(trimmed) as unknown)
+    return normalizeCursorText(findReadableText(JSON.parse(trimmed) as unknown))
   } catch {
-    return shouldDisplayCursorText(trimmed) ? trimmed : ''
+    return shouldDisplayCursorText(trimmed) ? normalizeCursorText(trimmed) : ''
   }
 }
 
@@ -292,14 +285,39 @@ function findReadableText(value: unknown, parentKey = ''): string {
 }
 
 function shouldDisplayCursorText(text: string, key = ''): boolean {
-  const trimmed = text.trim()
+  const trimmed = normalizeCursorText(text)
   if (!trimmed) return false
   if (key === 'role' || key === 'type' || key === 'event' || key === 'status') return false
-  if (/^(system|user|assistant|thinking|tool_call|result|metadata|start|end|done)$/i.test(trimmed)) return false
+  if (
+    /^(system|user|assistant|thinking|tool_call|result|metadata|init|start|started|end|done|completed|success)$/i.test(
+      trimmed
+    )
+  ) {
+    return false
+  }
   if (trimmed.includes('You are running inside VibeBoard as a background coding agent.')) return false
   if (trimmed.includes('Token and exploration rules:')) return false
   if (trimmed.length < 3 && !/[.!?]$/.test(trimmed)) return false
   return true
+}
+
+function normalizeCursorText(text: string): string {
+  return text
+    .trim()
+    .replace(
+      /^(?:init|start|started|completed|success|done|end)\s+(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s+)?/i,
+      ''
+    )
+    .replace(/^(?:(?:started|completed|success|done|end)\s+)+/i, '')
+    .replace(/\s+(?:(?:started|completed|success|done|end)\s*)+$/i, '')
+    .trim()
+}
+
+function isProgressNarration(text: string): boolean {
+  const trimmed = normalizeCursorText(text)
+  return /^(i('|’)?m|i am|i('|’)?ll|i will|reading|reviewing|examining|checking|running|looking|scanning|opening|inspecting)\b/i.test(
+    trimmed
+  ) || /^the project structure is now clear\b/i.test(trimmed)
 }
 
 function mergeTextFragments(fragments: string[]): string {
@@ -307,7 +325,7 @@ function mergeTextFragments(fragments: string[]): string {
   let current = ''
 
   for (const fragment of fragments) {
-    const text = fragment.trim()
+    const text = normalizeCursorText(fragment)
     if (!text) continue
     if (output.includes(text) || current === text) continue
 

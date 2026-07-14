@@ -4,6 +4,7 @@ import type {
   CreateProjectInput,
   CreateTabInput,
   CreateTaskInput,
+  GetTaskDetailInput,
   MoveTaskInput,
   RenameInput,
   SendTaskMessageInput,
@@ -14,6 +15,7 @@ import type {
 
 const api: VibeBoardApi = {
   getState: () => ipcRenderer.invoke('state:get'),
+  getTaskDetail: (input: GetTaskDetailInput) => ipcRenderer.invoke('task:detail', input),
   onStateChanged: (callback: () => void) => {
     const listener = (): void => callback()
     ipcRenderer.on('state:changed', listener)

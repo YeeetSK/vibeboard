@@ -11,12 +11,14 @@ import type {
   CreateProjectInput,
   CreateTabInput,
   CreateTaskInput,
+  GetTaskDetailInput,
   Lane,
   MoveTaskInput,
   Project,
   RenameInput,
   SendTaskMessageInput,
   Task,
+  TaskDetail,
   TaskStatus,
   UpdateTabMetaInput,
   UpdateTaskStatusInput
@@ -60,11 +62,32 @@ export class VibeBoardStore {
         .all() as BoardTab[],
       lanes: this.db.prepare('SELECT * FROM lanes ORDER BY position').all() as Lane[],
       tasks: this.db.prepare('SELECT * FROM tasks ORDER BY position').all() as Task[],
-      conversations: this.db
-        .prepare('SELECT * FROM conversations ORDER BY createdAt')
-        .all() as ConversationEntry[],
-      changes: this.db.prepare('SELECT * FROM code_changes ORDER BY createdAt').all() as CodeChange[],
       activeTabId
+    }
+  }
+
+  getTaskDetail(input: GetTaskDetailInput): TaskDetail {
+    const limit = Math.min(Math.max(input.limit ?? 5, 1), 50)
+    const conversationRows = input.beforeCreatedAt
+      ? (this.db
+          .prepare(
+            'SELECT * FROM conversations WHERE taskId = ? AND createdAt < ? ORDER BY createdAt DESC LIMIT ?'
+          )
+          .all(input.taskId, input.beforeCreatedAt, limit + 1) as ConversationEntry[])
+      : (this.db
+          .prepare('SELECT * FROM conversations WHERE taskId = ? ORDER BY createdAt DESC LIMIT ?')
+          .all(input.taskId, limit + 1) as ConversationEntry[])
+    const conversations = conversationRows.slice(0, limit).reverse()
+
+    return {
+      conversations,
+      changes:
+        input.includeChanges === false
+          ? []
+          : (this.db
+              .prepare('SELECT * FROM code_changes WHERE taskId = ? ORDER BY createdAt')
+              .all(input.taskId) as CodeChange[]),
+      hasOlderConversations: conversationRows.length > limit
     }
   }
 

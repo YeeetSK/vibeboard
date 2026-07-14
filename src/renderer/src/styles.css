@@ -896,17 +896,31 @@ button {
 }
 
 .task-card.status-processing {
-  border-color: var(--orange);
+  border-color: rgba(255, 122, 26, 0.28);
+  box-shadow: 0 0 18px rgba(255, 122, 26, 0.12);
 }
 
 .task-card.status-processing::after {
   position: absolute;
-  inset: -2px;
-  border: 2px solid var(--orange);
-  border-radius: 10px;
+  inset: -1px;
+  padding: 2px;
+  border-radius: 9px;
+  background: conic-gradient(
+    from var(--processing-angle),
+    rgba(255, 122, 26, 0),
+    rgba(255, 122, 26, 0.18),
+    rgba(255, 122, 26, 0.95),
+    rgba(255, 198, 107, 0.78),
+    rgba(255, 122, 26, 0.16),
+    rgba(255, 122, 26, 0)
+  );
   content: "";
-  opacity: 0.35;
-  animation: pulse-border 1.1s linear infinite;
+  filter: drop-shadow(0 0 7px rgba(255, 122, 26, 0.48));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: processing-border-spin 1.45s linear infinite;
   pointer-events: none;
 }
 
@@ -924,6 +938,18 @@ button {
   border-color: rgba(47, 207, 117, 0.62);
   border-style: dashed;
   opacity: 0.78;
+}
+
+@property --processing-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes processing-border-spin {
+  to {
+    --processing-angle: 360deg;
+  }
 }
 
 @keyframes pulse-border {
@@ -1455,7 +1481,8 @@ button:focus-visible {
 .thread-composer textarea {
   height: 44px;
   min-height: 44px;
-  max-height: 44px;
+  max-height: 150px;
+  overflow-y: auto;
   resize: none;
 }
 
@@ -1575,13 +1602,13 @@ button:focus-visible {
 
 .diff-rows {
   display: grid;
-  width: max-content;
+  width: 100%;
   min-width: 100%;
 }
 
 .diff-line {
   display: grid;
-  grid-template-columns: 28px 48px 48px minmax(max-content, 1fr);
+  grid-template-columns: 28px 56px minmax(0, 1fr);
   min-width: 100%;
   border-bottom: 1px solid rgba(58, 58, 58, 0.24);
 }
@@ -1623,7 +1650,9 @@ button:focus-visible {
   display: block;
   min-width: 0;
   padding: 0 12px;
-  white-space: pre;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .hljs-keyword,

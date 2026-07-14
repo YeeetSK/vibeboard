@@ -62,9 +62,20 @@ export interface AppState {
   closedTabs: BoardTab[]
   lanes: Lane[]
   tasks: Task[]
+  activeTabId: string
+}
+
+export interface TaskDetail {
   conversations: ConversationEntry[]
   changes: CodeChange[]
-  activeTabId: string
+  hasOlderConversations: boolean
+}
+
+export interface GetTaskDetailInput {
+  taskId: string
+  beforeCreatedAt?: string
+  limit?: number
+  includeChanges?: boolean
 }
 
 export interface CreateProjectInput {
@@ -143,6 +154,7 @@ export type CursorSetupPhase = 'checking' | 'preparing' | 'ready' | 'failed'
 
 export interface VibeBoardApi {
   getState: () => Promise<AppState>
+  getTaskDetail: (input: GetTaskDetailInput) => Promise<TaskDetail>
   onStateChanged: (callback: () => void) => () => void
   createProject: (input: CreateProjectInput) => Promise<Project | null>
   openProjectFolder: (projectId: string) => Promise<void>
