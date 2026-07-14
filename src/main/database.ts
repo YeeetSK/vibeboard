@@ -187,9 +187,37 @@ export class VibeBoardStore {
   }
 
   moveTask(input: MoveTaskInput): void {
-    this.db
-      .prepare('UPDATE tasks SET laneId = ?, position = ?, updatedAt = ? WHERE id = ?')
-      .run(input.laneId, input.position, now(), input.taskId)
+    const timestamp = now()
+    const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(input.taskId) as Task | undefined
+    if (!task) return
+
+    const targetTasks = this.db
+      .prepare('SELECT id FROM tasks WHERE laneId = ? AND id != ? ORDER BY position')
+      .all(input.laneId, input.taskId) as Array<{ id: string }>
+    const nextPosition = Math.max(0, Math.min(input.position, targetTasks.length))
+    targetTasks.splice(nextPosition, 0, { id: input.taskId })
+
+    const transaction = this.db.transaction(() => {
+      this.db
+        .prepare('UPDATE tasks SET laneId = ?, position = ?, updatedAt = ? WHERE id = ?')
+        .run(input.laneId, nextPosition, timestamp, input.taskId)
+
+      const updatePosition = this.db.prepare('UPDATE tasks SET position = ?, updatedAt = ? WHERE id = ?')
+      targetTasks.forEach((item, position) => {
+        updatePosition.run(position, timestamp, item.id)
+      })
+
+      if (task.laneId !== input.laneId) {
+        const sourceTasks = this.db
+          .prepare('SELECT id FROM tasks WHERE laneId = ? ORDER BY position')
+          .all(task.laneId) as Array<{ id: string }>
+        sourceTasks.forEach((item, position) => {
+          updatePosition.run(position, timestamp, item.id)
+        })
+      }
+    })
+
+    transaction()
   }
 
   updateTaskStatus(input: UpdateTaskStatusInput): void {

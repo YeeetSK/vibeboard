@@ -221,6 +221,7 @@ button {
   grid-template-rows: auto 1fr;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
   padding: 24px;
 }
 
@@ -256,7 +257,13 @@ button {
   gap: 14px;
   min-height: 0;
   overflow-x: auto;
+  overflow-y: hidden;
   padding-bottom: 8px;
+  overscroll-behavior-x: contain;
+}
+
+.lane-grid.dragging-card {
+  overflow-x: hidden;
 }
 
 .lane {
@@ -266,6 +273,11 @@ button {
   border: 1px solid var(--line-soft);
   border-radius: 8px;
   background: #141820;
+}
+
+.lane.over {
+  border-color: #43516a;
+  background: #171c26;
 }
 
 .lane-header {
@@ -316,10 +328,18 @@ button {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
+  contain: layout paint;
 }
 
 .task-card.dragging {
-  opacity: 0.68;
+  opacity: 0.22;
+}
+
+.task-card.drag-preview {
+  width: 286px;
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.42);
+  contain: none;
+  pointer-events: none;
 }
 
 .task-card.status-processing {
@@ -374,6 +394,32 @@ button {
   color: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.task-card-head {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #12161e;
+  color: var(--muted);
+  cursor: grab;
+  touch-action: none;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
 }
 
 .task-title-row {

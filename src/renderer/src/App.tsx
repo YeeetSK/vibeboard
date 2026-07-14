@@ -2,9 +2,12 @@ import { ReactElement, useEffect, useMemo, useState } from 'react'
 import {
   DndContext,
   DragEndEvent,
+  DragOverlay,
+  DragStartEvent,
   KeyboardSensor,
   PointerSensor,
   closestCorners,
+  useDroppable,
   useSensor,
   useSensors
 } from '@dnd-kit/core'
@@ -20,6 +23,7 @@ import {
   Check,
   Code2,
   FolderPlus,
+  GripVertical,
   LayoutDashboard,
   MessageSquare,
   PanelsTopLeft,
@@ -59,6 +63,7 @@ export function App(): ReactElement {
   const [state, setState] = useState<AppState>(emptyState)
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [newTaskLaneId, setNewTaskLaneId] = useState<string | null>(null)
+  const [activeDragTaskId, setActiveDragTaskId] = useState<string | null>(null)
   const [cursorLabel, setCursorLabel] = useState('Cursor adapter ready')
 
   const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0]
@@ -67,6 +72,7 @@ export function App(): ReactElement {
     [state.lanes, activeTab?.id]
   )
   const selectedTask = state.tasks.find((task) => task.id === selectedTaskId) ?? null
+  const activeDragTask = state.tasks.find((task) => task.id === activeDragTaskId) ?? null
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -142,8 +148,13 @@ export function App(): ReactElement {
     await refresh()
   }
 
+  const onDragStart = (event: DragStartEvent): void => {
+    setActiveDragTaskId(String(event.active.id))
+  }
+
   const onDragEnd = async (event: DragEndEvent): Promise<void> => {
     const { active, over } = event
+    setActiveDragTaskId(null)
     if (!over) return
 
     const task = state.tasks.find((item) => item.id === active.id)
@@ -226,8 +237,14 @@ export function App(): ReactElement {
             </button>
           </header>
 
-          <DndContext sensors={sensors} collisionDetection={closestCorners} onDragEnd={onDragEnd}>
-            <div className="lane-grid">
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCorners}
+            onDragStart={onDragStart}
+            onDragCancel={() => setActiveDragTaskId(null)}
+            onDragEnd={onDragEnd}
+          >
+            <div className={activeDragTaskId ? 'lane-grid dragging-card' : 'lane-grid'}>
               {activeLanes.map((lane) => (
                 <LaneColumn
                   key={lane.id}
@@ -241,6 +258,14 @@ export function App(): ReactElement {
                 />
               ))}
             </div>
+            <DragOverlay dropAnimation={null}>
+              {activeDragTask ? (
+                <TaskCardPreview
+                  task={activeDragTask}
+                  project={state.projects.find((project) => project.id === activeDragTask.projectId) ?? null}
+                />
+              ) : null}
+            </DragOverlay>
           </DndContext>
         </section>
       </main>
@@ -325,10 +350,10 @@ function LaneColumn({
   onRenameLane: (id: string, name: string) => void
   onStatusChange: (taskId: string, status: TaskStatus) => void
 }): ReactElement {
-  const { setNodeRef } = useSortable({ id: lane.id })
+  const { setNodeRef, isOver } = useDroppable({ id: lane.id })
 
   return (
-    <section className="lane" ref={setNodeRef}>
+    <section className={isOver ? 'lane over' : 'lane'} ref={setNodeRef}>
       <header className="lane-header">
         <EditableTitle
           className="lane-title-input"
@@ -417,7 +442,7 @@ function TaskCard({
     id: task.id
   })
   const style = {
-    transform: CSS.Transform.toString(transform),
+    transform: isDragging ? undefined : CSS.Transform.toString(transform),
     transition
   }
 
@@ -426,9 +451,26 @@ function TaskCard({
       ref={setNodeRef}
       style={style}
       className={`task-card status-${task.status} ${isDragging ? 'dragging' : ''}`}
-      {...attributes}
     >
-      <button className="task-open" type="button" onClick={onOpen} {...listeners}>
+      <div className="task-card-head">
+        <button className="drag-handle" type="button" title="Drag task" {...attributes} {...listeners}>
+          <GripVertical size={16} />
+        </button>
+        <select
+          className="status-select"
+          value={task.status}
+          onChange={(event) => onStatusChange(task.id, event.target.value as TaskStatus)}
+          aria-label="Task status"
+        >
+          {statusOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <button className="task-open" type="button" onClick={onOpen}>
         <div className="task-title-row">
           <h3>{task.title}</h3>
           {task.status === 'attention' && <AlertTriangle size={16} />}
@@ -437,19 +479,20 @@ function TaskCard({
         <p>{task.summary}</p>
         <small>{project?.name ?? 'No project'}</small>
       </button>
+    </article>
+  )
+}
 
-      <select
-        className="status-select"
-        value={task.status}
-        onChange={(event) => onStatusChange(task.id, event.target.value as TaskStatus)}
-        aria-label="Task status"
-      >
-        {statusOptions.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+function TaskCardPreview({ task, project }: { task: Task; project: Project | null }): ReactElement {
+  return (
+    <article className={`task-card drag-preview status-${task.status}`}>
+      <div className="task-title-row">
+        <h3>{task.title}</h3>
+        {task.status === 'attention' && <AlertTriangle size={16} />}
+        {(task.status === 'done_unread' || task.status === 'done_read') && <Check size={16} />}
+      </div>
+      <p>{task.summary}</p>
+      <small>{project?.name ?? 'No project'}</small>
     </article>
   )
 }
