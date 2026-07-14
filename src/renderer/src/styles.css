@@ -749,7 +749,6 @@ button {
   letter-spacing: 0;
 }
 
-.board-header p,
 .modal-head p {
   margin: 4px 0 0;
   color: var(--muted);

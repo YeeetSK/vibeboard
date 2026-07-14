@@ -415,7 +415,6 @@ export function App(): ReactElement {
                 value={activeTab?.name ?? 'Main Board'}
                 onCommit={renameActiveTab}
               />
-              <p>{activeProject ? compactPath(activeProject.path) : 'No project linked'} / {activeLanes.length} lanes</p>
             </div>
             <button className="icon-text-button" type="button" onClick={createLane}>
               <Plus size={17} />
