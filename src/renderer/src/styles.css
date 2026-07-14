@@ -584,7 +584,6 @@ button {
 }
 
 .project-row,
-.adapter-row,
 .empty-panel,
 .muted-line {
   border: 1px solid var(--line-soft);
@@ -627,21 +626,74 @@ button {
 }
 
 .project-row small,
-.muted-line,
-.adapter-row {
+.muted-line {
   color: var(--muted);
   font-size: 12px;
 }
 
-.adapter-row,
 .muted-line {
   padding: 10px;
 }
 
-.adapter-row {
+.cursor-card {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.cursor-card.connected {
+  border-color: rgba(47, 207, 117, 0.38);
+}
+
+.cursor-card.missing {
+  border-color: rgba(255, 122, 26, 0.35);
+}
+
+.cursor-status-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
+}
+
+.cursor-status-row div {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.mini-button {
+  width: 28px;
+  height: 28px;
+}
+
+.cursor-detail {
+  display: grid;
+  gap: 6px;
+}
+
+.cursor-detail strong {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.cursor-detail p {
+  margin: 0;
+  color: var(--muted-2);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.cursor-detail code {
+  color: var(--text);
 }
 
 .board-area {

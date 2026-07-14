@@ -41,6 +41,7 @@ import {
   Play,
   Pin,
   RadioTower,
+  RefreshCw,
   RotateCcw,
   Trash2,
   X
@@ -81,7 +82,10 @@ export function App(): ReactElement {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [newTaskLaneId, setNewTaskLaneId] = useState<string | null>(null)
   const [activeDragTaskId, setActiveDragTaskId] = useState<string | null>(null)
-  const [cursorLabel, setCursorLabel] = useState('Cursor adapter ready')
+  const [cursorStatus, setCursorStatus] = useState<{ available: boolean; label: string }>({
+    available: false,
+    label: 'Checking Cursor'
+  })
   const [isSidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [deleteTabId, setDeleteTabId] = useState<string | null>(null)
 
@@ -117,11 +121,15 @@ export function App(): ReactElement {
 
   useEffect(() => {
     refresh()
-    window.vibeboard.getCursorAdapterStatus().then((status) => setCursorLabel(status.label))
+    refreshCursorStatus()
     return window.vibeboard.onStateChanged(() => {
       refresh()
     })
   }, [])
+
+  const refreshCursorStatus = async (): Promise<void> => {
+    setCursorStatus(await window.vibeboard.getCursorAdapterStatus())
+  }
 
   const refresh = async (): Promise<void> => {
     setState(await window.vibeboard.getState())
@@ -313,10 +321,7 @@ export function App(): ReactElement {
               <RadioTower size={16} />
               <span>Cursor</span>
             </div>
-            <div className="adapter-row">
-              <Code2 size={15} />
-              <span>{cursorLabel}</span>
-            </div>
+            <CursorConnection status={cursorStatus} onRefresh={refreshCursorStatus} />
           </section>
         </aside>
 
@@ -400,6 +405,39 @@ export function App(): ReactElement {
           onConfirm={() => deleteTab(deleteTabId)}
         />
       )}
+    </div>
+  )
+}
+
+function CursorConnection({
+  status,
+  onRefresh
+}: {
+  status: { available: boolean; label: string }
+  onRefresh: () => void
+}): ReactElement {
+  return (
+    <div className={status.available ? 'cursor-card connected' : 'cursor-card missing'}>
+      <div className="cursor-status-row">
+        <div>
+          <Code2 size={15} />
+          <span>{status.available ? 'Connected' : 'Not connected'}</span>
+        </div>
+        <button className="icon-button mini-button" type="button" onClick={onRefresh} title="Check again">
+          <RefreshCw size={14} />
+        </button>
+      </div>
+      <div className="cursor-detail">
+        <strong>{status.available ? 'cursor-agent found' : status.label}</strong>
+        <p>
+          VibeBoard runs Cursor tasks through the <code>cursor-agent</code> command inside the selected project folder.
+        </p>
+        {!status.available && (
+          <p>
+            Install Cursor command line tools, make <code>cursor-agent</code> available in PATH, then check again.
+          </p>
+        )}
+      </div>
     </div>
   )
 }
