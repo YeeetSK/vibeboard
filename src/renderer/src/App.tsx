@@ -1237,7 +1237,7 @@ function CodexThread({
           <div className="agent-step">
             <Code2 size={16} />
             <div>
-              <strong>Agent workspace</strong>
+              <strong className="agent-step-label">Agent workspace</strong>
               <p>{task.status === 'processing' ? 'Working on this task' : task.summary}</p>
             </div>
           </div>
@@ -1246,7 +1246,9 @@ function CodexThread({
             <div key={entry.id} className={`agent-step role-${entry.role}`}>
               {entry.role === 'user' ? <MessageSquare size={16} /> : <Code2 size={16} />}
               <div>
-                <strong>{entry.role === 'user' ? 'You' : entry.role === 'assistant' ? 'Agent' : 'System'}</strong>
+                <strong className="agent-step-label">
+                  {entry.role === 'user' ? 'You' : entry.role === 'assistant' ? 'Agent' : 'System'}
+                </strong>
                 <MessageMarkdown content={entry.content} />
               </div>
             </div>

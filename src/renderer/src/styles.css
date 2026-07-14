@@ -1269,7 +1269,7 @@ button:focus-visible {
   color: var(--muted-2);
 }
 
-.agent-step strong {
+.agent-step-label {
   display: block;
   margin-bottom: 8px;
   color: var(--muted);
@@ -1288,7 +1288,7 @@ button:focus-visible {
   margin-bottom: 0;
 }
 
-.role-user strong {
+.role-user .agent-step-label {
   color: var(--text);
 }
 
@@ -1297,7 +1297,7 @@ button:focus-visible {
   opacity: 0.72;
 }
 
-.role-system strong {
+.role-system .agent-step-label {
   margin-bottom: 4px;
   color: var(--muted-2);
 }
