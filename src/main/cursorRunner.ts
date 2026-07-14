@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 import type { CodeChange } from '../shared/types'
 import { VibeBoardStore } from './database'
 
@@ -36,7 +38,11 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
     return
   }
 
-  const command = `cursor-agent --print --force --output-format stream-json ${shellQuote(context.prompt)}`
+  const optimizedPrompt = await buildFocusedPrompt(projectPath, context.prompt)
+  store.appendConversation(taskId, 'system', 'Prepared a focused project brief to reduce unnecessary repo exploration.')
+  onStateChanged()
+
+  const command = `cursor-agent --print --force --output-format stream-json ${shellQuote(optimizedPrompt)}`
   const child = spawn('/bin/zsh', ['-lc', command], {
     cwd: projectPath,
     env: process.env
@@ -115,6 +121,128 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
       finish()
     })
   })
+}
+
+async function buildFocusedPrompt(projectPath: string, prompt: string): Promise<string> {
+  const [trackedFiles, changedFiles, manifestSummary] = await Promise.all([
+    listTrackedFiles(projectPath),
+    listChangedFiles(projectPath),
+    readManifestSummary(projectPath)
+  ])
+  const candidateFiles = rankRelevantFiles(prompt, trackedFiles, changedFiles).slice(0, 40)
+
+  return [
+    'You are running inside VibeBoard as a background coding agent.',
+    '',
+    'Token and exploration rules:',
+    '- Do not scan the whole repository unless the task explicitly requires it.',
+    '- Start from the focused file candidates below.',
+    '- Open only files that are likely relevant to the requested change.',
+    '- Prefer targeted searches over broad recursive reading.',
+    '- Keep edits scoped to the task.',
+    '',
+    manifestSummary ? `Project hints:\n${manifestSummary}` : '',
+    candidateFiles.length > 0 ? `Focused file candidates:\n${candidateFiles.map((file) => `- ${file}`).join('\n')}` : '',
+    '',
+    'User task:',
+    prompt
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+function listTrackedFiles(cwd: string): Promise<string[]> {
+  return runCommand('git', ['ls-files'], cwd).then((output) =>
+    output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((file) => !isIgnoredForContext(file))
+  )
+}
+
+function listChangedFiles(cwd: string): Promise<string[]> {
+  return runCommand('git', ['status', '--short'], cwd).then((output) =>
+    output
+      .split(/\r?\n/)
+      .map((line) => line.slice(3).trim())
+      .filter(Boolean)
+      .filter((file) => !isIgnoredForContext(file))
+  )
+}
+
+function runCommand(command: string, args: string[], cwd: string): Promise<string> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { cwd })
+    let output = ''
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString()
+    })
+
+    child.on('close', () => resolve(output))
+    child.on('error', () => resolve(''))
+  })
+}
+
+async function readManifestSummary(projectPath: string): Promise<string> {
+  const packagePath = path.join(projectPath, 'package.json')
+  try {
+    const packageJson = JSON.parse(await readFile(packagePath, 'utf8')) as {
+      scripts?: Record<string, string>
+      dependencies?: Record<string, string>
+      devDependencies?: Record<string, string>
+    }
+    const scripts = Object.keys(packageJson.scripts ?? {}).slice(0, 12)
+    const deps = Object.keys({ ...(packageJson.dependencies ?? {}), ...(packageJson.devDependencies ?? {}) }).slice(
+      0,
+      24
+    )
+    return [
+      scripts.length > 0 ? `Scripts: ${scripts.join(', ')}` : '',
+      deps.length > 0 ? `Dependencies: ${deps.join(', ')}` : ''
+    ]
+      .filter(Boolean)
+      .join('\n')
+  } catch {
+    return ''
+  }
+}
+
+function rankRelevantFiles(prompt: string, files: string[], changedFiles: string[]): string[] {
+  const promptTerms = new Set(
+    prompt
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((term) => term.length >= 3)
+  )
+  const changedSet = new Set(changedFiles)
+
+  return files
+    .map((file) => ({ file, score: scoreFile(file, promptTerms, changedSet.has(file)) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.file.localeCompare(b.file))
+    .map((item) => item.file)
+}
+
+function scoreFile(file: string, promptTerms: Set<string>, isChanged: boolean): number {
+  const normalized = file.toLowerCase()
+  const segments = normalized.split(/[/.\\_-]+/)
+  let score = isChanged ? 10 : 0
+
+  for (const term of promptTerms) {
+    if (normalized.includes(term)) score += 4
+    if (segments.includes(term)) score += 3
+  }
+
+  if (normalized.includes('src/')) score += 1
+  if (/(package\.json|vite\.config|electron|database|runner|app\.tsx|styles\.css)$/.test(normalized)) score += 2
+  if (/\.(ts|tsx|js|jsx|css|json|md)$/.test(normalized)) score += 1
+  return score
+}
+
+function isIgnoredForContext(file: string): boolean {
+  return /(^|\/)(node_modules|dist|out|release|\.git)\//.test(file) || /\.(png|jpg|jpeg|gif|webp|dmg|exe|zip)$/i.test(file)
 }
 
 function commandExists(command: string): Promise<boolean> {
