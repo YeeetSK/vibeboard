@@ -32,6 +32,7 @@ const api: VibeBoardApi = {
   deleteLane: (laneId: string) => ipcRenderer.invoke('lane:delete', laneId),
   createTask: (input: CreateTaskInput) => ipcRenderer.invoke('task:create', input),
   moveTask: (input: MoveTaskInput) => ipcRenderer.invoke('task:move', input),
+  deleteTask: (taskId: string) => ipcRenderer.invoke('task:delete', taskId),
   sendTaskMessage: (input: SendTaskMessageInput) => ipcRenderer.invoke('task:message', input),
   runTaskWithCursor: (taskId: string) => ipcRenderer.invoke('task:runCursor', taskId),
   updateTaskStatus: (input: UpdateTaskStatusInput) => ipcRenderer.invoke('task:status', input),

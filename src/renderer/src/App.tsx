@@ -266,6 +266,24 @@ export function App(): ReactElement {
     await refresh()
   }
 
+  const deleteTask = async (id: string): Promise<void> => {
+    const task = state.tasks.find((item) => item.id === id)
+    if (task?.status === 'processing') return
+    if (!window.confirm('Delete this task?')) return
+    if (selectedTaskId === id) {
+      setSelectedTaskId(null)
+    }
+    await window.vibeboard.deleteTask(id)
+    await refresh()
+  }
+
+  const finishTask = async (id: string): Promise<void> => {
+    const task = state.tasks.find((item) => item.id === id)
+    if (task?.status === 'processing') return
+    await window.vibeboard.updateTaskStatus({ taskId: id, status: 'done_unread' })
+    await refresh()
+  }
+
   const createTask = async (input: NewTaskInput): Promise<void> => {
     if (!activeTab || !newTaskLaneId) return
     await window.vibeboard.createTask({
@@ -445,6 +463,8 @@ export function App(): ReactElement {
                   onOpenTask={openTask}
                   onAddTask={() => setNewTaskLaneId(lane.id)}
                   onDeleteLane={deleteLane}
+                  onDeleteTask={deleteTask}
+                  onFinishTask={finishTask}
                   canDelete={activeLanes.length > 1}
                   onRenameLane={renameLane}
                 />
@@ -841,6 +861,8 @@ function LaneColumn({
   onOpenTask,
   onAddTask,
   onDeleteLane,
+  onDeleteTask,
+  onFinishTask,
   canDelete,
   onRenameLane
 }: {
@@ -850,6 +872,8 @@ function LaneColumn({
   onOpenTask: (task: Task) => void
   onAddTask: () => void
   onDeleteLane: (id: string) => void
+  onDeleteTask: (id: string) => void
+  onFinishTask: (id: string) => void
   canDelete: boolean
   onRenameLane: (id: string, name: string) => void
 }): ReactElement {
@@ -885,6 +909,8 @@ function LaneColumn({
               task={task}
               project={projects.find((project) => project.id === task.projectId) ?? null}
               onOpen={() => onOpenTask(task)}
+              onDelete={() => onDeleteTask(task.id)}
+              onFinish={() => onFinishTask(task.id)}
             />
           ))}
         </div>
@@ -944,11 +970,15 @@ function EditableTitle({
 function TaskCard({
   task,
   project,
-  onOpen
+  onOpen,
+  onDelete,
+  onFinish
 }: {
   task: Task
   project: Project | null
   onOpen: () => void
+  onDelete: () => void
+  onFinish: () => void
 }): ReactElement {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id
@@ -966,6 +996,36 @@ function TaskCard({
       {...attributes}
       {...listeners}
     >
+      <div className="task-card-actions">
+        {task.status !== 'processing' && task.status !== 'done_unread' && task.status !== 'done_read' && (
+          <button
+            className="task-action-button"
+            type="button"
+            title="Finish task"
+            onClick={(event) => {
+              event.stopPropagation()
+              onFinish()
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <Check size={14} />
+          </button>
+        )}
+        {task.status !== 'processing' && (
+          <button
+            className="task-action-button danger"
+            type="button"
+            title="Delete task"
+            onClick={(event) => {
+              event.stopPropagation()
+              onDelete()
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <Trash2 size={14} />
+          </button>
+        )}
+      </div>
       <button className="task-open" type="button" onClick={onOpen}>
         <div className="task-title-row">
           <h3>{task.title}</h3>

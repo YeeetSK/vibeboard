@@ -155,6 +155,7 @@ export interface VibeBoardApi {
   deleteLane: (laneId: string) => Promise<void>
   createTask: (input: CreateTaskInput) => Promise<Task>
   moveTask: (input: MoveTaskInput) => Promise<void>
+  deleteTask: (taskId: string) => Promise<void>
   sendTaskMessage: (input: SendTaskMessageInput) => Promise<void>
   runTaskWithCursor: (taskId: string) => Promise<RunTaskResult>
   updateTaskStatus: (input: UpdateTaskStatusInput) => Promise<void>

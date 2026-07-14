@@ -393,6 +393,26 @@ export class VibeBoardStore {
     transaction()
   }
 
+  deleteTask(taskId: string): void {
+    const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as Task | undefined
+    if (!task) return
+    if (task.status === 'processing') return
+
+    const transaction = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId)
+      const remainingTasks = this.db
+        .prepare('SELECT id FROM tasks WHERE laneId = ? ORDER BY position')
+        .all(task.laneId) as Array<{ id: string }>
+      const timestamp = now()
+      const updatePosition = this.db.prepare('UPDATE tasks SET position = ?, updatedAt = ? WHERE id = ?')
+      remainingTasks.forEach((item, position) => {
+        updatePosition.run(position, timestamp, item.id)
+      })
+    })
+
+    transaction()
+  }
+
   updateTaskStatus(input: UpdateTaskStatusInput): void {
     this.db
       .prepare('UPDATE tasks SET status = ?, updatedAt = ? WHERE id = ?')

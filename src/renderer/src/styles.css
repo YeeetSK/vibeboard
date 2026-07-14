@@ -982,11 +982,54 @@ button {
   display: grid;
   gap: 8px;
   padding: 0;
+  padding-right: 42px;
   border: 0;
   background: transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.task-card-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.task-card:hover .task-card-actions,
+.task-card:focus-within .task-card-actions {
+  opacity: 1;
+}
+
+.task-action-button {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.task-action-button:hover,
+.task-action-button:focus-visible {
+  border-color: var(--line-strong);
+  color: var(--text);
+  outline: none;
+}
+
+.task-action-button.danger:hover,
+.task-action-button.danger:focus-visible {
+  border-color: rgba(255, 91, 91, 0.65);
+  color: var(--red);
 }
 
 .task-title-row {
