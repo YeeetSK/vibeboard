@@ -1189,7 +1189,7 @@ function CodexThread({
 }): ReactElement {
   const [draft, setDraft] = useState('')
   const userEntries = conversations.filter((entry) => entry.role === 'user')
-  const prompt = userEntries[0]?.content || task.summary || task.title
+  const prompt = userEntries[0]?.content ?? ''
   const threadEntries = compactConversationEntries(
     conversations.filter((entry) => entry.id !== userEntries[0]?.id && !isNoisyConversationEntry(entry))
   )
@@ -1203,17 +1203,23 @@ function CodexThread({
 
   return (
     <div className="codex-thread">
-      <section className="prompt-panel">
-        <p>{prompt}</p>
-      </section>
+      {prompt && (
+        <section className="prompt-panel">
+          <p>{prompt}</p>
+        </section>
+      )}
 
       <div className="agent-stream">
-        {threadEntries.length === 0 ? (
+        {!prompt && threadEntries.length === 0 ? (
+          <div className="thread-empty-state">
+            Chat is empty
+          </div>
+        ) : threadEntries.length === 0 ? (
           <div className="agent-step">
             <Code2 size={16} />
             <div>
               <strong className="agent-step-label">Agent workspace</strong>
-              <p>{task.status === 'processing' ? 'Working on this task' : task.summary}</p>
+              <p>{task.status === 'processing' ? 'Working on this task' : 'Waiting for the agent'}</p>
             </div>
           </div>
         ) : (

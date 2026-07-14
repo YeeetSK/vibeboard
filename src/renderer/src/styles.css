@@ -1230,6 +1230,12 @@ button:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.thread-empty-state {
+  padding: 2px 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
 .agent-stream {
   display: flex;
   flex-direction: column;
