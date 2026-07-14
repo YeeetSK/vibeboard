@@ -36,7 +36,8 @@ const api: VibeBoardApi = {
   runTaskWithCursor: (taskId: string) => ipcRenderer.invoke('task:runCursor', taskId),
   updateTaskStatus: (input: UpdateTaskStatusInput) => ipcRenderer.invoke('task:status', input),
   markTaskRead: (taskId: string) => ipcRenderer.invoke('task:read', taskId),
-  getCursorAdapterStatus: () => ipcRenderer.invoke('cursor:status')
+  getCursorAdapterStatus: () => ipcRenderer.invoke('cursor:status'),
+  openCursorSetup: () => ipcRenderer.invoke('cursor:setup')
 }
 
 contextBridge.exposeInMainWorld('vibeboard', api)

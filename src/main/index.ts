@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import path from 'node:path'
+import { existsSync } from 'node:fs'
 import { VibeBoardStore } from './database'
 import { PlaceholderCursorAdapter } from './cursorAdapter'
 import { runCursorTask } from './cursorRunner'
@@ -92,6 +93,17 @@ const registerIpc = (): void => {
   ipcMain.handle('task:status', (_event, input: UpdateTaskStatusInput) => store.updateTaskStatus(input))
   ipcMain.handle('task:read', (_event, taskId: string) => store.markTaskRead(taskId))
   ipcMain.handle('cursor:status', () => cursorAdapter.status())
+  ipcMain.handle('cursor:setup', () => openCursorSetup())
+}
+
+const openCursorSetup = async (): Promise<void> => {
+  const cursorAppPath = '/Applications/Cursor.app'
+  if (process.platform === 'darwin' && existsSync(cursorAppPath)) {
+    await shell.openPath(cursorAppPath)
+    return
+  }
+
+  await shell.openExternal('https://cursor.com/downloads')
 }
 
 const broadcastStateChanged = (): void => {

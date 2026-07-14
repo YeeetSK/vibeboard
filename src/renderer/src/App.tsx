@@ -30,6 +30,7 @@ import {
   Check,
   CheckCircle2,
   Code2,
+  Download,
   FolderPlus,
   History,
   LayoutDashboard,
@@ -327,7 +328,11 @@ export function App(): ReactElement {
               <RadioTower size={16} />
               <span>Cursor</span>
             </div>
-            <CursorConnection status={cursorStatus} onRefresh={refreshCursorStatus} />
+            <CursorConnection
+              status={cursorStatus}
+              onOpenSetup={() => window.vibeboard.openCursorSetup()}
+              onRefresh={refreshCursorStatus}
+            />
           </section>
         </aside>
 
@@ -418,9 +423,11 @@ export function App(): ReactElement {
 
 function CursorConnection({
   status,
+  onOpenSetup,
   onRefresh
 }: {
   status: { available: boolean; label: string }
+  onOpenSetup: () => void
   onRefresh: () => void
 }): ReactElement {
   return (
@@ -430,19 +437,29 @@ function CursorConnection({
           <Code2 size={15} />
           <span>{status.available ? 'Connected' : 'Not connected'}</span>
         </div>
-        <button className="icon-button mini-button" type="button" onClick={onRefresh} title="Check again">
-          <RefreshCw size={14} />
+        <span className={status.available ? 'connection-pill connected' : 'connection-pill missing'}>
+          {status.available ? 'Ready' : 'Missing'}
+        </span>
+      </div>
+      <div className="cursor-actions">
+        {!status.available && (
+          <button className="primary-action setup-button" type="button" onClick={onOpenSetup}>
+            <Download size={15} />
+            <span>Open Cursor</span>
+          </button>
+        )}
+        <button className="secondary-action setup-button" type="button" onClick={onRefresh}>
+          <RefreshCw size={15} />
+          <span>Connect</span>
         </button>
       </div>
-      <div className="cursor-detail">
-        <strong>{status.available ? 'cursor-agent found' : status.label}</strong>
-        <p>
-          VibeBoard runs Cursor tasks through the <code>cursor-agent</code> command inside the selected project folder.
-        </p>
+      <div className="cursor-steps">
         {!status.available && (
-          <p>
-            Install Cursor command line tools, make <code>cursor-agent</code> available in PATH, then check again.
-          </p>
+          <ol>
+            <li>Open Cursor.</li>
+            <li>Install command line tools.</li>
+            <li>Click Connect.</li>
+          </ol>
         )}
       </div>
     </div>
