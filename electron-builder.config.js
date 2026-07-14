@@ -1,3 +1,18 @@
+const signingEnvKeys = [
+  'CSC_LINK',
+  'CSC_NAME',
+  'CSC_KEY_PASSWORD',
+  'APPLE_API_KEY',
+  'APPLE_API_KEY_ID',
+  'APPLE_API_ISSUER'
+]
+
+for (const key of signingEnvKeys) {
+  if (!process.env[key]?.trim()) {
+    delete process.env[key]
+  }
+}
+
 const hasMacSigningIdentity = Boolean(process.env.CSC_LINK || process.env.CSC_NAME)
 
 module.exports = {
