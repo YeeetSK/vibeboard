@@ -38,14 +38,24 @@ export class VibeBoardStore {
   }
 
   getState(): AppState {
-    const activeTabId =
-      this.getSetting('activeTabId') ??
-      (this.db.prepare('SELECT id FROM tabs ORDER BY createdAt LIMIT 1').get() as { id: string }).id
+    const savedActiveTabId = this.getSetting('activeTabId')
+    const savedActiveTab = savedActiveTabId
+      ? (this.db.prepare('SELECT id FROM tabs WHERE id = ? AND isClosed = 0').get(savedActiveTabId) as
+          | { id: string }
+          | undefined)
+      : undefined
+    const fallbackTab = this.db
+      .prepare('SELECT id FROM tabs WHERE isClosed = 0 ORDER BY createdAt LIMIT 1')
+      .get() as { id: string }
+    const activeTabId = savedActiveTab?.id ?? fallbackTab.id
 
     return {
       projects: this.db.prepare('SELECT * FROM projects ORDER BY createdAt DESC').all() as Project[],
       tabs: this.db
-        .prepare('SELECT * FROM tabs ORDER BY isPinned DESC, createdAt')
+        .prepare('SELECT * FROM tabs WHERE isClosed = 0 ORDER BY isPinned DESC, createdAt')
+        .all() as BoardTab[],
+      closedTabs: this.db
+        .prepare('SELECT * FROM tabs WHERE isClosed = 1 ORDER BY createdAt DESC')
         .all() as BoardTab[],
       lanes: this.db.prepare('SELECT * FROM lanes ORDER BY position').all() as Lane[],
       tasks: this.db.prepare('SELECT * FROM tasks ORDER BY position').all() as Task[],
@@ -138,19 +148,20 @@ export class VibeBoardStore {
       name: input.name.trim() || 'Board',
       activeProjectId: null,
       isPinned: 0,
+      isClosed: 0,
       color: null,
       createdAt: now()
     }
 
     const insertTab = this.db.prepare(
-      'INSERT INTO tabs (id, name, activeProjectId, isPinned, color, createdAt) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO tabs (id, name, activeProjectId, isPinned, isClosed, color, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)'
     )
     const insertLane = this.db.prepare(
       'INSERT INTO lanes (id, tabId, name, position) VALUES (?, ?, ?, ?)'
     )
 
     const transaction = this.db.transaction(() => {
-      insertTab.run(tab.id, tab.name, tab.activeProjectId, tab.isPinned, tab.color, tab.createdAt)
+      insertTab.run(tab.id, tab.name, tab.activeProjectId, tab.isPinned, tab.isClosed, tab.color, tab.createdAt)
       ;['Backlog', 'Active', 'Review', 'Done'].forEach((name, position) => {
         insertLane.run(id(), tab.id, name, position)
       })
@@ -177,7 +188,7 @@ export class VibeBoardStore {
 
   closeTab(tabId: string): void {
     const tabs = this.db
-      .prepare('SELECT id FROM tabs ORDER BY isPinned DESC, createdAt')
+      .prepare('SELECT id FROM tabs WHERE isClosed = 0 ORDER BY isPinned DESC, createdAt')
       .all() as Array<{ id: string }>
     if (tabs.length <= 1) {
       return
@@ -186,6 +197,43 @@ export class VibeBoardStore {
     const activeTabId = this.getSetting('activeTabId')
     const tabIndex = tabs.findIndex((tab) => tab.id === tabId)
     const fallbackTab = tabs[tabIndex + 1] ?? tabs[tabIndex - 1] ?? tabs.find((tab) => tab.id !== tabId)
+
+    const transaction = this.db.transaction(() => {
+      this.db.prepare('UPDATE tabs SET isClosed = 1 WHERE id = ?').run(tabId)
+      if (activeTabId === tabId && fallbackTab) {
+        this.setSetting('activeTabId', fallbackTab.id)
+      }
+    })
+
+    transaction()
+  }
+
+  reopenTab(tabId: string): void {
+    const transaction = this.db.transaction(() => {
+      this.db.prepare('UPDATE tabs SET isClosed = 0 WHERE id = ?').run(tabId)
+      this.setSetting('activeTabId', tabId)
+    })
+
+    transaction()
+  }
+
+  deleteTab(tabId: string): void {
+    const tabs = this.db.prepare('SELECT id, isClosed FROM tabs ORDER BY isPinned DESC, createdAt').all() as Array<{
+      id: string
+      isClosed: number
+    }>
+    if (tabs.length <= 1) {
+      return
+    }
+
+    const targetTab = tabs.find((tab) => tab.id === tabId)
+    const openTabs = tabs.filter((tab) => tab.isClosed === 0)
+    if (!targetTab || (targetTab.isClosed === 0 && openTabs.length <= 1)) {
+      return
+    }
+
+    const activeTabId = this.getSetting('activeTabId')
+    const fallbackTab = tabs.find((tab) => tab.id !== tabId && tab.isClosed === 0)
 
     const transaction = this.db.transaction(() => {
       this.db.prepare('DELETE FROM tabs WHERE id = ?').run(tabId)
@@ -367,6 +415,7 @@ export class VibeBoardStore {
         name TEXT NOT NULL,
         activeProjectId TEXT,
         isPinned INTEGER NOT NULL DEFAULT 0,
+        isClosed INTEGER NOT NULL DEFAULT 0,
         color TEXT,
         createdAt TEXT NOT NULL
       );
@@ -417,6 +466,7 @@ export class VibeBoardStore {
       );
     `)
     this.ensureColumn('tabs', 'isPinned', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('tabs', 'isClosed', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('tabs', 'color', 'TEXT')
     this.ensureColumn('code_changes', 'language', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('code_changes', 'diffText', "TEXT NOT NULL DEFAULT ''")

@@ -62,6 +62,8 @@ const registerIpc = (): void => {
   ipcMain.handle('tab:rename', (_event, input: RenameInput) => store.renameTab(input))
   ipcMain.handle('tab:updateMeta', (_event, input: UpdateTabMetaInput) => store.updateTabMeta(input))
   ipcMain.handle('tab:close', (_event, tabId: string) => store.closeTab(tabId))
+  ipcMain.handle('tab:reopen', (_event, tabId: string) => store.reopenTab(tabId))
+  ipcMain.handle('tab:delete', (_event, tabId: string) => store.deleteTab(tabId))
   ipcMain.handle('tab:active', (_event, tabId: string) => store.setActiveTab(tabId))
   ipcMain.handle('lane:create', (_event, input: CreateLaneInput) => store.createLane(input))
   ipcMain.handle('lane:rename', (_event, input: RenameInput) => store.renameLane(input))

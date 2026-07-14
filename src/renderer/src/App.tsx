@@ -31,6 +31,7 @@ import {
   CheckCircle2,
   Code2,
   FolderPlus,
+  History,
   LayoutDashboard,
   MessageSquare,
   PanelLeftClose,
@@ -40,6 +41,7 @@ import {
   Play,
   Pin,
   RadioTower,
+  RotateCcw,
   Trash2,
   X
 } from 'lucide-react'
@@ -64,6 +66,7 @@ hljs.registerLanguage('xml', xml)
 const emptyState: AppState = {
   projects: [],
   tabs: [],
+  closedTabs: [],
   lanes: [],
   tasks: [],
   conversations: [],
@@ -80,6 +83,7 @@ export function App(): ReactElement {
   const [activeDragTaskId, setActiveDragTaskId] = useState<string | null>(null)
   const [cursorLabel, setCursorLabel] = useState('Cursor adapter ready')
   const [isSidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [deleteTabId, setDeleteTabId] = useState<string | null>(null)
 
   const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0]
   const activeLanes = useMemo(
@@ -136,6 +140,17 @@ export function App(): ReactElement {
   const closeTab = async (tabId: string): Promise<void> => {
     if (state.tabs.length <= 1) return
     await window.vibeboard.closeTab(tabId)
+    await refresh()
+  }
+
+  const reopenTab = async (tabId: string): Promise<void> => {
+    await window.vibeboard.reopenTab(tabId)
+    await refresh()
+  }
+
+  const deleteTab = async (tabId: string): Promise<void> => {
+    await window.vibeboard.deleteTab(tabId)
+    setDeleteTabId(null)
     await refresh()
   }
 
@@ -231,9 +246,12 @@ export function App(): ReactElement {
     <div className="app-shell">
       <TopBar
         tabs={state.tabs}
+        closedTabs={state.closedTabs}
         activeTabId={activeTab?.id}
         onCloseTab={closeTab}
         onCreateTab={createTab}
+        onDeleteTab={(id) => setDeleteTabId(id)}
+        onReopenTab={reopenTab}
         onSelectTab={setActiveTab}
         onUpdateTabMeta={updateTabMeta}
       />
@@ -369,34 +387,56 @@ export function App(): ReactElement {
           onClose={() => setSelectedTaskId(null)}
         />
       )}
+
+      {deleteTabId && (
+        <DeleteTabModal
+          tab={state.tabs.find((tab) => tab.id === deleteTabId) ?? state.closedTabs.find((tab) => tab.id === deleteTabId) ?? null}
+          canDelete={
+            Boolean(state.closedTabs.find((tab) => tab.id === deleteTabId)) ||
+            (Boolean(state.tabs.find((tab) => tab.id === deleteTabId)) && state.tabs.length > 1)
+          }
+          onClose={() => setDeleteTabId(null)}
+          onConfirm={() => deleteTab(deleteTabId)}
+        />
+      )}
     </div>
   )
 }
 
 function TopBar({
   tabs,
+  closedTabs,
   activeTabId,
   onCloseTab,
   onCreateTab,
+  onDeleteTab,
+  onReopenTab,
   onSelectTab,
   onUpdateTabMeta
 }: {
   tabs: BoardTab[]
+  closedTabs: BoardTab[]
   activeTabId?: string
   onCloseTab: (id: string) => void
   onCreateTab: () => void
+  onDeleteTab: (id: string) => void
+  onReopenTab: (id: string) => void
   onSelectTab: (id: string) => void
   onUpdateTabMeta: (input: { id: string; isPinned?: boolean; color?: string | null }) => void
 }): ReactElement {
   const [menuState, setMenuState] = useState<{ tabId: string; x: number; y: number } | null>(null)
+  const [closedMenuOpen, setClosedMenuOpen] = useState(false)
   const menuTab = tabs.find((tab) => tab.id === menuState?.tabId) ?? null
 
   useEffect(() => {
-    if (!menuState) return
-    const close = (): void => setMenuState(null)
+    if (!menuState && !closedMenuOpen) return
+    const close = (): void => {
+      setMenuState(null)
+      setClosedMenuOpen(false)
+    }
     window.addEventListener('click', close)
     return () => window.removeEventListener('click', close)
-  }, [menuState])
+  }, [menuState, closedMenuOpen])
 
   return (
     <div className="tabs-bar">
@@ -440,6 +480,52 @@ function TopBar({
       <button className="icon-button" type="button" onClick={onCreateTab} title="New board">
         <Plus size={17} />
       </button>
+      {closedTabs.length > 0 && (
+        <div className="closed-tabs-wrap" onClick={(event) => event.stopPropagation()}>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={() => {
+              setMenuState(null)
+              setClosedMenuOpen((value) => !value)
+            }}
+            title="Closed boards"
+          >
+            <History size={17} />
+          </button>
+          {closedMenuOpen && (
+            <div className="closed-tabs-menu">
+              <div className="tab-menu-label">Closed boards</div>
+              {closedTabs.map((tab) => (
+                <div className="closed-tab-row" key={tab.id}>
+                  <button
+                    type="button"
+                    title={tab.name}
+                    onClick={() => {
+                      onReopenTab(tab.id)
+                      setClosedMenuOpen(false)
+                    }}
+                  >
+                    <RotateCcw size={14} />
+                    <span>{tab.name}</span>
+                  </button>
+                  <button
+                    className="closed-tab-delete"
+                    type="button"
+                    title="Delete permanently"
+                    onClick={() => {
+                      onDeleteTab(tab.id)
+                      setClosedMenuOpen(false)
+                    }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {menuTab && (
         <div
           className="tab-menu"
@@ -491,8 +577,69 @@ function TopBar({
               Close tab
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => {
+              onDeleteTab(menuTab.id)
+              setMenuState(null)
+            }}
+          >
+            Delete tab
+          </button>
         </div>
       )}
+    </div>
+  )
+}
+
+function DeleteTabModal({
+  tab,
+  canDelete,
+  onClose,
+  onConfirm
+}: {
+  tab: BoardTab | null
+  canDelete: boolean
+  onClose: () => void
+  onConfirm: () => void
+}): ReactElement {
+  const [draft, setDraft] = useState('')
+  const isConfirmed = draft.trim().toLowerCase() === 'confirm'
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="modal-panel compact confirm-modal" role="dialog" aria-modal="true">
+        <header className="modal-head">
+          <div>
+            <h2>Delete tab</h2>
+            <p>{tab?.name ?? 'Board'}</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} title="Close">
+            <X size={18} />
+          </button>
+        </header>
+        <div className="confirm-body">
+          <p>Permanent delete removes this board, its lanes, tasks, chat, and code changes.</p>
+          <input
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="confirm"
+            autoFocus
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') onClose()
+              if (event.key === 'Enter' && isConfirmed && canDelete) onConfirm()
+            }}
+          />
+        </div>
+        <footer className="modal-actions">
+          <button className="secondary-action" type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="danger-action" type="button" disabled={!isConfirmed || !canDelete} onClick={onConfirm}>
+            Delete
+          </button>
+        </footer>
+      </section>
     </div>
   )
 }

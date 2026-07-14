@@ -12,6 +12,7 @@ export interface BoardTab {
   name: string
   activeProjectId: string | null
   isPinned: number
+  isClosed: number
   color: string | null
   createdAt: string
 }
@@ -58,6 +59,7 @@ export interface CodeChange {
 export interface AppState {
   projects: Project[]
   tabs: BoardTab[]
+  closedTabs: BoardTab[]
   lanes: Lane[]
   tasks: Task[]
   conversations: ConversationEntry[]
@@ -122,6 +124,8 @@ export interface VibeBoardApi {
   renameTab: (input: RenameInput) => Promise<void>
   updateTabMeta: (input: UpdateTabMetaInput) => Promise<void>
   closeTab: (tabId: string) => Promise<void>
+  reopenTab: (tabId: string) => Promise<void>
+  deleteTab: (tabId: string) => Promise<void>
   setActiveTab: (tabId: string) => Promise<void>
   createLane: (input: CreateLaneInput) => Promise<Lane>
   renameLane: (input: RenameInput) => Promise<void>
