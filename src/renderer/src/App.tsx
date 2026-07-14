@@ -39,7 +39,6 @@ import {
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
-  PanelsTopLeft,
   Plus,
   Pin,
   RadioTower,
@@ -388,21 +387,6 @@ export function App(): ReactElement {
               <SidebarStat label="Issues" value={activeBoardStats.attention} tone="red" />
               <SidebarStat label="Done" value={activeBoardStats.done} tone="green" />
             </div>
-          </section>
-
-          <section className="panel project-panel">
-            <div className="panel-title">
-              <PanelsTopLeft size={16} />
-              <span>Project</span>
-            </div>
-            {activeProject ? (
-              <div className="project-row active-project-row" title={activeProject.path}>
-                <span>{activeProject.name}</span>
-                <small>{compactPath(activeProject.path)}</small>
-              </div>
-            ) : (
-              <div className="muted-line">No project linked</div>
-            )}
           </section>
 
           <section className="panel integration-panel">

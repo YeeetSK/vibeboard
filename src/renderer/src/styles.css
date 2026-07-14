@@ -575,39 +575,10 @@ button {
   color: var(--green);
 }
 
-.project-row,
-.empty-panel,
-.muted-line {
+.empty-panel {
   border: 1px solid var(--line-soft);
   border-radius: 8px;
   background: var(--surface);
-}
-
-.project-row {
-  display: grid;
-  gap: 4px;
-  padding: 10px;
-}
-
-.active-project-row {
-  gap: 6px;
-}
-
-.project-row span,
-.project-row small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.project-row small,
-.muted-line {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.muted-line {
-  padding: 10px;
 }
 
 .cursor-card {
