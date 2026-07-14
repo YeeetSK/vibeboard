@@ -1055,6 +1055,11 @@ textarea {
   resize: vertical;
 }
 
+.fixed-prompt-input {
+  height: 150px;
+  resize: none;
+}
+
 input:focus,
 select:focus,
 textarea:focus,

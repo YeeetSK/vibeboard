@@ -321,19 +321,13 @@ export class VibeBoardStore {
       laneId: input.laneId,
       projectId: input.projectId,
       title: input.title.trim() || 'Untitled task',
-      summary: input.summary.trim(),
+      summary: input.prompt.trim(),
       status: 'idle',
       position: positionRow.position,
       createdAt: timestamp,
       updatedAt: timestamp
     }
-    const conversation: ConversationEntry = {
-      id: id(),
-      taskId: task.id,
-      role: 'user',
-      content: input.prompt.trim() || input.summary.trim() || task.title,
-      createdAt: timestamp
-    }
+    const prompt = input.prompt.trim()
 
     const transaction = this.db.transaction(() => {
       this.db
@@ -352,11 +346,13 @@ export class VibeBoardStore {
           task.createdAt,
           task.updatedAt
         )
-      this.db
-        .prepare(
-          'INSERT INTO conversations (id, taskId, role, content, createdAt) VALUES (?, ?, ?, ?, ?)'
-        )
-        .run(conversation.id, conversation.taskId, conversation.role, conversation.content, conversation.createdAt)
+      if (prompt) {
+        this.db
+          .prepare(
+            'INSERT INTO conversations (id, taskId, role, content, createdAt) VALUES (?, ?, ?, ?, ?)'
+          )
+          .run(id(), task.id, 'user', prompt, timestamp)
+      }
     })
 
     transaction()
@@ -514,7 +510,6 @@ export class VibeBoardStore {
       laneId: productLanes[1].id,
       projectId: project.id,
       title: 'Run Cursor in the background',
-      summary: 'Execute cursor-agent from VibeBoard and stream progress into the task.',
       prompt: 'Wire the task Run button so Cursor runs headlessly in the selected project folder and captured diffs appear on the right.'
     })
     this.updateTaskStatus({ taskId: runningTask.id, status: 'processing' })
@@ -526,7 +521,6 @@ export class VibeBoardStore {
       laneId: productLanes[3].id,
       projectId: project.id,
       title: 'Render real code diffs',
-      summary: 'Show GitHub-style unified diffs with syntax highlighting.',
       prompt: 'Replace the summary-only code changes card with actual unified diffs and language-aware formatting.'
     })
     this.updateTaskStatus({ taskId: doneTask.id, status: 'done_unread' })
@@ -576,7 +570,6 @@ export class VibeBoardStore {
       laneId: productLanes[2].id,
       projectId: null,
       title: 'Select a project before running',
-      summary: 'Cursor runs need a project folder to execute in.',
       prompt: 'Make the Run button explain what is missing when a task has no project selected.'
     })
     this.updateTaskStatus({ taskId: attentionTask.id, status: 'attention' })
@@ -587,7 +580,6 @@ export class VibeBoardStore {
       laneId: productLanes[0].id,
       projectId: project.id,
       title: 'Add accept and discard controls',
-      summary: 'Let users accept, discard, or rerun captured agent changes.',
       prompt: 'Design controls for accepting or discarding code changes from a completed task.'
     })
 
@@ -596,7 +588,6 @@ export class VibeBoardStore {
       laneId: releaseLanes[0].id,
       projectId: project.id,
       title: 'Write release notes',
-      summary: 'Turn merged task history into clean GitHub release notes.',
       prompt: 'Generate concise release notes from completed VibeBoard tasks and changed files.'
     })
 
@@ -605,7 +596,6 @@ export class VibeBoardStore {
       laneId: releaseLanes[2].id,
       projectId: project.id,
       title: 'Check packaged installers',
-      summary: 'Verify local DMG and GitHub release assets before tagging.',
       prompt: 'Run the local packaging checks and list the installer artifacts.'
     })
 

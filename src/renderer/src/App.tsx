@@ -223,7 +223,6 @@ export function App(): ReactElement {
       laneId: newTaskLaneId,
       projectId: input.projectId,
       title: input.title,
-      summary: input.summary,
       prompt: input.prompt
     })
     setNewTaskLaneId(null)
@@ -915,7 +914,7 @@ function TaskCard({
           {task.status === 'attention' && <AlertTriangle size={16} />}
           {(task.status === 'done_unread' || task.status === 'done_read') && <Check size={16} />}
         </div>
-        <p>{task.summary}</p>
+        {task.summary && <p>{task.summary}</p>}
         <small>{project?.name ?? 'No project'}</small>
       </button>
     </article>
@@ -930,7 +929,7 @@ function TaskCardPreview({ task, project }: { task: Task; project: Project | nul
         {task.status === 'attention' && <AlertTriangle size={16} />}
         {(task.status === 'done_unread' || task.status === 'done_read') && <Check size={16} />}
       </div>
-      <p>{task.summary}</p>
+      {task.summary && <p>{task.summary}</p>}
       <small>{project?.name ?? 'No project'}</small>
     </article>
   )
@@ -939,7 +938,6 @@ function TaskCardPreview({ task, project }: { task: Task; project: Project | nul
 interface NewTaskInput {
   projectId: string | null
   title: string
-  summary: string
   prompt: string
 }
 
@@ -953,7 +951,6 @@ function TaskFormModal({
   onSubmit: (input: NewTaskInput) => void
 }): ReactElement {
   const [title, setTitle] = useState('')
-  const [summary, setSummary] = useState('')
   const [prompt, setPrompt] = useState('')
   const [projectId, setProjectId] = useState<string | null>(projects[0]?.id ?? null)
 
@@ -963,7 +960,7 @@ function TaskFormModal({
         className="task-form modal-panel compact"
         onSubmit={(event) => {
           event.preventDefault()
-          onSubmit({ projectId, title, summary, prompt })
+          onSubmit({ projectId, title, prompt })
         }}
       >
         <div className="modal-head">
@@ -991,13 +988,13 @@ function TaskFormModal({
         </label>
 
         <label>
-          <span>Summary</span>
-          <input value={summary} onChange={(event) => setSummary(event.target.value)} />
-        </label>
-
-        <label>
           <span>Prompt</span>
-          <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={6} />
+          <textarea
+            className="fixed-prompt-input"
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            rows={5}
+          />
         </label>
 
         <div className="modal-actions">

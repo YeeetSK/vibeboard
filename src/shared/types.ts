@@ -96,7 +96,6 @@ export interface CreateTaskInput {
   laneId: string
   projectId: string | null
   title: string
-  summary: string
   prompt: string
 }
 
