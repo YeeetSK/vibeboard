@@ -110,6 +110,7 @@ export interface VibeBoardApi {
   setActiveTab: (tabId: string) => Promise<void>
   createLane: (input: CreateLaneInput) => Promise<Lane>
   renameLane: (input: RenameInput) => Promise<void>
+  deleteLane: (laneId: string) => Promise<void>
   createTask: (input: CreateTaskInput) => Promise<Task>
   moveTask: (input: MoveTaskInput) => Promise<void>
   updateTaskStatus: (input: UpdateTaskStatusInput) => Promise<void>

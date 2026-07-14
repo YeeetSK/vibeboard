@@ -35,6 +35,7 @@ import {
   MessageSquare,
   PanelsTopLeft,
   Plus,
+  Trash2,
   X
 } from 'lucide-react'
 import type {
@@ -139,6 +140,12 @@ export function App(): ReactElement {
   const renameLane = async (id: string, name: string): Promise<void> => {
     if (!name.trim()) return
     await window.vibeboard.renameLane({ id, name })
+    await refresh()
+  }
+
+  const deleteLane = async (id: string): Promise<void> => {
+    if (activeLanes.length <= 1) return
+    await window.vibeboard.deleteLane(id)
     await refresh()
   }
 
@@ -275,6 +282,8 @@ export function App(): ReactElement {
                   projects={state.projects}
                   onOpenTask={openTask}
                   onAddTask={() => setNewTaskLaneId(lane.id)}
+                  onDeleteLane={deleteLane}
+                  canDelete={activeLanes.length > 1}
                   onRenameLane={renameLane}
                   onStatusChange={updateTaskStatus}
                 />
@@ -376,6 +385,8 @@ function LaneColumn({
   projects,
   onOpenTask,
   onAddTask,
+  onDeleteLane,
+  canDelete,
   onRenameLane,
   onStatusChange
 }: {
@@ -384,6 +395,8 @@ function LaneColumn({
   projects: Project[]
   onOpenTask: (task: Task) => void
   onAddTask: () => void
+  onDeleteLane: (id: string) => void
+  canDelete: boolean
   onRenameLane: (id: string, name: string) => void
   onStatusChange: (taskId: string, status: TaskStatus) => void
 }): ReactElement {
@@ -397,7 +410,19 @@ function LaneColumn({
           value={lane.name}
           onCommit={(name) => onRenameLane(lane.id, name)}
         />
-        <span>{tasks.length}</span>
+        <div className="lane-header-actions">
+          <span>{tasks.length}</span>
+          {canDelete && (
+            <button
+              className="lane-delete-button"
+              type="button"
+              title="Delete lane"
+              onClick={() => onDeleteLane(lane.id)}
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
       </header>
       <SortableContext items={tasks.map((task) => task.id)} strategy={verticalListSortingStrategy}>
         <div className="task-list">

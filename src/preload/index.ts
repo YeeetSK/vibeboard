@@ -19,6 +19,7 @@ const api: VibeBoardApi = {
   setActiveTab: (tabId: string) => ipcRenderer.invoke('tab:active', tabId),
   createLane: (input: CreateLaneInput) => ipcRenderer.invoke('lane:create', input),
   renameLane: (input: RenameInput) => ipcRenderer.invoke('lane:rename', input),
+  deleteLane: (laneId: string) => ipcRenderer.invoke('lane:delete', laneId),
   createTask: (input: CreateTaskInput) => ipcRenderer.invoke('task:create', input),
   moveTask: (input: MoveTaskInput) => ipcRenderer.invoke('task:move', input),
   updateTaskStatus: (input: UpdateTaskStatusInput) => ipcRenderer.invoke('task:status', input),

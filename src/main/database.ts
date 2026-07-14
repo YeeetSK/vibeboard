@@ -154,6 +154,33 @@ export class VibeBoardStore {
     this.db.prepare('UPDATE lanes SET name = ? WHERE id = ?').run(input.name.trim(), input.id)
   }
 
+  deleteLane(laneId: string): void {
+    const lane = this.db.prepare('SELECT tabId FROM lanes WHERE id = ?').get(laneId) as
+      | { tabId: string }
+      | undefined
+    if (!lane) return
+
+    const laneCount = this.db
+      .prepare('SELECT COUNT(*) as count FROM lanes WHERE tabId = ?')
+      .get(lane.tabId) as { count: number }
+    if (laneCount.count <= 1) {
+      return
+    }
+
+    const transaction = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM lanes WHERE id = ?').run(laneId)
+      const remainingLanes = this.db
+        .prepare('SELECT id FROM lanes WHERE tabId = ? ORDER BY position')
+        .all(lane.tabId) as Array<{ id: string }>
+      const updatePosition = this.db.prepare('UPDATE lanes SET position = ? WHERE id = ?')
+      remainingLanes.forEach((item, position) => {
+        updatePosition.run(position, item.id)
+      })
+    })
+
+    transaction()
+  }
+
   createTask(input: CreateTaskInput): Task {
     const positionRow = this.db
       .prepare('SELECT COALESCE(MAX(position), -1) + 1 as position FROM tasks WHERE laneId = ?')

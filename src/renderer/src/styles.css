@@ -350,8 +350,36 @@ button {
   background: #171717;
 }
 
-.lane-header span {
+.lane-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lane-header-actions span {
   color: var(--muted);
+}
+
+.lane-delete-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-2);
+  cursor: pointer;
+}
+
+.lane-delete-button:hover,
+.lane-delete-button:focus-visible {
+  border-color: var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  outline: none;
 }
 
 .task-list {

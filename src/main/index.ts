@@ -54,6 +54,7 @@ const registerIpc = (): void => {
   ipcMain.handle('tab:active', (_event, tabId: string) => store.setActiveTab(tabId))
   ipcMain.handle('lane:create', (_event, input: CreateLaneInput) => store.createLane(input))
   ipcMain.handle('lane:rename', (_event, input: RenameInput) => store.renameLane(input))
+  ipcMain.handle('lane:delete', (_event, laneId: string) => store.deleteLane(laneId))
   ipcMain.handle('task:create', (_event, input: CreateTaskInput) => store.createTask(input))
   ipcMain.handle('task:move', (_event, input: MoveTaskInput) => store.moveTask(input))
   ipcMain.handle('task:status', (_event, input: UpdateTaskStatusInput) => store.updateTaskStatus(input))
