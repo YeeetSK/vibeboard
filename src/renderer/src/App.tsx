@@ -1010,6 +1010,7 @@ function TaskDetailModal({
               <Code2 size={16} />
               <span>Code changes</span>
             </div>
+            {changes.length > 0 && <ChangeSummary changes={changes} />}
             <div className="change-list">
               {changes.length === 0 ? (
                 <div className="empty-panel">No changes captured</div>
@@ -1062,6 +1063,21 @@ function CodexThread({
           ))
         )}
       </div>
+    </div>
+  )
+}
+
+function ChangeSummary({ changes }: { changes: CodeChange[] }): ReactElement {
+  const added = changes.filter((change) => change.changeType === 'added').length
+  const modified = changes.filter((change) => change.changeType === 'modified').length
+  const deleted = changes.filter((change) => change.changeType === 'deleted').length
+
+  return (
+    <div className="change-summary">
+      <span>{changes.length} files</span>
+      {added > 0 && <span className="summary-added">{added} added</span>}
+      {modified > 0 && <span>{modified} modified</span>}
+      {deleted > 0 && <span className="summary-deleted">{deleted} deleted</span>}
     </div>
   )
 }

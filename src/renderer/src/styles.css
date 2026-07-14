@@ -1070,7 +1070,7 @@ button:focus-visible {
 
 .detail-column {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-height: 0;
   gap: 12px;
   padding: 16px;
@@ -1086,7 +1086,9 @@ button:focus-visible {
   flex-direction: column;
   gap: 10px;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
+  padding-right: 4px;
 }
 
 .codex-thread {
@@ -1094,6 +1096,10 @@ button:focus-visible {
   grid-template-rows: auto 1fr;
   gap: 18px;
   min-height: 0;
+}
+
+.detail-column:first-child {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .prompt-panel {
@@ -1168,7 +1174,39 @@ button:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.change-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.change-summary span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.change-summary .summary-added {
+  color: var(--green);
+}
+
+.change-summary .summary-deleted {
+  color: var(--red);
+}
+
 .diff-file {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  flex: 0 0 auto;
+  max-height: min(520px, 64vh);
+  min-width: 0;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1176,6 +1214,9 @@ button:focus-visible {
 }
 
 .diff-file-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
