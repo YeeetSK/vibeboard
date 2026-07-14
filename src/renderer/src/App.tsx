@@ -18,6 +18,13 @@ import {
   verticalListSortingStrategy
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import hljs from 'highlight.js/lib/core'
+import bash from 'highlight.js/lib/languages/bash'
+import css from 'highlight.js/lib/languages/css'
+import javascript from 'highlight.js/lib/languages/javascript'
+import json from 'highlight.js/lib/languages/json'
+import typescript from 'highlight.js/lib/languages/typescript'
+import xml from 'highlight.js/lib/languages/xml'
 import {
   AlertTriangle,
   Check,
@@ -40,6 +47,14 @@ import type {
   Task,
   TaskStatus
 } from '../../shared/types'
+
+hljs.registerLanguage('bash', bash)
+hljs.registerLanguage('css', css)
+hljs.registerLanguage('javascript', javascript)
+hljs.registerLanguage('json', json)
+hljs.registerLanguage('tsx', typescript)
+hljs.registerLanguage('typescript', typescript)
+hljs.registerLanguage('xml', xml)
 
 const emptyState: AppState = {
   projects: [],
@@ -627,16 +642,9 @@ function TaskDetailModal({
           <section className="detail-column">
             <div className="section-title">
               <MessageSquare size={16} />
-              <span>Conversation</span>
+              <span>Prompt</span>
             </div>
-            <div className="conversation-list">
-              {conversations.map((entry) => (
-                <div key={entry.id} className={`message ${entry.role}`}>
-                  <strong>{entry.role}</strong>
-                  <p>{entry.content}</p>
-                </div>
-              ))}
-            </div>
+            <CodexThread conversations={conversations} task={task} />
           </section>
 
           <section className="detail-column">
@@ -648,13 +656,7 @@ function TaskDetailModal({
               {changes.length === 0 ? (
                 <div className="empty-panel">No changes captured</div>
               ) : (
-                changes.map((change) => (
-                  <div key={change.id} className="change-row">
-                    <span className={`change-type ${change.changeType}`}>{change.changeType}</span>
-                    <strong>{change.filePath}</strong>
-                    <p>{change.summary}</p>
-                  </div>
-                ))
+                changes.map((change) => <DiffViewer key={change.id} change={change} />)
               )}
             </div>
           </section>
@@ -662,6 +664,134 @@ function TaskDetailModal({
       </section>
     </div>
   )
+}
+
+function CodexThread({
+  conversations,
+  task
+}: {
+  conversations: ConversationEntry[]
+  task: Task
+}): ReactElement {
+  const userEntries = conversations.filter((entry) => entry.role === 'user')
+  const agentEntries = conversations.filter((entry) => entry.role !== 'user')
+  const prompt = userEntries[0]?.content || task.summary || task.title
+
+  return (
+    <div className="codex-thread">
+      <section className="prompt-panel">
+        <p>{prompt}</p>
+      </section>
+
+      <div className="agent-stream">
+        {agentEntries.length === 0 ? (
+          <div className="agent-step">
+            <Code2 size={16} />
+            <div>
+              <strong>Agent workspace</strong>
+              <p>{task.status === 'processing' ? 'Working on this task' : task.summary}</p>
+            </div>
+          </div>
+        ) : (
+          agentEntries.map((entry) => (
+            <div key={entry.id} className="agent-step">
+              <Code2 size={16} />
+              <div>
+                <strong>{entry.role === 'assistant' ? 'Agent' : 'System'}</strong>
+                <p>{entry.content}</p>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
+function DiffViewer({ change }: { change: CodeChange }): ReactElement {
+  const diffText = change.diffText.trim() || fallbackDiff(change)
+  const lines = diffText.split('\n')
+
+  return (
+    <article className="diff-file">
+      <header className="diff-file-header">
+        <div>
+          <span className={`change-type ${change.changeType}`}>{change.changeType}</span>
+          <strong>{change.filePath}</strong>
+        </div>
+        <span>{change.language || languageFromPath(change.filePath)}</span>
+      </header>
+      <div className="diff-table" role="table" aria-label={`${change.filePath} diff`}>
+        {lines.map((line, index) => {
+          const kind = diffLineKind(line)
+          const displayLine = kind === 'hunk' ? line : line.slice(1)
+          const language = normalizeLanguage(change.language || languageFromPath(change.filePath))
+
+          return (
+            <div key={`${index}-${line}`} className={`diff-line ${kind}`} role="row">
+              <span className="diff-gutter">{kind === 'context' ? ' ' : line[0]}</span>
+              <span className="diff-number">{kind === 'hunk' ? '' : index + 1}</span>
+              <code
+                dangerouslySetInnerHTML={{
+                  __html: kind === 'hunk' ? escapeHtml(displayLine) : highlightCode(displayLine, language)
+                }}
+              />
+            </div>
+          )
+        })}
+      </div>
+    </article>
+  )
+}
+
+function diffLineKind(line: string): 'added' | 'removed' | 'hunk' | 'context' {
+  if (line.startsWith('@@')) return 'hunk'
+  if (line.startsWith('+')) return 'added'
+  if (line.startsWith('-')) return 'removed'
+  return 'context'
+}
+
+function highlightCode(code: string, language: string): string {
+  if (!code.trim()) return ''
+  if (language && hljs.getLanguage(language)) {
+    return hljs.highlight(code, { language, ignoreIllegals: true }).value
+  }
+  return hljs.highlightAuto(code).value
+}
+
+function fallbackDiff(change: CodeChange): string {
+  const prefix = change.changeType === 'deleted' ? '-' : '+'
+  return `@@ ${change.filePath} @@\n${prefix}${change.summary}`
+}
+
+function languageFromPath(filePath: string): string {
+  const extension = filePath.split('.').pop()?.toLowerCase()
+  const languageMap: Record<string, string> = {
+    css: 'css',
+    html: 'xml',
+    js: 'javascript',
+    jsx: 'javascript',
+    json: 'json',
+    mjs: 'javascript',
+    sh: 'bash',
+    ts: 'typescript',
+    tsx: 'tsx',
+    xml: 'xml'
+  }
+  return extension ? languageMap[extension] || '' : ''
+}
+
+function normalizeLanguage(language: string): string {
+  return language === 'ts' ? 'typescript' : language
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;')
 }
 
 function byPosition<T extends { position: number }>(a: T, b: T): number {

@@ -32,6 +32,7 @@ export class VibeBoardStore {
     this.db.pragma('journal_mode = WAL')
     this.migrate()
     this.seed()
+    this.backfillDemoDiffs()
   }
 
   getState(): AppState {
@@ -312,10 +313,14 @@ export class VibeBoardStore {
         filePath TEXT NOT NULL,
         summary TEXT NOT NULL,
         changeType TEXT NOT NULL,
+        language TEXT NOT NULL DEFAULT '',
+        diffText TEXT NOT NULL DEFAULT '',
         createdAt TEXT NOT NULL,
         FOREIGN KEY (taskId) REFERENCES tasks(id) ON DELETE CASCADE
       );
     `)
+    this.ensureColumn('code_changes', 'language', "TEXT NOT NULL DEFAULT ''")
+    this.ensureColumn('code_changes', 'diffText', "TEXT NOT NULL DEFAULT ''")
   }
 
   private seed(): void {
@@ -338,7 +343,7 @@ export class VibeBoardStore {
     })
     this.db
       .prepare(
-        'INSERT INTO code_changes (id, taskId, filePath, summary, changeType, createdAt) VALUES (?, ?, ?, ?, ?, ?)'
+        'INSERT INTO code_changes (id, taskId, filePath, summary, changeType, language, diffText, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
       )
       .run(
         id(),
@@ -346,8 +351,63 @@ export class VibeBoardStore {
         'src/main/cursorAdapter.ts',
         'Adapter interface is ready for a concrete Cursor integration.',
         'added',
+        'typescript',
+        `@@ -0,0 +1,23 @@
++export interface CursorAdapterStatus {
++  available: boolean
++  label: string
++}
++
++export interface CursorAdapter {
++  status(): Promise<CursorAdapterStatus>
++}
++
++export class PlaceholderCursorAdapter implements CursorAdapter {
++  async status(): Promise<CursorAdapterStatus> {
++    return {
++      available: false,
++      label: 'Cursor adapter ready'
++    }
++  }
++}`,
         now()
       )
+  }
+
+  private backfillDemoDiffs(): void {
+    this.db
+      .prepare(
+        "UPDATE code_changes SET language = ?, diffText = ? WHERE filePath = ? AND COALESCE(diffText, '') = ''"
+      )
+      .run(
+        'typescript',
+        `@@ -0,0 +1,23 @@
++export interface CursorAdapterStatus {
++  available: boolean
++  label: string
++}
++
++export interface CursorAdapter {
++  status(): Promise<CursorAdapterStatus>
++}
++
++export class PlaceholderCursorAdapter implements CursorAdapter {
++  async status(): Promise<CursorAdapterStatus> {
++    return {
++      available: false,
++      label: 'Cursor adapter ready'
++    }
++  }
++}`,
+        'src/main/cursorAdapter.ts'
+      )
+  }
+
+  private ensureColumn(tableName: string, columnName: string, definition: string): void {
+    const columns = this.db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>
+    if (!columns.some((column) => column.name === columnName)) {
+      this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
+    }
   }
 
   private getSetting(key: string): string | null {

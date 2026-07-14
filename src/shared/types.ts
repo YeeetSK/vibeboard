@@ -48,6 +48,8 @@ export interface CodeChange {
   filePath: string
   summary: string
   changeType: 'added' | 'modified' | 'deleted'
+  language: string
+  diffText: string
   createdAt: string
 }
 
