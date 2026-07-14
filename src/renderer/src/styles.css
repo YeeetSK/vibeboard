@@ -479,6 +479,12 @@ button {
   border-radius: 8px;
   background: var(--surface);
   contain: layout paint;
+  cursor: grab;
+  touch-action: none;
+}
+
+.task-card:active {
+  cursor: grabbing;
 }
 
 .task-card.dragging {
@@ -546,32 +552,6 @@ button {
   cursor: pointer;
 }
 
-.task-card-head {
-  display: grid;
-  grid-template-columns: 28px 1fr;
-  align-items: center;
-  gap: 8px;
-}
-
-.drag-handle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 30px;
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #171717;
-  color: var(--muted);
-  cursor: grab;
-  touch-action: none;
-}
-
-.drag-handle:active {
-  cursor: grabbing;
-}
-
 .task-title-row {
   display: flex;
   align-items: start;
@@ -598,7 +578,6 @@ button {
   color: var(--muted-2);
 }
 
-.status-select,
 input,
 select,
 textarea {
@@ -607,13 +586,6 @@ textarea {
   border-radius: 8px;
   background: #171717;
   color: var(--text);
-}
-
-.status-select {
-  height: 30px;
-  padding: 0 8px;
-  color: var(--muted);
-  font-size: 12px;
 }
 
 .add-task-button {

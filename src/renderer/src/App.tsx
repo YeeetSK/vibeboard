@@ -30,7 +30,6 @@ import {
   Check,
   Code2,
   FolderPlus,
-  GripVertical,
   LayoutDashboard,
   MessageSquare,
   PanelsTopLeft,
@@ -48,7 +47,6 @@ import type {
   Lane,
   Project,
   Task,
-  TaskStatus
 } from '../../shared/types'
 
 hljs.registerLanguage('bash', bash)
@@ -69,14 +67,6 @@ const emptyState: AppState = {
   activeTabId: ''
 }
 
-const statusOptions: Array<{ value: TaskStatus; label: string }> = [
-  { value: 'idle', label: 'Idle' },
-  { value: 'processing', label: 'Processing' },
-  { value: 'attention', label: 'Needs attention' },
-  { value: 'done_unread', label: 'Done' },
-  { value: 'done_read', label: 'Read' }
-]
-
 const tabColors = ['#ff7a1a', '#f7c56b', '#2fcf75', '#42b883', '#9b8cff', '#ff5f57']
 
 export function App(): ReactElement {
@@ -95,7 +85,7 @@ export function App(): ReactElement {
   const activeDragTask = state.tasks.find((task) => task.id === activeDragTaskId) ?? null
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(PointerSensor, { activationConstraint: { delay: 180, tolerance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
 
@@ -181,11 +171,6 @@ export function App(): ReactElement {
       await window.vibeboard.markTaskRead(task.id)
       await refresh()
     }
-  }
-
-  const updateTaskStatus = async (taskId: string, status: TaskStatus): Promise<void> => {
-    await window.vibeboard.updateTaskStatus({ taskId, status })
-    await refresh()
   }
 
   const runTaskWithCursor = async (taskId: string): Promise<void> => {
@@ -303,7 +288,6 @@ export function App(): ReactElement {
                   onDeleteLane={deleteLane}
                   canDelete={activeLanes.length > 1}
                   onRenameLane={renameLane}
-                  onStatusChange={updateTaskStatus}
                 />
               ))}
             </div>
@@ -477,8 +461,7 @@ function LaneColumn({
   onAddTask,
   onDeleteLane,
   canDelete,
-  onRenameLane,
-  onStatusChange
+  onRenameLane
 }: {
   lane: Lane
   tasks: Task[]
@@ -488,7 +471,6 @@ function LaneColumn({
   onDeleteLane: (id: string) => void
   canDelete: boolean
   onRenameLane: (id: string, name: string) => void
-  onStatusChange: (taskId: string, status: TaskStatus) => void
 }): ReactElement {
   const { setNodeRef, isOver } = useDroppable({ id: lane.id })
 
@@ -522,7 +504,6 @@ function LaneColumn({
               task={task}
               project={projects.find((project) => project.id === task.projectId) ?? null}
               onOpen={() => onOpenTask(task)}
-              onStatusChange={onStatusChange}
             />
           ))}
         </div>
@@ -582,13 +563,11 @@ function EditableTitle({
 function TaskCard({
   task,
   project,
-  onOpen,
-  onStatusChange
+  onOpen
 }: {
   task: Task
   project: Project | null
   onOpen: () => void
-  onStatusChange: (taskId: string, status: TaskStatus) => void
 }): ReactElement {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id
@@ -603,25 +582,9 @@ function TaskCard({
       ref={setNodeRef}
       style={style}
       className={`task-card status-${task.status} ${isDragging ? 'dragging' : ''}`}
+      {...attributes}
+      {...listeners}
     >
-      <div className="task-card-head">
-        <button className="drag-handle" type="button" title="Drag task" {...attributes} {...listeners}>
-          <GripVertical size={16} />
-        </button>
-        <select
-          className="status-select"
-          value={task.status}
-          onChange={(event) => onStatusChange(task.id, event.target.value as TaskStatus)}
-          aria-label="Task status"
-        >
-          {statusOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </div>
-
       <button className="task-open" type="button" onClick={onOpen}>
         <div className="task-title-row">
           <h3>{task.title}</h3>
