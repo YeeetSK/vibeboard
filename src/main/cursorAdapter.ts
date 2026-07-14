@@ -6,7 +6,26 @@ import { promisify } from 'node:util'
 import type { CursorDebugInfo, CursorStatus, RunTaskResult } from '../shared/types'
 
 const execFileAsync = promisify(execFile)
-const cursorInstallCommand = 'echo "Downloading Cursor CLI installer..." && curl https://cursor.com/install -fsS | bash'
+const cursorAgentVersion = '2026.07.09-a3815c0'
+export const cursorInstallCommand = [
+  'set -e',
+  'OS="$(uname -s)"',
+  'case "$OS" in Darwin*) OS="darwin" ;; Linux*) OS="linux" ;; *) echo "Unsupported OS: $OS"; exit 1 ;; esac',
+  'ARCH="$(uname -m)"',
+  'case "$ARCH" in arm64|aarch64) ARCH="arm64" ;; x86_64|amd64) ARCH="x64" ;; *) echo "Unsupported architecture: $ARCH"; exit 1 ;; esac',
+  `VERSION="${cursorAgentVersion}"`,
+  'FINAL_DIR="$HOME/.local/share/cursor-agent/versions/$VERSION"',
+  'TEMP_DIR="$HOME/.local/share/cursor-agent/versions/.tmp-$VERSION-$(date +%s)"',
+  'URL="https://downloads.cursor.com/lab/$VERSION/$OS/$ARCH/agent-cli-package.tar.gz"',
+  'echo "Downloading Cursor Agent package..."',
+  'mkdir -p "$TEMP_DIR" "$HOME/.local/bin"',
+  'curl -fL "$URL" | tar --strip-components=1 -xzf - -C "$TEMP_DIR"',
+  'rm -rf "$FINAL_DIR"',
+  'mv "$TEMP_DIR" "$FINAL_DIR"',
+  'ln -sf "$FINAL_DIR/cursor-agent" "$HOME/.local/bin/agent"',
+  'ln -sf "$FINAL_DIR/cursor-agent" "$HOME/.local/bin/cursor-agent"',
+  'echo "Cursor Agent installed."'
+].join(' && ')
 let lastInstallOutput = ''
 
 export interface CursorAdapter {
@@ -81,7 +100,7 @@ async function getShellPath(): Promise<string> {
 
 async function canRun(command: string): Promise<boolean> {
   try {
-    await execFileAsync(command, ['--version'])
+    await execFileAsync(command, ['--version'], { timeout: 5000 })
     return true
   } catch {
     return false

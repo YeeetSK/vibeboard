@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { VibeBoardStore } from './database'
-import { PlaceholderCursorAdapter } from './cursorAdapter'
+import { PlaceholderCursorAdapter, cursorInstallCommand } from './cursorAdapter'
 import { runCursorTask } from './cursorRunner'
 import type {
   CreateLaneInput,
@@ -102,7 +102,7 @@ const registerIpc = (): void => {
 }
 
 const openCursorInstallTerminal = async (): Promise<void> => {
-  const command = 'curl https://cursor.com/install -fsS | bash; echo; echo "Done. Return to VibeBoard and click Connect."; read -k 1 "?Press any key to close."'
+  const command = `${cursorInstallCommand}; echo; echo "Done. Return to VibeBoard and click Connect."; read -k 1 "?Press any key to close."`
   if (process.platform === 'darwin') {
     await execFileAsync('osascript', ['-e', `tell application "Terminal" to do script ${JSON.stringify(command)}`])
     await execFileAsync('osascript', ['-e', 'tell application "Terminal" to activate'])
