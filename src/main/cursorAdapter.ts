@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import type { CursorDebugInfo, CursorStatus, RunTaskResult } from '../shared/types'
 
 const execFileAsync = promisify(execFile)
+const cursorInstallCommand = 'curl https://cursor.com/install -fsS | bash'
 let lastInstallOutput = ''
 
 export interface CursorAdapter {
@@ -46,7 +47,7 @@ export async function getCursorDebugInfo(): Promise<CursorDebugInfo> {
     cursorAgentCommand: await resolveCursorAgentCommand(),
     checkedCursorCommands: cursorCommandCandidates(),
     checkedCursorAgentCommands: cursorAgentCandidates(),
-    installCommand: 'cursor agent --help, fallback: curl https://cursor.com/install -fsS | bash',
+    installCommand: cursorInstallCommand,
     lastInstallOutput,
     processPath: process.env.PATH ?? '',
     shellPath: await getShellPath()
@@ -91,14 +92,9 @@ function cursorAgentCandidates(): string[] {
 }
 
 async function installCursorCli(): Promise<RunTaskResult> {
-  const cursorCommand = await resolveCursorCommand()
-  lastInstallOutput = cursorCommand
-    ? `Running: ${cursorCommand} agent --help`
-    : 'Running: curl https://cursor.com/install -fsS | bash'
+  lastInstallOutput = `Running: ${cursorInstallCommand}`
   console.info('[VibeBoard Cursor install]', lastInstallOutput)
-  const result = cursorCommand
-    ? await runInstallCommand(cursorCommand, ['agent', '--help'])
-    : await runInstallCommand('/bin/zsh', ['-lc', 'curl https://cursor.com/install -fsS | bash'])
+  const result = await runInstallCommand('/bin/zsh', ['-lc', cursorInstallCommand])
   const command = await resolveCursorAgentCommand()
 
   if (command) {
@@ -150,9 +146,9 @@ function runInstallCommand(command: string, args: string[]): Promise<RunTaskResu
       lastInstallOutput = output.trim() || lastInstallOutput
       finish({
         started: false,
-        message: 'Still waiting for Cursor CLI install. If Cursor opened a sign-in prompt, finish it there, then click Connect.'
+        message: 'No installer output yet. Use Terminal install to see the Cursor installer directly.'
       })
-    }, 60000)
+    }, 30000)
 
     child.stdout.on('data', (chunk: Buffer) => {
       output += chunk.toString()

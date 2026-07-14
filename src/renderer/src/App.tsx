@@ -362,6 +362,7 @@ export function App(): ReactElement {
               isInstalling={isInstallingCursorCli}
               status={cursorStatus}
               onInstallCli={installCursorCli}
+              onInstallTerminal={() => window.vibeboard.openCursorInstallTerminal()}
               onOpenSetup={() => window.vibeboard.openCursorSetup()}
               onRefresh={refreshCursorStatus}
             />
@@ -458,6 +459,7 @@ function CursorConnection({
   isInstalling,
   status,
   onInstallCli,
+  onInstallTerminal,
   onOpenSetup,
   onRefresh
 }: {
@@ -465,6 +467,7 @@ function CursorConnection({
   isInstalling: boolean
   status: CursorStatus
   onInstallCli: () => void
+  onInstallTerminal: () => void
   onOpenSetup: () => void
   onRefresh: () => void
 }): ReactElement {
@@ -483,7 +486,13 @@ function CursorConnection({
         {!status.available && (
           <button className="primary-action setup-button" type="button" onClick={onInstallCli} disabled={isInstalling}>
             <Download size={15} />
-            <span>{isInstalling ? 'Installing' : 'Install CLI'}</span>
+            <span>{isInstalling ? 'Installing' : 'Install in app'}</span>
+          </button>
+        )}
+        {!status.available && (
+          <button className="secondary-action setup-button" type="button" onClick={onInstallTerminal} disabled={isInstalling}>
+            <ExternalLink size={15} />
+            <span>Terminal install</span>
           </button>
         )}
         <button className="secondary-action setup-button" type="button" onClick={onRefresh} disabled={isInstalling}>
@@ -501,8 +510,8 @@ function CursorConnection({
       <div className="cursor-steps">
         {!status.available && (
           <ol>
-            <li>Install CLI.</li>
-            <li>Sign in if Cursor asks.</li>
+            <li>Install in app or Terminal.</li>
+            <li>Finish any sign-in prompt.</li>
             <li>Click Connect.</li>
           </ol>
         )}

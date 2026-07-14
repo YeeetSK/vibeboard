@@ -2,6 +2,8 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { VibeBoardStore } from './database'
 import { PlaceholderCursorAdapter } from './cursorAdapter'
 import { runCursorTask } from './cursorRunner'
@@ -21,6 +23,7 @@ let store: VibeBoardStore
 const cursorAdapter = new PlaceholderCursorAdapter()
 const runningTasks = new Set<string>()
 const windows = new Set<BrowserWindow>()
+const execFileAsync = promisify(execFile)
 
 const createWindow = (): void => {
   const mainWindow = new BrowserWindow({
@@ -94,7 +97,19 @@ const registerIpc = (): void => {
   ipcMain.handle('task:read', (_event, taskId: string) => store.markTaskRead(taskId))
   ipcMain.handle('cursor:status', () => cursorAdapter.status())
   ipcMain.handle('cursor:installCli', () => cursorAdapter.installCli())
+  ipcMain.handle('cursor:installTerminal', () => openCursorInstallTerminal())
   ipcMain.handle('cursor:setup', () => openCursorSetup())
+}
+
+const openCursorInstallTerminal = async (): Promise<void> => {
+  const command = 'curl https://cursor.com/install -fsS | bash; echo; echo "Done. Return to VibeBoard and click Connect."; read -k 1 "?Press any key to close."'
+  if (process.platform === 'darwin') {
+    await execFileAsync('osascript', ['-e', `tell application "Terminal" to do script ${JSON.stringify(command)}`])
+    await execFileAsync('osascript', ['-e', 'tell application "Terminal" to activate'])
+    return
+  }
+
+  await shell.openExternal('https://cursor.com/docs/cli/installation')
 }
 
 const openCursorSetup = async (): Promise<void> => {
