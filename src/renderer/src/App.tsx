@@ -90,6 +90,7 @@ export function App(): ReactElement {
     label: 'Checking Cursor'
   })
   const [isInstallingCursorCli, setInstallingCursorCli] = useState(false)
+  const [cursorFeedback, setCursorFeedback] = useState('')
   const [isSidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [deleteTabId, setDeleteTabId] = useState<string | null>(null)
 
@@ -132,14 +133,19 @@ export function App(): ReactElement {
   }, [])
 
   const refreshCursorStatus = async (): Promise<void> => {
-    setCursorStatus(await window.vibeboard.getCursorAdapterStatus())
+    const nextStatus = await window.vibeboard.getCursorAdapterStatus()
+    setCursorStatus(nextStatus)
+    setCursorFeedback(nextStatus.available ? 'Cursor CLI is ready.' : 'cursor-agent is still missing.')
   }
 
   const installCursorCli = async (): Promise<void> => {
     setInstallingCursorCli(true)
+    setCursorFeedback('Installing Cursor CLI. This can take a minute.')
     try {
-      await window.vibeboard.installCursorCli()
-      await refreshCursorStatus()
+      const result = await window.vibeboard.installCursorCli()
+      setCursorFeedback(result.message)
+      const nextStatus = await window.vibeboard.getCursorAdapterStatus()
+      setCursorStatus(nextStatus)
     } finally {
       setInstallingCursorCli(false)
     }
@@ -341,6 +347,7 @@ export function App(): ReactElement {
               <span>Cursor</span>
             </div>
             <CursorConnection
+              feedback={cursorFeedback}
               isInstalling={isInstallingCursorCli}
               status={cursorStatus}
               onInstallCli={installCursorCli}
@@ -436,12 +443,14 @@ export function App(): ReactElement {
 }
 
 function CursorConnection({
+  feedback,
   isInstalling,
   status,
   onInstallCli,
   onOpenSetup,
   onRefresh
 }: {
+  feedback: string
   isInstalling: boolean
   status: { available: boolean; label: string }
   onInstallCli: () => void
@@ -477,6 +486,7 @@ function CursorConnection({
           </button>
         )}
       </div>
+      {feedback && <div className="cursor-feedback">{feedback}</div>}
       <div className="cursor-steps">
         {!status.available && (
           <ol>
