@@ -93,6 +93,7 @@ const registerIpc = (): void => {
   ipcMain.handle('task:status', (_event, input: UpdateTaskStatusInput) => store.updateTaskStatus(input))
   ipcMain.handle('task:read', (_event, taskId: string) => store.markTaskRead(taskId))
   ipcMain.handle('cursor:status', () => cursorAdapter.status())
+  ipcMain.handle('cursor:installCli', () => cursorAdapter.installCli())
   ipcMain.handle('cursor:setup', () => openCursorSetup())
 }
 

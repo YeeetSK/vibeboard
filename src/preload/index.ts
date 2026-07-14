@@ -37,6 +37,7 @@ const api: VibeBoardApi = {
   updateTaskStatus: (input: UpdateTaskStatusInput) => ipcRenderer.invoke('task:status', input),
   markTaskRead: (taskId: string) => ipcRenderer.invoke('task:read', taskId),
   getCursorAdapterStatus: () => ipcRenderer.invoke('cursor:status'),
+  installCursorCli: () => ipcRenderer.invoke('cursor:installCli'),
   openCursorSetup: () => ipcRenderer.invoke('cursor:setup')
 }
 

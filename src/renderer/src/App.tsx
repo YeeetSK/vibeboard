@@ -31,6 +31,7 @@ import {
   CheckCircle2,
   Code2,
   Download,
+  ExternalLink,
   FolderPlus,
   History,
   LayoutDashboard,
@@ -88,6 +89,7 @@ export function App(): ReactElement {
     available: false,
     label: 'Checking Cursor'
   })
+  const [isInstallingCursorCli, setInstallingCursorCli] = useState(false)
   const [isSidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [deleteTabId, setDeleteTabId] = useState<string | null>(null)
 
@@ -131,6 +133,16 @@ export function App(): ReactElement {
 
   const refreshCursorStatus = async (): Promise<void> => {
     setCursorStatus(await window.vibeboard.getCursorAdapterStatus())
+  }
+
+  const installCursorCli = async (): Promise<void> => {
+    setInstallingCursorCli(true)
+    try {
+      await window.vibeboard.installCursorCli()
+      await refreshCursorStatus()
+    } finally {
+      setInstallingCursorCli(false)
+    }
   }
 
   const refresh = async (): Promise<void> => {
@@ -329,7 +341,9 @@ export function App(): ReactElement {
               <span>Cursor</span>
             </div>
             <CursorConnection
+              isInstalling={isInstallingCursorCli}
               status={cursorStatus}
+              onInstallCli={installCursorCli}
               onOpenSetup={() => window.vibeboard.openCursorSetup()}
               onRefresh={refreshCursorStatus}
             />
@@ -422,11 +436,15 @@ export function App(): ReactElement {
 }
 
 function CursorConnection({
+  isInstalling,
   status,
+  onInstallCli,
   onOpenSetup,
   onRefresh
 }: {
+  isInstalling: boolean
   status: { available: boolean; label: string }
+  onInstallCli: () => void
   onOpenSetup: () => void
   onRefresh: () => void
 }): ReactElement {
@@ -443,21 +461,27 @@ function CursorConnection({
       </div>
       <div className="cursor-actions">
         {!status.available && (
-          <button className="primary-action setup-button" type="button" onClick={onOpenSetup}>
+          <button className="primary-action setup-button" type="button" onClick={onInstallCli} disabled={isInstalling}>
             <Download size={15} />
-            <span>Open Cursor</span>
+            <span>{isInstalling ? 'Installing' : 'Install CLI'}</span>
           </button>
         )}
-        <button className="secondary-action setup-button" type="button" onClick={onRefresh}>
+        <button className="secondary-action setup-button" type="button" onClick={onRefresh} disabled={isInstalling}>
           <RefreshCw size={15} />
           <span>Connect</span>
         </button>
+        {!status.available && (
+          <button className="secondary-action setup-button" type="button" onClick={onOpenSetup} disabled={isInstalling}>
+            <ExternalLink size={15} />
+            <span>Open Cursor</span>
+          </button>
+        )}
       </div>
       <div className="cursor-steps">
         {!status.available && (
           <ol>
-            <li>Open Cursor.</li>
-            <li>Install command line tools.</li>
+            <li>Install CLI.</li>
+            <li>Sign in if Cursor asks.</li>
             <li>Click Connect.</li>
           </ol>
         )}

@@ -142,5 +142,6 @@ export interface VibeBoardApi {
   updateTaskStatus: (input: UpdateTaskStatusInput) => Promise<void>
   markTaskRead: (taskId: string) => Promise<void>
   getCursorAdapterStatus: () => Promise<{ available: boolean; label: string }>
+  installCursorCli: () => Promise<RunTaskResult>
   openCursorSetup: () => Promise<void>
 }

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { CodeChange } from '../shared/types'
+import { resolveCursorAgentCommand } from './cursorAdapter'
 import { VibeBoardStore } from './database'
 
 interface RunCursorTaskInput {
@@ -9,8 +10,6 @@ interface RunCursorTaskInput {
   store: VibeBoardStore
   onStateChanged: () => void
 }
-
-const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 
 export async function runCursorTask({ taskId, store, onStateChanged }: RunCursorTaskInput): Promise<void> {
   const context = store.getTaskRunContext(taskId)
@@ -30,8 +29,8 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
   store.appendConversation(taskId, 'system', 'Starting Cursor agent in the project folder.')
   onStateChanged()
 
-  const hasCursorAgent = await commandExists('cursor-agent')
-  if (!hasCursorAgent) {
+  const cursorAgentCommand = await resolveCursorAgentCommand()
+  if (!cursorAgentCommand) {
     store.updateTaskStatus({ taskId, status: 'attention' })
     store.appendConversation(taskId, 'system', 'cursor-agent is not installed or is not available on PATH.')
     onStateChanged()
@@ -42,8 +41,7 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
   store.appendConversation(taskId, 'system', 'Prepared a focused project brief to reduce unnecessary repo exploration.')
   onStateChanged()
 
-  const command = `cursor-agent --print --force --output-format stream-json ${shellQuote(optimizedPrompt)}`
-  const child = spawn('/bin/zsh', ['-lc', command], {
+  const child = spawn(cursorAgentCommand, ['--print', '--force', '--output-format', 'stream-json', optimizedPrompt], {
     cwd: projectPath,
     env: process.env
   })
@@ -243,14 +241,6 @@ function scoreFile(file: string, promptTerms: Set<string>, isChanged: boolean): 
 
 function isIgnoredForContext(file: string): boolean {
   return /(^|\/)(node_modules|dist|out|release|\.git)\//.test(file) || /\.(png|jpg|jpeg|gif|webp|dmg|exe|zip)$/i.test(file)
-}
-
-function commandExists(command: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const child = spawn('/bin/zsh', ['-lc', `command -v ${command}`], { env: process.env })
-    child.on('close', (code) => resolve(code === 0))
-    child.on('error', () => resolve(false))
-  })
 }
 
 function summarizeCursorLine(line: string): string {
