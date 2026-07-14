@@ -6,7 +6,7 @@ import { promisify } from 'node:util'
 import type { CursorDebugInfo, CursorStatus, RunTaskResult } from '../shared/types'
 
 const execFileAsync = promisify(execFile)
-const cursorInstallCommand = 'curl https://cursor.com/install -fsS | bash'
+const cursorInstallCommand = 'echo "Downloading Cursor CLI installer..." && curl https://cursor.com/install -fsS | bash'
 let lastInstallOutput = ''
 
 export interface CursorAdapter {

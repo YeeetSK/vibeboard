@@ -137,6 +137,8 @@ export interface CursorStatus {
   debug: CursorDebugInfo
 }
 
+export type CursorSetupPhase = 'checking' | 'preparing' | 'ready' | 'failed'
+
 export interface VibeBoardApi {
   getState: () => Promise<AppState>
   onStateChanged: (callback: () => void) => () => void

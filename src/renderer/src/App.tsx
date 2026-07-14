@@ -30,7 +30,6 @@ import {
   Check,
   CheckCircle2,
   Code2,
-  Download,
   ExternalLink,
   FolderPlus,
   History,
@@ -43,7 +42,6 @@ import {
   Play,
   Pin,
   RadioTower,
-  RefreshCw,
   RotateCcw,
   Send,
   Trash2,
@@ -54,6 +52,7 @@ import type {
   BoardTab,
   CodeChange,
   ConversationEntry,
+  CursorSetupPhase,
   CursorStatus,
   Lane,
   Project,
@@ -102,6 +101,7 @@ export function App(): ReactElement {
   const [activeDragTaskId, setActiveDragTaskId] = useState<string | null>(null)
   const [cursorStatus, setCursorStatus] = useState<CursorStatus>(emptyCursorStatus)
   const [isInstallingCursorCli, setInstallingCursorCli] = useState(false)
+  const [cursorSetupPhase, setCursorSetupPhase] = useState<CursorSetupPhase>('checking')
   const [cursorFeedback, setCursorFeedback] = useState('')
   const [isSidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [deleteTabId, setDeleteTabId] = useState<string | null>(null)
@@ -138,26 +138,64 @@ export function App(): ReactElement {
 
   useEffect(() => {
     refresh()
-    refreshCursorStatus()
+    prepareCursorOnLaunch()
     return window.vibeboard.onStateChanged(() => {
       refresh()
     })
   }, [])
 
-  const refreshCursorStatus = async (): Promise<void> => {
+  useEffect(() => {
+    if (cursorSetupPhase !== 'failed') return
+    const intervalId = window.setInterval(() => {
+      refreshCursorStatus({ quiet: true })
+    }, 5000)
+    return () => window.clearInterval(intervalId)
+  }, [cursorSetupPhase])
+
+  const prepareCursorOnLaunch = async (): Promise<void> => {
     const nextStatus = await window.vibeboard.getCursorAdapterStatus()
     setCursorStatus(nextStatus)
-    setCursorFeedback(nextStatus.available ? 'Cursor CLI is ready.' : 'Cursor CLI command `agent` is still missing.')
+    if (nextStatus.available) {
+      setCursorSetupPhase('ready')
+      setCursorFeedback('')
+      return
+    }
+
+    setCursorSetupPhase('preparing')
+    setCursorFeedback('')
+    const result = await window.vibeboard.installCursorCli()
+    const statusAfterInstall = await window.vibeboard.getCursorAdapterStatus()
+    setCursorStatus(statusAfterInstall)
+    if (statusAfterInstall.available) {
+      setCursorSetupPhase('ready')
+      setCursorFeedback('')
+      return
+    }
+
+    setCursorSetupPhase('failed')
+    setCursorFeedback(result.message || 'Cursor CLI setup needs attention.')
   }
 
-  const installCursorCli = async (): Promise<void> => {
+  const refreshCursorStatus = async (options: { quiet?: boolean } = {}): Promise<void> => {
+    const nextStatus = await window.vibeboard.getCursorAdapterStatus()
+    setCursorStatus(nextStatus)
+    if (nextStatus.available) {
+      setCursorSetupPhase('ready')
+      setCursorFeedback('')
+      return
+    }
+
+    setCursorSetupPhase('failed')
+    if (!options.quiet) {
+      setCursorFeedback('Cursor CLI command `agent` is still missing.')
+    }
+  }
+
+  const openCursorRepair = async (): Promise<void> => {
     setInstallingCursorCli(true)
-    setCursorFeedback('Installing Cursor CLI. This can take a minute.')
+    setCursorFeedback('Terminal install opened. VibeBoard will recheck automatically.')
     try {
-      const result = await window.vibeboard.installCursorCli()
-      setCursorFeedback(result.message)
-      const nextStatus = await window.vibeboard.getCursorAdapterStatus()
-      setCursorStatus(nextStatus)
+      await window.vibeboard.openCursorInstallTerminal()
     } finally {
       setInstallingCursorCli(false)
     }
@@ -353,19 +391,20 @@ export function App(): ReactElement {
           </section>
 
           <section className="panel integration-panel">
-            <div className="panel-title">
-              <RadioTower size={16} />
-              <span>Cursor</span>
-            </div>
-            <CursorConnection
-              feedback={cursorFeedback}
-              isInstalling={isInstallingCursorCli}
-              status={cursorStatus}
-              onInstallCli={installCursorCli}
-              onInstallTerminal={() => window.vibeboard.openCursorInstallTerminal()}
-              onOpenSetup={() => window.vibeboard.openCursorSetup()}
-              onRefresh={refreshCursorStatus}
-            />
+            {cursorSetupPhase === 'failed' && (
+              <>
+                <div className="panel-title">
+                  <RadioTower size={16} />
+                  <span>Cursor</span>
+                </div>
+                <CursorConnection
+                  feedback={cursorFeedback}
+                  isInstalling={isInstallingCursorCli}
+                  status={cursorStatus}
+                  onRepair={openCursorRepair}
+                />
+              </>
+            )}
           </section>
         </aside>
 
@@ -458,64 +497,29 @@ function CursorConnection({
   feedback,
   isInstalling,
   status,
-  onInstallCli,
-  onInstallTerminal,
-  onOpenSetup,
-  onRefresh
+  onRepair
 }: {
   feedback: string
   isInstalling: boolean
   status: CursorStatus
-  onInstallCli: () => void
-  onInstallTerminal: () => void
-  onOpenSetup: () => void
-  onRefresh: () => void
+  onRepair: () => void
 }): ReactElement {
   return (
-    <div className={status.available ? 'cursor-card connected' : 'cursor-card missing'}>
+    <div className="cursor-card missing">
       <div className="cursor-status-row">
         <div>
           <Code2 size={15} />
-          <span>{status.available ? 'Connected' : 'Not connected'}</span>
+          <span>Needs setup</span>
         </div>
-        <span className={status.available ? 'connection-pill connected' : 'connection-pill missing'}>
-          {status.available ? 'Ready' : 'Missing'}
-        </span>
+        <span className="connection-pill missing">Missing</span>
       </div>
       <div className="cursor-actions">
-        {!status.available && (
-          <button className="primary-action setup-button" type="button" onClick={onInstallCli} disabled={isInstalling}>
-            <Download size={15} />
-            <span>{isInstalling ? 'Installing' : 'Install in app'}</span>
-          </button>
-        )}
-        {!status.available && (
-          <button className="secondary-action setup-button" type="button" onClick={onInstallTerminal} disabled={isInstalling}>
-            <ExternalLink size={15} />
-            <span>Terminal install</span>
-          </button>
-        )}
-        <button className="secondary-action setup-button" type="button" onClick={onRefresh} disabled={isInstalling}>
-          <RefreshCw size={15} />
-          <span>Connect</span>
+        <button className="primary-action setup-button" type="button" onClick={onRepair} disabled={isInstalling}>
+          <ExternalLink size={15} />
+          <span>{isInstalling ? 'Opening' : 'Fix in Terminal'}</span>
         </button>
-        {!status.available && (
-          <button className="secondary-action setup-button" type="button" onClick={onOpenSetup} disabled={isInstalling}>
-            <ExternalLink size={15} />
-            <span>Open Cursor</span>
-          </button>
-        )}
       </div>
       {feedback && <div className="cursor-feedback">{feedback}</div>}
-      <div className="cursor-steps">
-        {!status.available && (
-          <ol>
-            <li>Install in app or Terminal.</li>
-            <li>Finish any sign-in prompt.</li>
-            <li>Click Connect.</li>
-          </ol>
-        )}
-      </div>
       {import.meta.env.DEV && <CursorDebugPanel status={status} />}
     </div>
   )
