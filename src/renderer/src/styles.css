@@ -1251,7 +1251,7 @@ button:focus-visible {
 .agent-stream {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
   min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
@@ -1259,13 +1259,13 @@ button:focus-visible {
 
 .agent-step {
   display: grid;
-  grid-template-columns: 22px 1fr;
-  gap: 10px;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 12px;
   color: var(--muted);
 }
 
 .agent-step svg {
-  margin-top: 2px;
+  margin-top: 1px;
   color: var(--muted-2);
 }
 
@@ -1278,14 +1278,37 @@ button:focus-visible {
 }
 
 .agent-step p {
-  margin: 0;
+  margin: 0 0 10px;
   color: var(--text);
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
-.user-step strong {
+.agent-step p:last-child {
+  margin-bottom: 0;
+}
+
+.role-user strong {
   color: var(--text);
+}
+
+.role-system {
+  grid-template-columns: 20px minmax(0, 1fr);
+  opacity: 0.72;
+}
+
+.role-system strong {
+  margin-bottom: 4px;
+  color: var(--muted-2);
+}
+
+.role-system p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.role-assistant p {
+  max-width: 76ch;
 }
 
 .thread-composer {
@@ -1426,7 +1449,7 @@ button:focus-visible {
 
 .diff-line {
   display: grid;
-  grid-template-columns: 28px 44px minmax(max-content, 1fr);
+  grid-template-columns: 28px 48px 48px minmax(max-content, 1fr);
   min-width: 100%;
   border-bottom: 1px solid rgba(58, 58, 58, 0.24);
 }

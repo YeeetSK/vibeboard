@@ -1213,7 +1213,9 @@ function CodexThread({
   const [draft, setDraft] = useState('')
   const userEntries = conversations.filter((entry) => entry.role === 'user')
   const prompt = userEntries[0]?.content || task.summary || task.title
-  const threadEntries = conversations.filter((entry) => entry.id !== userEntries[0]?.id)
+  const threadEntries = compactConversationEntries(
+    conversations.filter((entry) => entry.id !== userEntries[0]?.id && !isNoisyConversationEntry(entry))
+  )
 
   const send = (): void => {
     const content = draft.trim()
@@ -1239,11 +1241,13 @@ function CodexThread({
           </div>
         ) : (
           threadEntries.map((entry) => (
-            <div key={entry.id} className={entry.role === 'user' ? 'agent-step user-step' : 'agent-step'}>
+            <div key={entry.id} className={`agent-step role-${entry.role}`}>
               {entry.role === 'user' ? <MessageSquare size={16} /> : <Code2 size={16} />}
               <div>
                 <strong>{entry.role === 'user' ? 'You' : entry.role === 'assistant' ? 'Agent' : 'System'}</strong>
-                <p>{entry.content}</p>
+                {entry.content.split(/\n{2,}/).map((paragraph) => (
+                  <p key={paragraph}>{paragraph}</p>
+                ))}
               </div>
             </div>
           ))
@@ -1272,6 +1276,43 @@ function CodexThread({
   )
 }
 
+function isNoisyConversationEntry(entry: ConversationEntry): boolean {
+  const content = entry.content.trim()
+  if (!content) return true
+  if (/^(system|user|assistant|thinking|tool_call|result|metadata|start|end|done)$/i.test(content)) return true
+  if (content.includes('You are running inside VibeBoard as a background coding agent.')) return true
+  if (content.includes('Token and exploration rules:')) return true
+  return false
+}
+
+function compactConversationEntries(entries: ConversationEntry[]): ConversationEntry[] {
+  const compacted: ConversationEntry[] = []
+
+  for (const entry of entries) {
+    const previous = compacted.at(-1)
+    if (previous && previous.role === entry.role) {
+      previous.content = joinConversationParts(previous.content, entry.content)
+      continue
+    }
+    compacted.push({ ...entry })
+  }
+
+  return compacted
+}
+
+function joinConversationParts(previous: string, next: string): string {
+  const right = next.trim()
+  if (!right) return previous
+  const left = previous.trim()
+  if (!left) return right
+  if (left.endsWith(right)) return left
+  if (left.endsWith('.') || left.endsWith('!') || left.endsWith('?') || right.startsWith('#') || right.startsWith('- ')) {
+    return `${left}\n\n${right}`
+  }
+  if (/^[,.;:!?)]/.test(right)) return `${left}${right}`
+  return `${left} ${right}`
+}
+
 function ChangeSummary({ changes }: { changes: CodeChange[] }): ReactElement {
   const added = changes.filter((change) => change.changeType === 'added').length
   const modified = changes.filter((change) => change.changeType === 'modified').length
@@ -1289,7 +1330,8 @@ function ChangeSummary({ changes }: { changes: CodeChange[] }): ReactElement {
 
 function DiffViewer({ change }: { change: CodeChange }): ReactElement {
   const diffText = change.diffText.trim() || fallbackDiff(change)
-  const lines = diffText.split('\n')
+  const rows = parseDiffRows(diffText)
+  const language = normalizeLanguage(change.language || languageFromPath(change.filePath))
 
   return (
     <article className="diff-file">
@@ -1302,18 +1344,15 @@ function DiffViewer({ change }: { change: CodeChange }): ReactElement {
       </header>
       <div className="diff-table" role="table" aria-label={`${change.filePath} diff`}>
         <div className="diff-rows">
-          {lines.map((line, index) => {
-            const kind = diffLineKind(line)
-            const displayLine = kind === 'hunk' ? line : line.slice(1)
-            const language = normalizeLanguage(change.language || languageFromPath(change.filePath))
-
+          {rows.map((row, index) => {
             return (
-              <div key={`${index}-${line}`} className={`diff-line ${kind}`} role="row">
-                <span className="diff-gutter">{kind === 'context' ? ' ' : line[0]}</span>
-                <span className="diff-number">{kind === 'hunk' ? '' : index + 1}</span>
+              <div key={`${index}-${row.raw}`} className={`diff-line ${row.kind}`} role="row">
+                <span className="diff-gutter">{row.kind === 'context' ? ' ' : (row.raw[0] ?? ' ')}</span>
+                <span className="diff-number">{row.oldLine ?? ''}</span>
+                <span className="diff-number">{row.newLine ?? ''}</span>
                 <code
                   dangerouslySetInnerHTML={{
-                    __html: kind === 'hunk' ? escapeHtml(displayLine) : highlightCode(displayLine, language)
+                    __html: row.kind === 'hunk' ? escapeHtml(row.text) : highlightCode(row.text, language)
                   }}
                 />
               </div>
@@ -1323,6 +1362,48 @@ function DiffViewer({ change }: { change: CodeChange }): ReactElement {
       </div>
     </article>
   )
+}
+
+interface DiffRow {
+  raw: string
+  text: string
+  kind: 'added' | 'removed' | 'hunk' | 'context'
+  oldLine: number | null
+  newLine: number | null
+}
+
+function parseDiffRows(diffText: string): DiffRow[] {
+  const rows: DiffRow[] = []
+  let oldLine = 0
+  let newLine = 0
+
+  for (const raw of diffText.split('\n')) {
+    const hunk = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
+    if (hunk) {
+      oldLine = Number(hunk[1])
+      newLine = Number(hunk[2])
+      rows.push({ raw, text: raw, kind: 'hunk', oldLine: null, newLine: null })
+      continue
+    }
+
+    const kind = diffLineKind(raw)
+    const text = raw.slice(1)
+    if (kind === 'added') {
+      rows.push({ raw, text, kind, oldLine: null, newLine })
+      newLine += 1
+      continue
+    }
+    if (kind === 'removed') {
+      rows.push({ raw, text, kind, oldLine, newLine: null })
+      oldLine += 1
+      continue
+    }
+    rows.push({ raw, text, kind: 'context', oldLine, newLine })
+    oldLine += 1
+    newLine += 1
+  }
+
+  return rows
 }
 
 function diffLineKind(line: string): 'added' | 'removed' | 'hunk' | 'context' {

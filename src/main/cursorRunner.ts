@@ -29,6 +29,7 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
   store.replaceCodeChanges(taskId, [])
   store.appendConversation(taskId, 'system', 'Starting Cursor CLI agent in the project folder.')
   onStateChanged()
+  const baselineDiff = await collectGitDiffText(projectPath)
 
   const agentCommand = await resolveAgentCommand()
   if (!agentCommand) {
@@ -57,7 +58,7 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
 
   let stdoutBuffer = ''
   let stderrBuffer = ''
-  let lastMessage = ''
+  const stdoutLines: string[] = []
 
   child.stdout.on('data', (chunk: Buffer) => {
     stdoutBuffer += chunk.toString()
@@ -65,12 +66,7 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
     stdoutBuffer = lines.pop() ?? ''
 
     for (const line of lines) {
-      const message = summarizeCursorLine(line)
-      if (message && message !== lastMessage) {
-        lastMessage = message
-        store.appendConversation(taskId, 'assistant', message)
-        onStateChanged()
-      }
+      stdoutLines.push(line)
     }
   })
 
@@ -96,14 +92,17 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
 
     child.on('close', async (code) => {
       if (stdoutBuffer.trim()) {
-        const message = summarizeCursorLine(stdoutBuffer)
-        if (message) {
-          store.appendConversation(taskId, 'assistant', message)
-        }
+        stdoutLines.push(stdoutBuffer)
+      }
+
+      const assistantMessage = summarizeCursorRun(stdoutLines)
+      if (assistantMessage) {
+        store.appendConversation(taskId, 'assistant', assistantMessage)
       }
 
       if (code === 0) {
-        const changes = await collectGitDiff(projectPath)
+        const nextDiff = await collectGitDiffText(projectPath)
+        const changes = nextDiff === baselineDiff ? [] : parseGitDiff(nextDiff, baselineDiff)
         store.replaceCodeChanges(taskId, changes)
         store.updateTaskStatus({ taskId, status: 'done_unread' })
         store.appendConversation(
@@ -249,36 +248,99 @@ function isIgnoredForContext(file: string): boolean {
   return /(^|\/)(node_modules|dist|out|release|\.git)\//.test(file) || /\.(png|jpg|jpeg|gif|webp|dmg|exe|zip)$/i.test(file)
 }
 
+function summarizeCursorRun(lines: string[]): string {
+  const fragments: string[] = []
+
+  for (const line of lines) {
+    const text = summarizeCursorLine(line)
+    if (text) fragments.push(text)
+  }
+
+  return mergeTextFragments(fragments).trim()
+}
+
 function summarizeCursorLine(line: string): string {
   const trimmed = line.trim()
   if (!trimmed) return ''
 
   try {
-    const event = JSON.parse(trimmed) as unknown
-    return findReadableText(event)
+    return findReadableText(JSON.parse(trimmed) as unknown)
   } catch {
-    return trimmed
+    return shouldDisplayCursorText(trimmed) ? trimmed : ''
   }
 }
 
-function findReadableText(value: unknown): string {
+function findReadableText(value: unknown, parentKey = ''): string {
   if (typeof value === 'string') return value.trim()
   if (!value || typeof value !== 'object') return ''
 
   const record = value as Record<string, unknown>
-  for (const key of ['message', 'text', 'content', 'summary', 'title']) {
-    const text = findReadableText(record[key])
-    if (text) return text
+  for (const key of ['message', 'text', 'content', 'summary']) {
+    const text = findReadableText(record[key], key)
+    if (shouldDisplayCursorText(text, parentKey || key)) return text
   }
 
-  for (const nested of Object.values(record)) {
-    const text = findReadableText(nested)
-    if (text) return text
+  if (Array.isArray(value)) {
+    return value.map((item) => findReadableText(item, parentKey)).filter((text) => shouldDisplayCursorText(text)).join(' ')
+  }
+
+  for (const [key, nested] of Object.entries(record)) {
+    const text = findReadableText(nested, key)
+    if (shouldDisplayCursorText(text, key)) return text
   }
   return ''
 }
 
-function collectGitDiff(cwd: string): Promise<Array<Pick<CodeChange, 'filePath' | 'summary' | 'changeType' | 'language' | 'diffText'>>> {
+function shouldDisplayCursorText(text: string, key = ''): boolean {
+  const trimmed = text.trim()
+  if (!trimmed) return false
+  if (key === 'role' || key === 'type' || key === 'event' || key === 'status') return false
+  if (/^(system|user|assistant|thinking|tool_call|result|metadata|start|end|done)$/i.test(trimmed)) return false
+  if (trimmed.includes('You are running inside VibeBoard as a background coding agent.')) return false
+  if (trimmed.includes('Token and exploration rules:')) return false
+  if (trimmed.length < 3 && !/[.!?]$/.test(trimmed)) return false
+  return true
+}
+
+function mergeTextFragments(fragments: string[]): string {
+  const output: string[] = []
+  let current = ''
+
+  for (const fragment of fragments) {
+    const text = fragment.trim()
+    if (!text) continue
+    if (output.includes(text) || current === text) continue
+
+    if (!current) {
+      current = text
+      continue
+    }
+
+    if (current.endsWith(text)) continue
+
+    if (shouldStartNewParagraph(current, text)) {
+      output.push(current)
+      current = text
+    } else {
+      current = joinFragment(current, text)
+    }
+  }
+
+  if (current) output.push(current)
+  return output.join('\n\n')
+}
+
+function shouldStartNewParagraph(previous: string, next: string): boolean {
+  return previous.endsWith('.') || previous.endsWith('!') || previous.endsWith('?') || next.startsWith('#') || next.startsWith('- ')
+}
+
+function joinFragment(previous: string, next: string): string {
+  if (/^[,.;:!?)]/.test(next)) return `${previous}${next}`
+  if (previous.endsWith('(') || previous.endsWith('/') || next.startsWith('/')) return `${previous}${next}`
+  return `${previous} ${next}`
+}
+
+function collectGitDiffText(cwd: string): Promise<string> {
   return new Promise((resolve) => {
     const child = spawn('git', ['diff', '--no-ext-diff', '--unified=80', '--', '.'], { cwd })
     let output = ''
@@ -288,21 +350,24 @@ function collectGitDiff(cwd: string): Promise<Array<Pick<CodeChange, 'filePath' 
     })
 
     child.on('close', () => {
-      resolve(parseGitDiff(output))
+      resolve(output.trim())
     })
 
     child.on('error', () => {
-      resolve([])
+      resolve('')
     })
   })
 }
 
-function parseGitDiff(diff: string): Array<Pick<CodeChange, 'filePath' | 'summary' | 'changeType' | 'language' | 'diffText'>> {
+function parseGitDiff(diff: string, baselineDiff = ''): Array<Pick<CodeChange, 'filePath' | 'summary' | 'changeType' | 'language' | 'diffText'>> {
   const files: Array<Pick<CodeChange, 'filePath' | 'summary' | 'changeType' | 'language' | 'diffText'>> = []
-  const chunks = diff.split(/^diff --git /m).filter(Boolean)
+  const baselineChunks = diffChunkMap(baselineDiff)
+  const chunks = diffChunkMap(diff)
 
-  for (const chunk of chunks) {
-    const lines = `diff --git ${chunk}`.split('\n')
+  for (const [fileKey, chunk] of chunks) {
+    if (baselineChunks.get(fileKey) === chunk) continue
+
+    const lines = chunk.split('\n')
     const header = lines[0] ?? ''
     const match = header.match(/^diff --git a\/(.+) b\/(.+)$/)
     const filePath = match?.[2] ?? match?.[1] ?? 'unknown'
@@ -326,6 +391,19 @@ function parseGitDiff(diff: string): Array<Pick<CodeChange, 'filePath' | 'summar
   }
 
   return files
+}
+
+function diffChunkMap(diff: string): Map<string, string> {
+  const chunks = new Map<string, string>()
+
+  for (const chunk of diff.split(/^diff --git /m).filter(Boolean)) {
+    const normalizedChunk = `diff --git ${chunk}`.trim()
+    const header = normalizedChunk.split('\n')[0] ?? ''
+    const match = header.match(/^diff --git a\/(.+) b\/(.+)$/)
+    chunks.set(match?.[2] ?? match?.[1] ?? header, normalizedChunk)
+  }
+
+  return chunks
 }
 
 function languageFromPath(filePath: string): string {
