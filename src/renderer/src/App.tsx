@@ -984,20 +984,6 @@ function TaskCard({
     >
       <TaskStatusIcon status={task.status} />
       <div className="task-card-actions">
-        {task.status !== 'processing' && task.status !== 'done_unread' && task.status !== 'done_read' && (
-          <button
-            className="task-action-button"
-            type="button"
-            title="Finish task"
-            onClick={(event) => {
-              event.stopPropagation()
-              onFinish()
-            }}
-            onPointerDown={(event) => event.stopPropagation()}
-          >
-            <Check size={14} />
-          </button>
-        )}
         {task.status !== 'processing' && (
           <button
             className="task-action-button danger"
@@ -1010,6 +996,20 @@ function TaskCard({
             onPointerDown={(event) => event.stopPropagation()}
           >
             <Trash2 size={14} />
+          </button>
+        )}
+        {task.status !== 'processing' && task.status !== 'done_unread' && task.status !== 'done_read' && (
+          <button
+            className="task-action-button"
+            type="button"
+            title="Finish task"
+            onClick={(event) => {
+              event.stopPropagation()
+              onFinish()
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <Check size={14} />
           </button>
         )}
       </div>
