@@ -33,8 +33,8 @@ export class VibeBoardStore {
     this.db.pragma('foreign_keys = ON')
     this.db.pragma('journal_mode = WAL')
     this.migrate()
+    this.replaceOldDemoSeed()
     this.seed()
-    this.backfillDemoDiffs()
   }
 
   getState(): AppState {
@@ -428,78 +428,154 @@ export class VibeBoardStore {
       return
     }
 
-    const tab = this.createTab({ name: 'Main Board' })
-    const backlog = this.db
-      .prepare('SELECT id FROM lanes WHERE tabId = ? ORDER BY position LIMIT 1')
-      .get(tab.id) as { id: string }
-    const task = this.createTask({
-      tabId: tab.id,
-      laneId: backlog.id,
-      projectId: null,
-      title: 'Connect Cursor adapter',
-      summary: 'Placeholder task for the future Cursor control layer.',
-      prompt: 'Prepare the adapter boundary for Cursor MCP, CLI, or ACP support.'
-    })
+    const project: Project = {
+      id: id(),
+      name: 'VibeBoard',
+      path: app.getAppPath(),
+      createdAt: now()
+    }
     this.db
-      .prepare(
-        'INSERT INTO code_changes (id, taskId, filePath, summary, changeType, language, diffText, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      )
-      .run(
-        id(),
-        task.id,
-        'src/main/cursorAdapter.ts',
-        'Adapter interface is ready for a concrete Cursor integration.',
-        'added',
-        'typescript',
-        `@@ -0,0 +1,23 @@
-+export interface CursorAdapterStatus {
-+  available: boolean
-+  label: string
+      .prepare('INSERT INTO projects (id, name, path, createdAt) VALUES (?, ?, ?, ?)')
+      .run(project.id, project.name, project.path, project.createdAt)
+
+    const productTab = this.createTab({ name: 'VibeBoard' })
+    this.updateTabMeta({ id: productTab.id, isPinned: true, color: '#ff7a1a' })
+    const releaseTab = this.createTab({ name: 'Release' })
+    this.updateTabMeta({ id: releaseTab.id, color: '#9b8cff' })
+
+    const productLanes = this.getLanesForTab(productTab.id)
+    const releaseLanes = this.getLanesForTab(releaseTab.id)
+
+    const runningTask = this.createTask({
+      tabId: productTab.id,
+      laneId: productLanes[1].id,
+      projectId: project.id,
+      title: 'Run Cursor in the background',
+      summary: 'Execute cursor-agent from VibeBoard and stream progress into the task.',
+      prompt: 'Wire the task Run button so Cursor runs headlessly in the selected project folder and captured diffs appear on the right.'
+    })
+    this.updateTaskStatus({ taskId: runningTask.id, status: 'processing' })
+    this.appendConversation(runningTask.id, 'system', 'Starting Cursor agent in the project folder.')
+    this.appendConversation(runningTask.id, 'assistant', 'Reading the task prompt and preparing a headless run.')
+
+    const doneTask = this.createTask({
+      tabId: productTab.id,
+      laneId: productLanes[3].id,
+      projectId: project.id,
+      title: 'Render real code diffs',
+      summary: 'Show GitHub-style unified diffs with syntax highlighting.',
+      prompt: 'Replace the summary-only code changes card with actual unified diffs and language-aware formatting.'
+    })
+    this.updateTaskStatus({ taskId: doneTask.id, status: 'done_unread' })
+    this.appendConversation(doneTask.id, 'assistant', 'Added a diff model and renderer for file-level changes.')
+    this.replaceCodeChanges(doneTask.id, [
+      {
+        filePath: 'src/renderer/src/App.tsx',
+        summary: '12 additions, 3 deletions',
+        changeType: 'modified',
+        language: 'typescript',
+        diffText: `@@ -650,9 +650,13 @@ function TaskDetailModal({
+-              {changes.map((change) => (
+-                <div className="change-row">{change.summary}</div>
+-              ))}
++              {changes.map((change) => (
++                <DiffViewer key={change.id} change={change} />
++              ))}
+             </div>
+           </section>
+         </div>`
+      },
+      {
+        filePath: 'src/renderer/src/styles.css',
+        summary: '20 additions, 0 deletions',
+        changeType: 'modified',
+        language: 'css',
+        diffText: `@@ -705,0 +706,20 @@
++.diff-file {
++  overflow: hidden;
++  border: 1px solid var(--line);
++  border-radius: 8px;
++  background: #151515;
 +}
 +
-+export interface CursorAdapter {
-+  status(): Promise<CursorAdapterStatus>
++.diff-line.added {
++  background: rgba(47, 207, 117, 0.12);
 +}
 +
-+export class PlaceholderCursorAdapter implements CursorAdapter {
-+  async status(): Promise<CursorAdapterStatus> {
-+    return {
-+      available: false,
-+      label: 'Cursor adapter ready'
-+    }
-+  }
-+}`,
-        now()
-      )
++.diff-line.removed {
++  background: rgba(255, 95, 87, 0.12);
++}`
+      }
+    ])
+
+    const attentionTask = this.createTask({
+      tabId: productTab.id,
+      laneId: productLanes[2].id,
+      projectId: null,
+      title: 'Select a project before running',
+      summary: 'Cursor runs need a project folder to execute in.',
+      prompt: 'Make the Run button explain what is missing when a task has no project selected.'
+    })
+    this.updateTaskStatus({ taskId: attentionTask.id, status: 'attention' })
+    this.appendConversation(attentionTask.id, 'system', 'Select a project before running this task with Cursor.')
+
+    this.createTask({
+      tabId: productTab.id,
+      laneId: productLanes[0].id,
+      projectId: project.id,
+      title: 'Add accept and discard controls',
+      summary: 'Let users accept, discard, or rerun captured agent changes.',
+      prompt: 'Design controls for accepting or discarding code changes from a completed task.'
+    })
+
+    this.createTask({
+      tabId: releaseTab.id,
+      laneId: releaseLanes[0].id,
+      projectId: project.id,
+      title: 'Write release notes',
+      summary: 'Turn merged task history into clean GitHub release notes.',
+      prompt: 'Generate concise release notes from completed VibeBoard tasks and changed files.'
+    })
+
+    this.createTask({
+      tabId: releaseTab.id,
+      laneId: releaseLanes[2].id,
+      projectId: project.id,
+      title: 'Check packaged installers',
+      summary: 'Verify local DMG and GitHub release assets before tagging.',
+      prompt: 'Run the local packaging checks and list the installer artifacts.'
+    })
+
+    this.setSetting('activeTabId', productTab.id)
   }
 
-  private backfillDemoDiffs(): void {
-    this.db
+  private replaceOldDemoSeed(): void {
+    const counts = this.db
       .prepare(
-        "UPDATE code_changes SET language = ?, diffText = ? WHERE filePath = ? AND COALESCE(diffText, '') = ''"
+        `SELECT
+          (SELECT COUNT(*) FROM projects) as projectCount,
+          (SELECT COUNT(*) FROM tabs) as tabCount,
+          (SELECT COUNT(*) FROM tasks) as taskCount`
       )
-      .run(
-        'typescript',
-        `@@ -0,0 +1,23 @@
-+export interface CursorAdapterStatus {
-+  available: boolean
-+  label: string
-+}
-+
-+export interface CursorAdapter {
-+  status(): Promise<CursorAdapterStatus>
-+}
-+
-+export class PlaceholderCursorAdapter implements CursorAdapter {
-+  async status(): Promise<CursorAdapterStatus> {
-+    return {
-+      available: false,
-+      label: 'Cursor adapter ready'
-+    }
-+  }
-+}`,
-        'src/main/cursorAdapter.ts'
-      )
+      .get() as { projectCount: number; tabCount: number; taskCount: number }
+    const oldTask = this.db.prepare('SELECT title FROM tasks LIMIT 1').get() as { title: string } | undefined
+
+    if (
+      counts.projectCount === 0 &&
+      counts.tabCount === 1 &&
+      counts.taskCount === 1 &&
+      oldTask?.title === 'Connect Cursor adapter'
+    ) {
+      this.db.transaction(() => {
+        this.db.prepare('DELETE FROM settings').run()
+        this.db.prepare('DELETE FROM tabs').run()
+        this.db.prepare('DELETE FROM projects').run()
+      })()
+    }
+  }
+
+  private getLanesForTab(tabId: string): Lane[] {
+    return this.db.prepare('SELECT * FROM lanes WHERE tabId = ? ORDER BY position').all(tabId) as Lane[]
   }
 
   private ensureColumn(tableName: string, columnName: string, definition: string): void {

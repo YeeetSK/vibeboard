@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "postinstall": "electron-builder install-app-deps",
+    "reset:data": "node scripts/reset-data.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "build": "npm run typecheck && electron-vite build",

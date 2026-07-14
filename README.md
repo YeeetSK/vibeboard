@@ -13,6 +13,13 @@ npm run dev
 
 The dev command starts Electron with Vite, so renderer changes reload while the app is running.
 
+Reset local app data and load the fresh demo seed:
+
+```bash
+npm run reset:data
+npm run dev
+```
+
 Local package checks:
 
 ```bash
