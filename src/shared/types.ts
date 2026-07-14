@@ -111,6 +111,11 @@ export interface UpdateTaskStatusInput {
   status: TaskStatus
 }
 
+export interface SendTaskMessageInput {
+  taskId: string
+  content: string
+}
+
 export interface RunTaskResult {
   started: boolean
   message: string
@@ -132,6 +137,7 @@ export interface VibeBoardApi {
   deleteLane: (laneId: string) => Promise<void>
   createTask: (input: CreateTaskInput) => Promise<Task>
   moveTask: (input: MoveTaskInput) => Promise<void>
+  sendTaskMessage: (input: SendTaskMessageInput) => Promise<void>
   runTaskWithCursor: (taskId: string) => Promise<RunTaskResult>
   updateTaskStatus: (input: UpdateTaskStatusInput) => Promise<void>
   markTaskRead: (taskId: string) => Promise<void>

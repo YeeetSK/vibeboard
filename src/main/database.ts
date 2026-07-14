@@ -15,6 +15,7 @@ import type {
   MoveTaskInput,
   Project,
   RenameInput,
+  SendTaskMessageInput,
   Task,
   TaskStatus,
   UpdateTabMetaInput,
@@ -89,6 +90,18 @@ export class VibeBoardStore {
     this.db
       .prepare('INSERT INTO conversations (id, taskId, role, content, createdAt) VALUES (?, ?, ?, ?, ?)')
       .run(id(), taskId, role, content, now())
+  }
+
+  sendTaskMessage(input: SendTaskMessageInput): void {
+    const content = input.content.trim()
+    if (!content) return
+
+    const transaction = this.db.transaction(() => {
+      this.appendConversation(input.taskId, 'user', content)
+      this.db.prepare('UPDATE tasks SET updatedAt = ? WHERE id = ?').run(now(), input.taskId)
+    })
+
+    transaction()
   }
 
   replaceCodeChanges(

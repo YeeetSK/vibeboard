@@ -11,6 +11,7 @@ import type {
   CreateTaskInput,
   MoveTaskInput,
   RenameInput,
+  SendTaskMessageInput,
   UpdateTabMetaInput,
   UpdateTaskStatusInput
 } from '../shared/types'
@@ -70,6 +71,7 @@ const registerIpc = (): void => {
   ipcMain.handle('lane:delete', (_event, laneId: string) => store.deleteLane(laneId))
   ipcMain.handle('task:create', (_event, input: CreateTaskInput) => store.createTask(input))
   ipcMain.handle('task:move', (_event, input: MoveTaskInput) => store.moveTask(input))
+  ipcMain.handle('task:message', (_event, input: SendTaskMessageInput) => store.sendTaskMessage(input))
   ipcMain.handle('task:runCursor', (_event, taskId: string) => {
     if (runningTasks.has(taskId)) {
       return { started: false, message: 'Task is already running.' }

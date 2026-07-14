@@ -43,6 +43,7 @@ import {
   RadioTower,
   RefreshCw,
   RotateCcw,
+  Send,
   Trash2,
   X
 } from 'lucide-react'
@@ -223,6 +224,11 @@ export function App(): ReactElement {
     await refresh()
   }
 
+  const sendTaskMessage = async (taskId: string, content: string): Promise<void> => {
+    await window.vibeboard.sendTaskMessage({ taskId, content })
+    await refresh()
+  }
+
   const onDragStart = (event: DragStartEvent): void => {
     setActiveDragTaskId(String(event.active.id))
   }
@@ -390,6 +396,7 @@ export function App(): ReactElement {
           conversations={state.conversations.filter((entry) => entry.taskId === selectedTask.id)}
           changes={state.changes.filter((change) => change.taskId === selectedTask.id)}
           onRunWithCursor={runTaskWithCursor}
+          onSendMessage={sendTaskMessage}
           onClose={() => setSelectedTaskId(null)}
         />
       )}
@@ -962,6 +969,7 @@ function TaskDetailModal({
   conversations,
   changes,
   onRunWithCursor,
+  onSendMessage,
   onClose
 }: {
   task: Task
@@ -969,6 +977,7 @@ function TaskDetailModal({
   conversations: ConversationEntry[]
   changes: CodeChange[]
   onRunWithCursor: (taskId: string) => void
+  onSendMessage: (taskId: string, content: string) => void
   onClose: () => void
 }): ReactElement {
   return (
@@ -1002,7 +1011,7 @@ function TaskDetailModal({
               <MessageSquare size={16} />
               <span>Prompt</span>
             </div>
-            <CodexThread conversations={conversations} task={task} />
+            <CodexThread conversations={conversations} task={task} onSendMessage={onSendMessage} />
           </section>
 
           <section className="detail-column">
@@ -1027,14 +1036,24 @@ function TaskDetailModal({
 
 function CodexThread({
   conversations,
-  task
+  task,
+  onSendMessage
 }: {
   conversations: ConversationEntry[]
   task: Task
+  onSendMessage: (taskId: string, content: string) => void
 }): ReactElement {
+  const [draft, setDraft] = useState('')
   const userEntries = conversations.filter((entry) => entry.role === 'user')
-  const agentEntries = conversations.filter((entry) => entry.role !== 'user')
   const prompt = userEntries[0]?.content || task.summary || task.title
+  const threadEntries = conversations.filter((entry) => entry.id !== userEntries[0]?.id)
+
+  const send = (): void => {
+    const content = draft.trim()
+    if (!content) return
+    onSendMessage(task.id, content)
+    setDraft('')
+  }
 
   return (
     <div className="codex-thread">
@@ -1043,7 +1062,7 @@ function CodexThread({
       </section>
 
       <div className="agent-stream">
-        {agentEntries.length === 0 ? (
+        {threadEntries.length === 0 ? (
           <div className="agent-step">
             <Code2 size={16} />
             <div>
@@ -1052,16 +1071,34 @@ function CodexThread({
             </div>
           </div>
         ) : (
-          agentEntries.map((entry) => (
-            <div key={entry.id} className="agent-step">
-              <Code2 size={16} />
+          threadEntries.map((entry) => (
+            <div key={entry.id} className={entry.role === 'user' ? 'agent-step user-step' : 'agent-step'}>
+              {entry.role === 'user' ? <MessageSquare size={16} /> : <Code2 size={16} />}
               <div>
-                <strong>{entry.role === 'assistant' ? 'Agent' : 'System'}</strong>
+                <strong>{entry.role === 'user' ? 'You' : entry.role === 'assistant' ? 'Agent' : 'System'}</strong>
                 <p>{entry.content}</p>
               </div>
             </div>
           ))
         )}
+      </div>
+
+      <div className="thread-composer">
+        <textarea
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          rows={2}
+          placeholder="Message"
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
+              send()
+            }
+          }}
+        />
+        <button className="icon-button" type="button" onClick={send} disabled={!draft.trim()} title="Send">
+          <Send size={16} />
+        </button>
       </div>
     </div>
   )

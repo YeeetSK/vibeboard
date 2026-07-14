@@ -1093,8 +1093,8 @@ button:focus-visible {
 
 .codex-thread {
   display: grid;
-  grid-template-rows: auto 1fr;
-  gap: 18px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
   min-height: 0;
 }
 
@@ -1150,6 +1150,31 @@ button:focus-visible {
   color: var(--text);
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.user-step strong {
+  color: var(--text);
+}
+
+.thread-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  align-items: end;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.thread-composer textarea {
+  min-height: 44px;
+  max-height: 132px;
+  resize: vertical;
+}
+
+.thread-composer .icon-button {
+  width: 36px;
+  height: 36px;
+  margin-bottom: 1px;
 }
 
 .message {
