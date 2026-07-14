@@ -63,6 +63,14 @@ const createWindow = (): void => {
 const registerIpc = (): void => {
   ipcMain.handle('state:get', () => store.getState())
   ipcMain.handle('project:create', (_event, input: CreateProjectInput) => store.createProject(input))
+  ipcMain.handle('project:openFolder', async (_event, projectId: string) => {
+    const project = store.getProject(projectId)
+    if (!project) return
+    const error = await shell.openPath(project.path)
+    if (error) {
+      throw new Error(error)
+    }
+  })
   ipcMain.handle('tab:create', (_event, input: CreateTabInput) => store.createTab(input))
   ipcMain.handle('tab:rename', (_event, input: RenameInput) => store.renameTab(input))
   ipcMain.handle('tab:updateMeta', (_event, input: UpdateTabMetaInput) => store.updateTabMeta(input))

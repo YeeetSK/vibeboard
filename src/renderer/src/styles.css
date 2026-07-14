@@ -749,6 +749,12 @@ button {
   letter-spacing: 0;
 }
 
+.board-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .modal-head p {
   margin: 4px 0 0;
   color: var(--muted);

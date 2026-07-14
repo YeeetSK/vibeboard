@@ -86,6 +86,11 @@ export class VibeBoardStore {
     }
   }
 
+  getProject(projectId: string): Project | null {
+    const project = this.db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as Project | undefined
+    return project ?? null
+  }
+
   appendConversation(taskId: string, role: ConversationEntry['role'], content: string): void {
     this.db
       .prepare('INSERT INTO conversations (id, taskId, role, content, createdAt) VALUES (?, ?, ?, ?, ?)')

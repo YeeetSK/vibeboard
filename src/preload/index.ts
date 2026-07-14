@@ -20,6 +20,7 @@ const api: VibeBoardApi = {
     return () => ipcRenderer.removeListener('state:changed', listener)
   },
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke('project:create', input),
+  openProjectFolder: (projectId: string) => ipcRenderer.invoke('project:openFolder', projectId),
   createTab: (input: CreateTabInput) => ipcRenderer.invoke('tab:create', input),
   renameTab: (input: RenameInput) => ipcRenderer.invoke('tab:rename', input),
   updateTabMeta: (input: UpdateTabMetaInput) => ipcRenderer.invoke('tab:updateMeta', input),

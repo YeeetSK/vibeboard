@@ -145,6 +145,7 @@ export interface VibeBoardApi {
   getState: () => Promise<AppState>
   onStateChanged: (callback: () => void) => () => void
   createProject: (input: CreateProjectInput) => Promise<Project | null>
+  openProjectFolder: (projectId: string) => Promise<void>
   createTab: (input: CreateTabInput) => Promise<BoardTab>
   renameTab: (input: RenameInput) => Promise<void>
   updateTabMeta: (input: UpdateTabMetaInput) => Promise<void>

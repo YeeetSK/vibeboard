@@ -34,6 +34,7 @@ import {
   Code2,
   ExternalLink,
   FolderPlus,
+  FolderOpen,
   History,
   LayoutDashboard,
   MessageSquare,
@@ -111,6 +112,8 @@ export function App(): ReactElement {
   const activeProject = activeTab?.activeProjectId
     ? state.projects.find((project) => project.id === activeTab.activeProjectId) ?? null
     : null
+  const openProjectLabel =
+    navigator.userAgent.includes('Windows') ? 'Explorer' : navigator.userAgent.includes('Mac') ? 'Finder' : 'Folder'
   const activeLanes = useMemo(
     () => state.lanes.filter((lane) => lane.tabId === activeTab?.id).sort(byPosition),
     [state.lanes, activeTab?.id]
@@ -247,6 +250,11 @@ export function App(): ReactElement {
     if (!activeTab) return
     await window.vibeboard.createLane({ tabId: activeTab.id, name: 'New lane' })
     await refresh()
+  }
+
+  const openActiveProjectFolder = async (): Promise<void> => {
+    if (!activeProject) return
+    await window.vibeboard.openProjectFolder(activeProject.id)
   }
 
   const renameActiveTab = async (name: string): Promise<void> => {
@@ -416,10 +424,22 @@ export function App(): ReactElement {
                 onCommit={renameActiveTab}
               />
             </div>
-            <button className="icon-text-button" type="button" onClick={createLane}>
-              <Plus size={17} />
-              <span>Lane</span>
-            </button>
+            <div className="board-header-actions">
+              <button
+                className="icon-text-button"
+                type="button"
+                onClick={openActiveProjectFolder}
+                disabled={!activeProject}
+                title={`Open in ${openProjectLabel}`}
+              >
+                <FolderOpen size={17} />
+                <span>{openProjectLabel}</span>
+              </button>
+              <button className="icon-text-button" type="button" onClick={createLane}>
+                <Plus size={17} />
+                <span>Lane</span>
+              </button>
+            </div>
           </header>
 
           <DndContext
