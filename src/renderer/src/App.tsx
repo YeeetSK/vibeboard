@@ -995,6 +995,7 @@ function TaskCard({
       {...attributes}
       {...listeners}
     >
+      <TaskStatusIcon status={task.status} />
       <div className="task-card-actions">
         {task.status !== 'processing' && task.status !== 'done_unread' && task.status !== 'done_read' && (
           <button
@@ -1028,8 +1029,6 @@ function TaskCard({
       <button className="task-open" type="button" onClick={onOpen}>
         <div className="task-title-row">
           <h3>{task.title}</h3>
-          {task.status === 'attention' && <AlertTriangle size={16} />}
-          {(task.status === 'done_unread' || task.status === 'done_read') && <Check size={16} />}
         </div>
         {task.summary && <p>{task.summary}</p>}
         <small>{project?.name ?? 'No project'}</small>
@@ -1041,15 +1040,34 @@ function TaskCard({
 function TaskCardPreview({ task, project }: { task: Task; project: Project | null }): ReactElement {
   return (
     <article className={`task-card drag-preview status-${task.status}`}>
+      <TaskStatusIcon status={task.status} />
       <div className="task-title-row">
         <h3>{task.title}</h3>
-        {task.status === 'attention' && <AlertTriangle size={16} />}
-        {(task.status === 'done_unread' || task.status === 'done_read') && <Check size={16} />}
       </div>
       {task.summary && <p>{task.summary}</p>}
       <small>{project?.name ?? 'No project'}</small>
     </article>
   )
+}
+
+function TaskStatusIcon({ status }: { status: Task['status'] }): ReactElement | null {
+  if (status === 'attention') {
+    return (
+      <span className="task-status-icon attention" title="Needs attention">
+        <AlertTriangle size={15} />
+      </span>
+    )
+  }
+
+  if (status === 'done_unread' || status === 'done_read') {
+    return (
+      <span className="task-status-icon done" title={status === 'done_unread' ? 'Done' : 'Done read'}>
+        <Check size={16} />
+      </span>
+    )
+  }
+
+  return null
 }
 
 interface NewTaskInput {
