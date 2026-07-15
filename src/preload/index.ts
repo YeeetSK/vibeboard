@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { IpcRendererEvent } from 'electron'
 import type {
   CreateLaneInput,
   CreateProjectInput,
@@ -6,26 +7,39 @@ import type {
   CreateTaskInput,
   GetTaskDetailInput,
   MoveTaskInput,
+  RecordSearchOpenInput,
+  ReorderTabsInput,
   RenameInput,
+  SearchWorkspaceInput,
   SendTaskMessageInput,
   UpdateTabMetaInput,
   UpdateTaskStatusInput,
+  QuitRequest,
   VibeBoardApi
 } from '../shared/types'
 
 const api: VibeBoardApi = {
   getState: () => ipcRenderer.invoke('state:get'),
   getTaskDetail: (input: GetTaskDetailInput) => ipcRenderer.invoke('task:detail', input),
+  searchWorkspace: (input: SearchWorkspaceInput) => ipcRenderer.invoke('search:workspace', input),
+  recordSearchOpen: (input: RecordSearchOpenInput) => ipcRenderer.invoke('search:recordOpen', input),
   onStateChanged: (callback: () => void) => {
     const listener = (): void => callback()
     ipcRenderer.on('state:changed', listener)
     return () => ipcRenderer.removeListener('state:changed', listener)
   },
+  onQuitRequested: (callback: (request: QuitRequest) => void) => {
+    const listener = (_event: IpcRendererEvent, request: QuitRequest): void => callback(request)
+    ipcRenderer.on('app:quit-requested', listener)
+    return () => ipcRenderer.removeListener('app:quit-requested', listener)
+  },
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke('project:create', input),
+  relocateProject: (projectId: string) => ipcRenderer.invoke('project:relocate', projectId),
   openProjectFolder: (projectId: string) => ipcRenderer.invoke('project:openFolder', projectId),
   createTab: (input: CreateTabInput) => ipcRenderer.invoke('tab:create', input),
   renameTab: (input: RenameInput) => ipcRenderer.invoke('tab:rename', input),
   updateTabMeta: (input: UpdateTabMetaInput) => ipcRenderer.invoke('tab:updateMeta', input),
+  reorderTabs: (input: ReorderTabsInput) => ipcRenderer.invoke('tab:reorder', input),
   closeTab: (tabId: string) => ipcRenderer.invoke('tab:close', tabId),
   reopenTab: (tabId: string) => ipcRenderer.invoke('tab:reopen', tabId),
   deleteTab: (tabId: string) => ipcRenderer.invoke('tab:delete', tabId),
@@ -43,7 +57,9 @@ const api: VibeBoardApi = {
   getCursorAdapterStatus: () => ipcRenderer.invoke('cursor:status'),
   installCursorCli: () => ipcRenderer.invoke('cursor:installCli'),
   openCursorInstallTerminal: () => ipcRenderer.invoke('cursor:installTerminal'),
-  openCursorSetup: () => ipcRenderer.invoke('cursor:setup')
+  openCursorSetup: () => ipcRenderer.invoke('cursor:setup'),
+  confirmQuit: () => ipcRenderer.invoke('app:confirmQuit'),
+  cancelQuit: () => ipcRenderer.invoke('app:cancelQuit')
 }
 
 contextBridge.exposeInMainWorld('vibeboard', api)

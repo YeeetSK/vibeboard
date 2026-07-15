@@ -14,7 +14,10 @@ import type {
   CreateTaskInput,
   GetTaskDetailInput,
   MoveTaskInput,
+  RecordSearchOpenInput,
+  ReorderTabsInput,
   RenameInput,
+  SearchWorkspaceInput,
   SendTaskMessageInput,
   UpdateTabMetaInput,
   UpdateTaskStatusInput
@@ -25,6 +28,8 @@ const cursorAdapter = new PlaceholderCursorAdapter()
 const runningTasks = new Set<string>()
 const windows = new Set<BrowserWindow>()
 const execFileAsync = promisify(execFile)
+let isQuitConfirmed = false
+let isQuitPromptOpen = false
 
 const createWindow = (): void => {
   const mainWindow = new BrowserWindow({
@@ -49,6 +54,11 @@ const createWindow = (): void => {
     mainWindow.maximize()
     mainWindow.show()
   })
+  mainWindow.on('close', (event) => {
+    if (isQuitConfirmed) return
+    event.preventDefault()
+    requestQuitConfirmation()
+  })
   mainWindow.on('closed', () => {
     windows.delete(mainWindow)
   })
@@ -64,6 +74,8 @@ const createWindow = (): void => {
 const registerIpc = (): void => {
   ipcMain.handle('state:get', () => store.getState())
   ipcMain.handle('task:detail', (_event, input: GetTaskDetailInput) => store.getTaskDetail(input))
+  ipcMain.handle('search:workspace', (_event, input: SearchWorkspaceInput) => store.searchWorkspace(input))
+  ipcMain.handle('search:recordOpen', (_event, input: RecordSearchOpenInput) => store.recordSearchOpen(input))
   ipcMain.handle('project:create', (_event, input: CreateProjectInput) => store.createProject(input))
   ipcMain.handle('project:openFolder', async (_event, projectId: string) => {
     const project = store.getProject(projectId)
@@ -73,9 +85,11 @@ const registerIpc = (): void => {
       throw new Error(error)
     }
   })
+  ipcMain.handle('project:relocate', (_event, projectId: string) => store.relocateProject(projectId))
   ipcMain.handle('tab:create', (_event, input: CreateTabInput) => store.createTab(input))
   ipcMain.handle('tab:rename', (_event, input: RenameInput) => store.renameTab(input))
   ipcMain.handle('tab:updateMeta', (_event, input: UpdateTabMetaInput) => store.updateTabMeta(input))
+  ipcMain.handle('tab:reorder', (_event, input: ReorderTabsInput) => store.reorderTabs(input))
   ipcMain.handle('tab:close', (_event, tabId: string) => store.closeTab(tabId))
   ipcMain.handle('tab:reopen', (_event, tabId: string) => store.reopenTab(tabId))
   ipcMain.handle('tab:delete', (_event, tabId: string) => store.deleteTab(tabId))
@@ -100,6 +114,14 @@ const registerIpc = (): void => {
   ipcMain.handle('cursor:installCli', () => cursorAdapter.installCli())
   ipcMain.handle('cursor:installTerminal', () => openCursorInstallTerminal())
   ipcMain.handle('cursor:setup', () => openCursorSetup())
+  ipcMain.handle('app:confirmQuit', () => {
+    isQuitConfirmed = true
+    isQuitPromptOpen = false
+    app.quit()
+  })
+  ipcMain.handle('app:cancelQuit', () => {
+    isQuitPromptOpen = false
+  })
 }
 
 const startCursorTask = (taskId: string): { started: boolean; message: string } => {
@@ -160,6 +182,22 @@ const broadcastStateChanged = (): void => {
   }
 }
 
+const requestQuitConfirmation = (): void => {
+  if (isQuitPromptOpen) return
+
+  const targetWindow = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  if (!targetWindow) {
+    isQuitConfirmed = true
+    app.quit()
+    return
+  }
+
+  isQuitPromptOpen = true
+  targetWindow.webContents.send('app:quit-requested', {
+    hasRunningTasks: runningTasks.size > 0
+  })
+}
+
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.yeeetsk.vibeboard')
   store = new VibeBoardStore()
@@ -182,4 +220,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+
+app.on('before-quit', (event) => {
+  if (isQuitConfirmed) return
+  event.preventDefault()
+  requestQuitConfirmation()
 })

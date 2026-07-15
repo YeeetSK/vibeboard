@@ -4,6 +4,7 @@ export interface Project {
   id: string
   name: string
   path: string
+  pathMissing: boolean
   createdAt: string
 }
 
@@ -14,7 +15,9 @@ export interface BoardTab {
   isPinned: number
   isClosed: number
   color: string | null
+  position: number
   createdAt: string
+  lastUsedAt: string
 }
 
 export interface Lane {
@@ -98,6 +101,10 @@ export interface UpdateTabMetaInput {
   color?: string | null
 }
 
+export interface ReorderTabsInput {
+  orderedIds: string[]
+}
+
 export interface CreateLaneInput {
   tabId: string
   name: string
@@ -127,6 +134,30 @@ export interface SendTaskMessageInput {
   content: string
 }
 
+export interface SearchWorkspaceInput {
+  query: string
+  limit?: number
+}
+
+export interface RecordSearchOpenInput {
+  result: SearchResult
+}
+
+export type SearchResultKind = 'project' | 'tab' | 'task' | 'prompt'
+
+export interface SearchResult {
+  id: string
+  kind: SearchResultKind
+  title: string
+  subtitle: string
+  match: string
+  meta?: string
+  tabId?: string
+  taskId?: string
+  projectId?: string
+  isClosedTab?: boolean
+}
+
 export interface RunTaskResult {
   started: boolean
   message: string
@@ -152,15 +183,24 @@ export interface CursorStatus {
 
 export type CursorSetupPhase = 'checking' | 'preparing' | 'ready' | 'failed'
 
+export interface QuitRequest {
+  hasRunningTasks: boolean
+}
+
 export interface VibeBoardApi {
   getState: () => Promise<AppState>
   getTaskDetail: (input: GetTaskDetailInput) => Promise<TaskDetail>
+  searchWorkspace: (input: SearchWorkspaceInput) => Promise<SearchResult[]>
+  recordSearchOpen: (input: RecordSearchOpenInput) => Promise<void>
   onStateChanged: (callback: () => void) => () => void
+  onQuitRequested: (callback: (request: QuitRequest) => void) => () => void
   createProject: (input: CreateProjectInput) => Promise<Project | null>
+  relocateProject: (projectId: string) => Promise<Project | null>
   openProjectFolder: (projectId: string) => Promise<void>
   createTab: (input: CreateTabInput) => Promise<BoardTab>
   renameTab: (input: RenameInput) => Promise<void>
   updateTabMeta: (input: UpdateTabMetaInput) => Promise<void>
+  reorderTabs: (input: ReorderTabsInput) => Promise<void>
   closeTab: (tabId: string) => Promise<void>
   reopenTab: (tabId: string) => Promise<void>
   deleteTab: (tabId: string) => Promise<void>
@@ -179,4 +219,6 @@ export interface VibeBoardApi {
   installCursorCli: () => Promise<RunTaskResult>
   openCursorInstallTerminal: () => Promise<void>
   openCursorSetup: () => Promise<void>
+  confirmQuit: () => Promise<void>
+  cancelQuit: () => Promise<void>
 }

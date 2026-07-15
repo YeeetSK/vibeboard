@@ -308,16 +308,27 @@ function normalizeCursorText(text: string): string {
       /^(?:init|start|started|completed|success|done|end)\s+(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s+)?/i,
       ''
     )
+    .replace(
+      /\b(?:login|tool_call|tool|result|metadata|started|completed|success|done|init)\s+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+      ''
+    )
+    .replace(/\btool_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '')
     .replace(/^(?:(?:started|completed|success|done|end)\s+)+/i, '')
     .replace(/\s+(?:(?:started|completed|success|done|end)\s*)+$/i, '')
+    .replace(/[ \t]{2,}/g, ' ')
     .trim()
 }
 
 function isProgressNarration(text: string): boolean {
   const trimmed = normalizeCursorText(text)
-  return /^(i('|’)?m|i am|i('|’)?ll|i will|reading|reviewing|examining|checking|running|looking|scanning|opening|inspecting)\b/i.test(
-    trimmed
-  ) || /^the project structure is now clear\b/i.test(trimmed)
+  return (
+    /^(i('|’)?m|i am|i('|’)?ll|i will|reading|reviewing|examining|checking|running|looking|scanning|opening|inspecting)\b/i.test(
+      trimmed
+    ) ||
+    /^(the user|the request|the context|a modified .+ appears|files to understand|likely about)\b/i.test(trimmed) ||
+    /^the project structure is now clear\b/i.test(trimmed)
+  )
 }
 
 function mergeTextFragments(fragments: string[]): string {

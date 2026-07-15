@@ -1,4 +1,5 @@
 import { ReactElement, useEffect, useMemo, useRef, useState } from 'react'
+import type { DragEvent as ReactDragEvent } from 'react'
 import {
   DndContext,
   DragEndEvent,
@@ -44,6 +45,7 @@ import {
   Pin,
   RadioTower,
   RotateCcw,
+  Search,
   Send,
   Trash2,
   X
@@ -57,6 +59,8 @@ import type {
   CursorStatus,
   Lane,
   Project,
+  QuitRequest,
+  SearchResult,
   Task,
   TaskDetail,
 } from '../../shared/types'
@@ -113,6 +117,11 @@ export function App(): ReactElement {
   const [cursorFeedback, setCursorFeedback] = useState('')
   const [isSidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [deleteTabId, setDeleteTabId] = useState<string | null>(null)
+  const [deleteTaskId, setDeleteTaskId] = useState<string | null>(null)
+  const [quitRequest, setQuitRequest] = useState<QuitRequest | null>(null)
+  const [globalSearchQuery, setGlobalSearchQuery] = useState('')
+  const [globalSearchResults, setGlobalSearchResults] = useState<SearchResult[]>([])
+  const [isGlobalSearchOpen, setGlobalSearchOpen] = useState(false)
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<TaskDetail>(emptyTaskDetail)
   const [isLoadingOlderConversations, setLoadingOlderConversations] = useState(false)
 
@@ -163,9 +172,16 @@ export function App(): ReactElement {
   useEffect(() => {
     refresh()
     prepareCursorOnLaunch()
-    return window.vibeboard.onStateChanged(() => {
+    const stopStateListener = window.vibeboard.onStateChanged(() => {
       refresh()
     })
+    const stopQuitListener = window.vibeboard.onQuitRequested((request) => {
+      setQuitRequest(request)
+    })
+    return () => {
+      stopStateListener()
+      stopQuitListener()
+    }
   }, [])
 
   useEffect(() => {
@@ -176,6 +192,28 @@ export function App(): ReactElement {
     }, 15000)
     return () => window.clearInterval(intervalId)
   }, [cursorSetupPhase])
+
+  useEffect(() => {
+    const query = globalSearchQuery.trim()
+    if (!isGlobalSearchOpen) {
+      setGlobalSearchResults([])
+      return
+    }
+
+    let cancelled = false
+    const timerId = window.setTimeout(() => {
+      window.vibeboard.searchWorkspace({ query, limit: query ? 18 : 4 }).then((results) => {
+        if (!cancelled) {
+          setGlobalSearchResults(results)
+        }
+      })
+    }, query ? 140 : 0)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timerId)
+    }
+  }, [globalSearchQuery, isGlobalSearchOpen])
 
   useEffect(() => {
     let cancelled = false
@@ -298,7 +336,6 @@ export function App(): ReactElement {
   }
 
   const closeTab = async (tabId: string): Promise<void> => {
-    if (state.tabs.length <= 1) return
     await window.vibeboard.closeTab(tabId)
     await refresh()
   }
@@ -319,9 +356,38 @@ export function App(): ReactElement {
     await refresh()
   }
 
+  const reorderTabs = async (orderedIds: string[]): Promise<void> => {
+    await window.vibeboard.reorderTabs({ orderedIds })
+    await refresh()
+  }
+
   const setActiveTab = async (tabId: string): Promise<void> => {
     await window.vibeboard.setActiveTab(tabId)
     await refresh()
+  }
+
+  const openSearchResult = async (result: SearchResult): Promise<void> => {
+    await window.vibeboard.recordSearchOpen({ result })
+
+    if (result.tabId) {
+      if (result.isClosedTab) {
+        await window.vibeboard.reopenTab(result.tabId)
+      } else {
+        await window.vibeboard.setActiveTab(result.tabId)
+      }
+      await refresh()
+    } else if (result.projectId) {
+      await window.vibeboard.createTab({ name: result.title, projectId: result.projectId })
+      await refresh()
+    }
+
+    if (result.taskId) {
+      setSelectedTaskId(result.taskId)
+    }
+
+    setGlobalSearchQuery('')
+    setGlobalSearchResults([])
+    setGlobalSearchOpen(false)
   }
 
   const createLane = async (): Promise<void> => {
@@ -331,8 +397,14 @@ export function App(): ReactElement {
   }
 
   const openActiveProjectFolder = async (): Promise<void> => {
-    if (!activeProject) return
+    if (!activeProject || activeProject.pathMissing) return
     await window.vibeboard.openProjectFolder(activeProject.id)
+  }
+
+  const relocateActiveProject = async (): Promise<void> => {
+    if (!activeProject) return
+    await window.vibeboard.relocateProject(activeProject.id)
+    await refresh()
   }
 
   const renameActiveTab = async (name: string): Promise<void> => {
@@ -356,10 +428,10 @@ export function App(): ReactElement {
   const deleteTask = async (id: string): Promise<void> => {
     const task = state.tasks.find((item) => item.id === id)
     if (task?.status === 'processing') return
-    if (!window.confirm('Delete this task?')) return
     if (selectedTaskId === id) {
       setSelectedTaskId(null)
     }
+    setDeleteTaskId(null)
     await window.vibeboard.deleteTask(id)
     await refresh()
   }
@@ -398,6 +470,15 @@ export function App(): ReactElement {
     await refresh()
   }
 
+  const cancelQuit = async (): Promise<void> => {
+    setQuitRequest(null)
+    await window.vibeboard.cancelQuit()
+  }
+
+  const confirmQuit = async (): Promise<void> => {
+    await window.vibeboard.confirmQuit()
+  }
+
   useEffect(() => {
     const switchToTab = async (tabId: string): Promise<void> => {
       await window.vibeboard.setActiveTab(tabId)
@@ -415,7 +496,29 @@ export function App(): ReactElement {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.defaultPrevented || event.isComposing) return
 
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setGlobalSearchOpen(true)
+        return
+      }
+
       if (event.key === 'Escape') {
+        if (isGlobalSearchOpen) {
+          event.preventDefault()
+          setGlobalSearchOpen(false)
+          setGlobalSearchQuery('')
+          return
+        }
+        if (quitRequest) {
+          event.preventDefault()
+          void cancelQuit()
+          return
+        }
+        if (deleteTaskId) {
+          event.preventDefault()
+          setDeleteTaskId(null)
+          return
+        }
         if (deleteTabId) {
           event.preventDefault()
           setDeleteTabId(null)
@@ -466,7 +569,7 @@ export function App(): ReactElement {
 
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [activeTab, deleteTabId, newTaskLaneId, selectedTaskId, state.tabs])
+  }, [activeTab, deleteTabId, deleteTaskId, isGlobalSearchOpen, newTaskLaneId, quitRequest, selectedTaskId, state.tabs])
 
   const onDragStart = (event: DragStartEvent): void => {
     setActiveDragTaskId(String(event.active.id))
@@ -506,6 +609,7 @@ export function App(): ReactElement {
         onCreateTab={createTab}
         onDeleteTab={(id) => setDeleteTabId(id)}
         onReopenTab={reopenTab}
+        onReorderTabs={reorderTabs}
         onSelectTab={setActiveTab}
         onUpdateTabMeta={updateTabMeta}
       />
@@ -531,6 +635,8 @@ export function App(): ReactElement {
             <FolderPlus size={18} />
             <span>Add project</span>
           </button>
+
+          <GlobalSearchLauncher onOpen={() => setGlobalSearchOpen(true)} />
 
           <section className="panel board-snapshot">
             <div className="panel-title">
@@ -564,61 +670,83 @@ export function App(): ReactElement {
         </aside>
 
         <section className="board-area">
-          <header className="board-header">
-            <div>
-              <EditableTitle
-                className="board-title-input"
-                value={activeTab?.name ?? 'Main Board'}
-                onCommit={renameActiveTab}
-              />
-            </div>
-            <div className="board-header-actions">
-              <button
-                className="icon-text-button"
-                type="button"
-                onClick={openActiveProjectFolder}
-                disabled={!activeProject}
-                title={`Open in ${openProjectLabel}`}
-              >
-                <FolderOpen size={17} />
-                <span>{openProjectLabel}</span>
-              </button>
-              <button className="icon-text-button" type="button" onClick={createLane}>
-                <Plus size={17} />
-                <span>Lane</span>
-              </button>
-            </div>
-          </header>
+          {activeTab ? (
+            <>
+              <header className="board-header">
+                <div>
+                  <EditableTitle
+                    className="board-title-input"
+                    value={activeTab.name}
+                    onCommit={renameActiveTab}
+                  />
+                </div>
+                <div className="board-header-actions">
+                  <button
+                    className="icon-text-button"
+                    type="button"
+                    onClick={openActiveProjectFolder}
+                    disabled={!activeProject || activeProject.pathMissing}
+                    title={`Open in ${openProjectLabel}`}
+                  >
+                    <FolderOpen size={17} />
+                    <span>{openProjectLabel}</span>
+                  </button>
+                  <button
+                    className={activeProject?.pathMissing ? 'icon-text-button needs-attention' : 'icon-text-button'}
+                    type="button"
+                    onClick={relocateActiveProject}
+                    disabled={!activeProject}
+                    title="Relocate project folder"
+                  >
+                    <FolderOpen size={17} />
+                    <span>Relocate</span>
+                  </button>
+                  <button className="icon-text-button" type="button" onClick={createLane}>
+                    <Plus size={17} />
+                    <span>Lane</span>
+                  </button>
+                </div>
+              </header>
 
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCorners}
-            onDragStart={onDragStart}
-            onDragCancel={() => setActiveDragTaskId(null)}
-            onDragEnd={onDragEnd}
-          >
-            <div className={activeDragTaskId ? 'lane-grid dragging-card' : 'lane-grid'}>
-              {activeLanes.map((lane) => (
-                <LaneColumn
-                  key={lane.id}
-                  lane={lane}
-                  tasks={tasksByLaneId.get(lane.id) ?? []}
-                  onOpenTask={openTask}
-                  onAddTask={() => setNewTaskLaneId(lane.id)}
-                  onDeleteLane={deleteLane}
-                  onDeleteTask={deleteTask}
-                  onFinishTask={finishTask}
-                  canDelete={activeLanes.length > 1}
-                  onRenameLane={renameLane}
-                />
-              ))}
-            </div>
-            <DragOverlay dropAnimation={null}>
-              {activeDragTask ? (
-                <TaskCardPreview task={activeDragTask} />
-              ) : null}
-            </DragOverlay>
-          </DndContext>
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCorners}
+                onDragStart={onDragStart}
+                onDragCancel={() => setActiveDragTaskId(null)}
+                onDragEnd={onDragEnd}
+              >
+                <div className={activeDragTaskId ? 'lane-grid dragging-card' : 'lane-grid'}>
+                  {activeLanes.map((lane) => (
+                    <LaneColumn
+                      key={lane.id}
+                      lane={lane}
+                      tasks={tasksByLaneId.get(lane.id) ?? []}
+                      onOpenTask={openTask}
+                      onAddTask={() => setNewTaskLaneId(lane.id)}
+                      onDeleteLane={deleteLane}
+                      onDeleteTask={setDeleteTaskId}
+                      onFinishTask={finishTask}
+                      canDelete={activeLanes.length > 1}
+                      onRenameLane={renameLane}
+                    />
+                  ))}
+                </div>
+                <DragOverlay dropAnimation={null}>
+                  {activeDragTask ? (
+                    <TaskCardPreview task={activeDragTask} />
+                  ) : null}
+                </DragOverlay>
+              </DndContext>
+            </>
+          ) : (
+            <EmptyBoard
+              closedTabs={state.closedTabs}
+              projects={state.projects}
+              onCreateProject={createProject}
+              onDeleteTab={(id) => setDeleteTabId(id)}
+              onReopenTab={reopenTab}
+            />
+          )}
         </section>
       </main>
 
@@ -649,12 +777,255 @@ export function App(): ReactElement {
           tab={state.tabs.find((tab) => tab.id === deleteTabId) ?? state.closedTabs.find((tab) => tab.id === deleteTabId) ?? null}
           canDelete={
             Boolean(state.closedTabs.find((tab) => tab.id === deleteTabId)) ||
-            (Boolean(state.tabs.find((tab) => tab.id === deleteTabId)) && state.tabs.length > 1)
+            Boolean(state.tabs.find((tab) => tab.id === deleteTabId))
           }
           onClose={() => setDeleteTabId(null)}
           onConfirm={() => deleteTab(deleteTabId)}
         />
       )}
+
+      {deleteTaskId && (
+        <DeleteTaskModal
+          task={state.tasks.find((task) => task.id === deleteTaskId) ?? null}
+          onClose={() => setDeleteTaskId(null)}
+          onConfirm={() => deleteTask(deleteTaskId)}
+        />
+      )}
+
+      {quitRequest && (
+        <QuitConfirmModal
+          hasRunningTasks={quitRequest.hasRunningTasks}
+          onClose={cancelQuit}
+          onConfirm={confirmQuit}
+        />
+      )}
+
+      {isGlobalSearchOpen && (
+        <CommandSearchPalette
+          query={globalSearchQuery}
+          results={globalSearchResults}
+          onChange={setGlobalSearchQuery}
+          onClose={() => {
+            setGlobalSearchOpen(false)
+            setGlobalSearchQuery('')
+          }}
+          onOpenResult={openSearchResult}
+        />
+      )}
+    </div>
+  )
+}
+
+function EmptyBoard({
+  closedTabs,
+  projects,
+  onCreateProject,
+  onDeleteTab,
+  onReopenTab
+}: {
+  closedTabs: BoardTab[]
+  projects: Project[]
+  onCreateProject: () => void
+  onDeleteTab: (id: string) => void
+  onReopenTab: (id: string) => void
+}): ReactElement {
+  const [query, setQuery] = useState('')
+  const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects])
+  const recentTabs = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase()
+    const source = normalizedQuery
+      ? closedTabs.filter((tab) => {
+          const project = tab.activeProjectId ? projectById.get(tab.activeProjectId) : null
+          return [tab.name, project?.name, project?.path]
+            .filter(Boolean)
+            .some((value) => value?.toLowerCase().includes(normalizedQuery))
+        })
+      : closedTabs
+    return source.slice(0, 10)
+  }, [closedTabs, projectById, query])
+
+  return (
+    <div className="empty-board">
+      <section className="empty-board-panel">
+        <header className="empty-board-header">
+          <div>
+            <h2>Recent projects</h2>
+            <span>{closedTabs.length} closed</span>
+          </div>
+          <button className="primary-action" type="button" onClick={onCreateProject}>
+            <FolderPlus size={18} />
+            <span>Add project</span>
+          </button>
+        </header>
+
+        <div className="empty-board-surface">
+          <label className="empty-project-search">
+            <Search size={17} />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search recent projects"
+              autoFocus
+            />
+          </label>
+          <div className="empty-project-list">
+            {recentTabs.map((tab) => {
+              const project = tab.activeProjectId ? projectById.get(tab.activeProjectId) : null
+              const detail = project?.pathMissing
+                ? 'Missing folder'
+                : project?.path
+                  ? compactPath(project.path)
+                  : 'Closed board'
+
+              return (
+                <div className="empty-project-row" key={tab.id}>
+                  <button
+                    className="empty-project-open"
+                    type="button"
+                    onClick={() => onReopenTab(tab.id)}
+                    title={tab.name}
+                  >
+                    <span className="empty-project-icon">
+                      <RotateCcw size={16} />
+                    </span>
+                    <span className="empty-project-copy">
+                      <strong>{tab.name}</strong>
+                      <small className={project?.pathMissing ? 'is-missing' : undefined}>{detail}</small>
+                    </span>
+                  </button>
+                  <button
+                    className="empty-project-delete"
+                    type="button"
+                    onClick={() => onDeleteTab(tab.id)}
+                    title="Delete permanently"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              )
+            })}
+            {recentTabs.length === 0 && <p>{query.trim() ? 'No matches' : 'No recent projects'}</p>}
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function GlobalSearchLauncher({ onOpen }: { onOpen: () => void }): ReactElement {
+  return (
+    <button className="global-search-launcher" type="button" onClick={onOpen} title="Search">
+      <Search size={16} />
+      <span>Search</span>
+      <kbd>{navigator.userAgent.includes('Mac') ? '⌘K' : 'Ctrl K'}</kbd>
+    </button>
+  )
+}
+
+function CommandSearchPalette({
+  query,
+  results,
+  onChange,
+  onClose,
+  onOpenResult
+}: {
+  query: string
+  results: SearchResult[]
+  onChange: (query: string) => void
+  onClose: () => void
+  onOpenResult: (result: SearchResult) => void
+}): ReactElement {
+  const [selectedIndex, setSelectedIndex] = useState(0)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const selectedResultRef = useRef<HTMLButtonElement | null>(null)
+  const hasQuery = query.trim().length > 0
+
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [])
+
+  useEffect(() => {
+    setSelectedIndex(0)
+  }, [query, results.length])
+
+  useEffect(() => {
+    selectedResultRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [selectedIndex])
+
+  const moveSelection = (direction: 1 | -1): void => {
+    if (results.length === 0) return
+    setSelectedIndex((current) => (current + direction + results.length) % results.length)
+  }
+
+  const onPaletteKeyDown = (event: React.KeyboardEvent): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      onClose()
+      return
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      moveSelection(1)
+      return
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      moveSelection(-1)
+      return
+    }
+    if (event.key === 'Enter' && results[selectedIndex]) {
+      event.preventDefault()
+      onOpenResult(results[selectedIndex])
+    }
+  }
+
+  return (
+    <div className="command-search-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="command-search"
+        role="dialog"
+        aria-modal="true"
+        onKeyDown={onPaletteKeyDown}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <label className="command-search-input">
+          <Search size={20} />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder="Search projects, tasks, prompts"
+          />
+          <kbd>{navigator.userAgent.includes('Mac') ? '⌘K' : 'Ctrl K'}</kbd>
+        </label>
+
+        <div className="command-search-results">
+          {results.map((result, index) => (
+            <button
+              key={result.id}
+              ref={index === selectedIndex ? selectedResultRef : null}
+              className={index === selectedIndex ? 'selected' : ''}
+              type="button"
+              onMouseEnter={() => setSelectedIndex(index)}
+              onClick={() => onOpenResult(result)}
+            >
+              <span className={`search-kind kind-${result.kind}`}>{searchKindLabel(result.kind)}</span>
+              <span className="search-result-main">
+                <span className="search-result-topline">
+                  <strong>{result.title}</strong>
+                  {result.meta && <small>{result.meta}</small>}
+                </span>
+                <span className="search-result-subline">
+                  <small>{result.subtitle}</small>
+                  {shouldShowSearchMatch(result) && <em>{formatSearchMatch(result.match)}</em>}
+                </span>
+              </span>
+            </button>
+          ))}
+          {hasQuery && results.length === 0 && <p>No matches</p>}
+          {!hasQuery && results.length === 0 && <p>No recent projects</p>}
+        </div>
+      </section>
     </div>
   )
 }
@@ -729,6 +1100,7 @@ function TopBar({
   onCreateTab,
   onDeleteTab,
   onReopenTab,
+  onReorderTabs,
   onSelectTab,
   onUpdateTabMeta
 }: {
@@ -740,12 +1112,21 @@ function TopBar({
   onCreateTab: () => void
   onDeleteTab: (id: string) => void
   onReopenTab: (id: string) => void
+  onReorderTabs: (orderedIds: string[]) => void
   onSelectTab: (id: string) => void
   onUpdateTabMeta: (input: { id: string; isPinned?: boolean; color?: string | null }) => void
 }): ReactElement {
   const [menuState, setMenuState] = useState<{ tabId: string; x: number; y: number } | null>(null)
   const [closedMenuOpen, setClosedMenuOpen] = useState(false)
+  const [closedSearch, setClosedSearch] = useState('')
+  const [draggedTabId, setDraggedTabId] = useState<string | null>(null)
+  const [dragOverTabId, setDragOverTabId] = useState<string | null>(null)
   const menuTab = tabs.find((tab) => tab.id === menuState?.tabId) ?? null
+  const filteredClosedTabs = useMemo(() => {
+    const query = closedSearch.trim().toLowerCase()
+    const source = query ? closedTabs.filter((tab) => tab.name.toLowerCase().includes(query)) : closedTabs
+    return source.slice(0, 12)
+  }, [closedSearch, closedTabs])
 
   useEffect(() => {
     if (!menuState && !closedMenuOpen) return
@@ -757,13 +1138,59 @@ function TopBar({
     return () => window.removeEventListener('click', close)
   }, [menuState, closedMenuOpen])
 
+  const moveTab = (draggedId: string, targetId: string): void => {
+    if (draggedId === targetId) return
+    const draggedIndex = tabs.findIndex((tab) => tab.id === draggedId)
+    const targetIndex = tabs.findIndex((tab) => tab.id === targetId)
+    if (draggedIndex < 0 || targetIndex < 0) return
+
+    const nextTabs = [...tabs]
+    const [draggedTab] = nextTabs.splice(draggedIndex, 1)
+    nextTabs.splice(targetIndex, 0, draggedTab)
+    onReorderTabs(nextTabs.map((tab) => tab.id))
+  }
+
+  const handleTabDragStart = (event: ReactDragEvent<HTMLDivElement>, tabId: string): void => {
+    setDraggedTabId(tabId)
+    setDragOverTabId(null)
+    setMenuState(null)
+    setClosedMenuOpen(false)
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', tabId)
+  }
+
+  const handleTabDragOver = (event: ReactDragEvent<HTMLDivElement>, tabId: string): void => {
+    if (!draggedTabId || draggedTabId === tabId) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    setDragOverTabId(tabId)
+  }
+
+  const handleTabDrop = (event: ReactDragEvent<HTMLDivElement>, tabId: string): void => {
+    event.preventDefault()
+    const draggedId = event.dataTransfer.getData('text/plain') || draggedTabId
+    if (draggedId) {
+      moveTab(draggedId, tabId)
+    }
+    setDraggedTabId(null)
+    setDragOverTabId(null)
+  }
+
+  const clearTabDrag = (): void => {
+    setDraggedTabId(null)
+    setDragOverTabId(null)
+  }
+
   return (
     <div className="tabs-bar">
       <div className="tabs">
         {tabs.map((tab) => (
           <div
             key={tab.id}
-            className={`tab status-${tabStatuses.get(tab.id) ?? 'idle'} ${tab.id === activeTabId ? 'active' : ''}`}
+            draggable
+            className={`tab status-${tabStatuses.get(tab.id) ?? 'idle'} ${tab.id === activeTabId ? 'active' : ''} ${
+              draggedTabId === tab.id ? 'dragging' : ''
+            } ${dragOverTabId === tab.id ? 'drag-over' : ''}`}
             style={
               {
                 '--tab-bg': tab.color ? hexToRgba(tab.color, tab.id === activeTabId ? 0.24 : 0.14) : '#202020'
@@ -774,25 +1201,27 @@ function TopBar({
               event.preventDefault()
               setMenuState({ tabId: tab.id, x: event.clientX, y: event.clientY })
             }}
+            onDragStart={(event) => handleTabDragStart(event, tab.id)}
+            onDragOver={(event) => handleTabDragOver(event, tab.id)}
+            onDrop={(event) => handleTabDrop(event, tab.id)}
+            onDragEnd={clearTabDrag}
           >
             <button className="tab-select" type="button" onClick={() => onSelectTab(tab.id)}>
               {tab.isPinned ? <Pin size={12} /> : null}
               <span className="tab-status-dot" aria-hidden="true" />
               <span>{tab.name}</span>
             </button>
-            {tabs.length > 1 && (
-              <button
-                className="tab-close"
-                type="button"
-                title="Close project"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  onCloseTab(tab.id)
-                }}
-              >
-                ×
-              </button>
-            )}
+            <button
+              className="tab-close"
+              type="button"
+              title="Close project"
+              onClick={(event) => {
+                event.stopPropagation()
+                onCloseTab(tab.id)
+              }}
+            >
+              ×
+            </button>
           </div>
         ))}
       </div>
@@ -819,7 +1248,15 @@ function TopBar({
                   <span>Closed projects</span>
                   <small>{closedTabs.length}</small>
                 </div>
-                {closedTabs.map((tab) => (
+                <label className="closed-tabs-search">
+                  <Search size={14} />
+                  <input
+                    value={closedSearch}
+                    onChange={(event) => setClosedSearch(event.target.value)}
+                    placeholder="Search recent projects"
+                  />
+                </label>
+                {filteredClosedTabs.map((tab) => (
                   <div className="closed-tab-row" key={tab.id}>
                     <button
                       className="closed-tab-restore"
@@ -846,6 +1283,7 @@ function TopBar({
                     </button>
                   </div>
                 ))}
+                {filteredClosedTabs.length === 0 && <p className="closed-tabs-empty">No matches</p>}
               </div>
             )}
           </div>
@@ -891,17 +1329,15 @@ function TopBar({
           >
             Clear color
           </button>
-          {tabs.length > 1 && (
-            <button
-              type="button"
-              onClick={() => {
-                onCloseTab(menuTab.id)
-                setMenuState(null)
-              }}
-            >
-              Close project
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => {
+              onCloseTab(menuTab.id)
+              setMenuState(null)
+            }}
+          >
+            Close project
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -933,7 +1369,21 @@ function DeleteTabModal({
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="modal-panel compact confirm-modal" role="dialog" aria-modal="true">
+      <section
+        className="modal-panel compact confirm-modal"
+        role="dialog"
+        aria-modal="true"
+        onKeyDownCapture={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            onClose()
+          }
+          if (event.key === 'Enter' && isConfirmed && canDelete) {
+            event.preventDefault()
+            onConfirm()
+          }
+        }}
+      >
         <header className="modal-head">
           <div>
             <h2>Delete project tab</h2>
@@ -950,18 +1400,123 @@ function DeleteTabModal({
             onChange={(event) => setDraft(event.target.value)}
             placeholder="confirm"
             autoFocus
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') onClose()
-              if (event.key === 'Enter' && isConfirmed && canDelete) onConfirm()
-            }}
           />
         </div>
         <footer className="modal-actions">
           <button className="secondary-action" type="button" onClick={onClose}>
             Cancel
+            <span className="key-hint">Esc</span>
           </button>
           <button className="danger-action" type="button" disabled={!isConfirmed || !canDelete} onClick={onConfirm}>
             Delete
+            <span className="key-hint">Enter</span>
+          </button>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
+function DeleteTaskModal({
+  task,
+  onClose,
+  onConfirm
+}: {
+  task: Task | null
+  onClose: () => void
+  onConfirm: () => void
+}): ReactElement {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section
+        className="modal-panel compact confirm-modal"
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
+        onKeyDownCapture={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            onClose()
+          }
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            onConfirm()
+          }
+        }}
+      >
+        <header className="modal-head">
+          <div>
+            <h2>Delete task</h2>
+            <p>{task?.title ?? 'Task'}</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} title="Close">
+            <X size={18} />
+          </button>
+        </header>
+        <div className="confirm-body">
+          <p>This removes the task, its chat, and captured code changes.</p>
+        </div>
+        <footer className="modal-actions">
+          <button className="secondary-action" type="button" onClick={onClose} autoFocus>
+            Cancel
+            <span className="key-hint">Esc</span>
+          </button>
+          <button className="danger-action" type="button" onClick={onConfirm}>
+            Delete
+            <span className="key-hint">Enter</span>
+          </button>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
+function QuitConfirmModal({
+  hasRunningTasks,
+  onClose,
+  onConfirm
+}: {
+  hasRunningTasks: boolean
+  onClose: () => void
+  onConfirm: () => void
+}): ReactElement {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section
+        className="modal-panel compact confirm-modal"
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
+        onKeyDownCapture={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            onClose()
+          }
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            onConfirm()
+          }
+        }}
+      >
+        <header className="modal-head">
+          <div>
+            <h2>Quit VibeBoard</h2>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} title="Close">
+            <X size={18} />
+          </button>
+        </header>
+        <div className="confirm-body">
+          <p>{hasRunningTasks ? 'An AI task is still running. Quitting now may interrupt it.' : 'Close VibeBoard now?'}</p>
+        </div>
+        <footer className="modal-actions">
+          <button className="secondary-action" type="button" onClick={onClose} autoFocus>
+            Cancel
+            <span className="key-hint">Esc</span>
+          </button>
+          <button className="danger-action" type="button" onClick={onConfirm}>
+            Quit
+            <span className="key-hint">Enter</span>
           </button>
         </footer>
       </section>
@@ -1123,8 +1678,14 @@ function TaskCard({
       {...attributes}
       {...listeners}
     >
-      <TaskStatusIcon status={task.status} />
-      <div className="task-card-actions">
+      <button className="task-open" type="button" onClick={onOpen}>
+        <div className="task-title-row">
+          <h3>{task.title}</h3>
+          <TaskStatusChip status={task.status} />
+        </div>
+        {task.summary && <p>{task.summary}</p>}
+      </button>
+      <div className="task-card-actions" aria-label="Task actions">
         {task.status !== 'processing' && (
           <button
             className="task-action-button danger"
@@ -1154,12 +1715,6 @@ function TaskCard({
           </button>
         )}
       </div>
-      <button className="task-open" type="button" onClick={onOpen}>
-        <div className="task-title-row">
-          <h3>{task.title}</h3>
-        </div>
-        {task.summary && <p>{task.summary}</p>}
-      </button>
     </article>
   )
 }
@@ -1167,19 +1722,19 @@ function TaskCard({
 function TaskCardPreview({ task }: { task: Task }): ReactElement {
   return (
     <article className={`task-card drag-preview status-${task.status}`}>
-      <TaskStatusIcon status={task.status} />
       <div className="task-title-row">
         <h3>{task.title}</h3>
+        <TaskStatusChip status={task.status} />
       </div>
       {task.summary && <p>{task.summary}</p>}
     </article>
   )
 }
 
-function TaskStatusIcon({ status }: { status: Task['status'] }): ReactElement | null {
+function TaskStatusChip({ status }: { status: Task['status'] }): ReactElement | null {
   if (status === 'attention') {
     return (
-      <span className="task-status-icon attention" title="Needs attention">
+      <span className="task-status-chip attention" title="Needs attention">
         <AlertTriangle size={15} />
       </span>
     )
@@ -1187,7 +1742,7 @@ function TaskStatusIcon({ status }: { status: Task['status'] }): ReactElement | 
 
   if (status === 'done_unread' || status === 'done_read') {
     return (
-      <span className="task-status-icon done" title={status === 'done_unread' ? 'Done' : 'Done read'}>
+      <span className="task-status-chip done" title={status === 'done_unread' ? 'Done' : 'Done read'}>
         <Check size={16} />
       </span>
     )
@@ -1208,14 +1763,26 @@ function TaskFormModal({
   onSubmit: (input: NewTaskInput) => void
 }): ReactElement {
   const [title, setTitle] = useState('')
+  const formRef = useRef<HTMLFormElement | null>(null)
 
   return (
     <div className="modal-backdrop">
       <form
+        ref={formRef}
         className="task-form modal-panel compact"
         onSubmit={(event) => {
           event.preventDefault()
           onSubmit({ title })
+        }}
+        onKeyDownCapture={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            onClose()
+          }
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            formRef.current?.requestSubmit()
+          }
         }}
       >
         <div className="modal-head">
@@ -1233,10 +1800,12 @@ function TaskFormModal({
         <div className="modal-actions">
           <button className="secondary-action" type="button" onClick={onClose}>
             Cancel
+            <span className="key-hint">Esc</span>
           </button>
           <button className="primary-action" type="submit">
             <Plus size={18} />
             <span>Create</span>
+            <span className="key-hint">Enter</span>
           </button>
         </div>
       </form>
@@ -1342,11 +1911,16 @@ function CodexThread({
   onSendMessage: (taskId: string, content: string) => void
 }): ReactElement {
   const [draft, setDraft] = useState('')
+  const [activePromptId, setActivePromptId] = useState<string | null>(null)
   const streamRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const userMessageRefs = useRef(new Map<string, HTMLDivElement>())
   const olderScrollSnapshotRef = useRef<{ height: number; top: number } | null>(null)
   const userEntries = conversations.filter((entry) => entry.role === 'user')
-  const prompt = userEntries[0]?.content ?? ''
+  const latestUserEntry = userEntries.at(-1) ?? null
+  const activePromptEntry =
+    userEntries.find((entry) => entry.id === activePromptId) ?? latestUserEntry ?? userEntries[0] ?? null
+  const prompt = activePromptEntry?.content.trim() ?? ''
   const showSystemEntries = task.status === 'processing' || task.status === 'attention'
   const threadEntries = compactConversationEntries(
     conversations
@@ -1362,7 +1936,11 @@ function CodexThread({
       }))
       .filter((entry) => entry.content)
   )
-  const scrollKey = `${task.status}:${prompt}:${threadEntries.map((entry) => `${entry.id}:${entry.content.length}`).join('|')}`
+  const scrollKey = `${task.status}:${threadEntries.map((entry) => `${entry.id}:${entry.content.length}`).join('|')}`
+
+  useEffect(() => {
+    setActivePromptId(latestUserEntry?.id ?? null)
+  }, [latestUserEntry?.id, task.id])
 
   useEffect(() => {
     const composer = composerRef.current
@@ -1399,6 +1977,29 @@ function CodexThread({
     onLoadOlderConversations()
   }
 
+  const syncActivePromptFromScroll = (): void => {
+    const stream = streamRef.current
+    if (!stream || userEntries.length === 0) return
+
+    const anchorY = stream.scrollTop + 32
+    let currentEntry = userEntries[0]
+    for (const entry of userEntries) {
+      const element = userMessageRefs.current.get(entry.id)
+      if (!element) continue
+      if (element.offsetTop <= anchorY) {
+        currentEntry = entry
+      } else {
+        break
+      }
+    }
+    setActivePromptId((currentId) => (currentId === currentEntry.id ? currentId : currentEntry.id))
+  }
+
+  const handleStreamScroll = (): void => {
+    maybeLoadOlder()
+    syncActivePromptFromScroll()
+  }
+
   const send = (): void => {
     const content = draft.trim()
     if (!canSend || !content) return
@@ -1414,7 +2015,7 @@ function CodexThread({
         </section>
       )}
 
-      <div className="agent-stream" ref={streamRef} onScroll={maybeLoadOlder}>
+      <div className="agent-stream" ref={streamRef} onScroll={handleStreamScroll}>
         {isLoadingOlderConversations && <div className="thread-empty-state">Loading earlier messages</div>}
         {!prompt && threadEntries.length === 0 ? (
           <div className="thread-empty-state">
@@ -1430,7 +2031,18 @@ function CodexThread({
           </div>
         ) : (
           threadEntries.map((entry) => (
-            <div key={entry.id} className={`agent-step role-${entry.role}`}>
+            <div
+              key={entry.id}
+              ref={(element) => {
+                if (entry.role !== 'user') return
+                if (element) {
+                  userMessageRefs.current.set(entry.id, element)
+                } else {
+                  userMessageRefs.current.delete(entry.id)
+                }
+              }}
+              className={`agent-step role-${entry.role}`}
+            >
               {entry.role === 'user' ? <MessageSquare size={16} /> : <Code2 size={16} />}
               <div>
                 <strong className="agent-step-label">
@@ -1535,15 +2147,26 @@ function cleanConversationLine(line: string): string {
       /^(?:init|start|started|completed|success|done|end)\s+(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s+)?/i,
       ''
     )
+    .replace(
+      /\b(?:login|tool_call|tool|result|metadata|started|completed|success|done|init)\s+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+      ''
+    )
+    .replace(/\btool_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '')
     .replace(/^(?:(?:started|completed|success|done|end)\s+)+/i, '')
     .replace(/\s+(?:(?:started|completed|success|done|end)\s*)+$/i, '')
+    .replace(/[ \t]{2,}/g, ' ')
     .trim()
 }
 
 function isProgressNarrationLine(line: string): boolean {
-  return /^(i('|’)?m|i am|i('|’)?ll|i will|reading|reviewing|examining|checking|running|looking|scanning|opening|inspecting)\b/i.test(
-    line
-  ) || /^the project structure is now clear\b/i.test(line)
+  return (
+    /^(i('|’)?m|i am|i('|’)?ll|i will|reading|reviewing|examining|checking|running|looking|scanning|opening|inspecting)\b/i.test(
+      line
+    ) ||
+    /^(the user|the request|the context|a modified .+ appears|files to understand|likely about)\b/i.test(line) ||
+    /^the project structure is now clear\b/i.test(line)
+  )
 }
 
 function mergeConversationEntries(left: ConversationEntry[], right: ConversationEntry[]): ConversationEntry[] {
@@ -1742,6 +2365,26 @@ function compactPath(path: string): string {
   const parts = path.split('/').filter(Boolean)
   if (parts.length <= 3) return path
   return `.../${parts.slice(-3).join('/')}`
+}
+
+function formatSearchMatch(value: string): string {
+  const compact = value.replace(/\s+/g, ' ').trim()
+  if (compact.length <= 96) return compact
+  return `${compact.slice(0, 96)}...`
+}
+
+function shouldShowSearchMatch(result: SearchResult): boolean {
+  const match = result.match.trim()
+  if (!match) return false
+  if (result.kind === 'project') return false
+  return match.toLowerCase() !== result.title.trim().toLowerCase()
+}
+
+function searchKindLabel(kind: SearchResult['kind']): string {
+  if (kind === 'project') return 'Project'
+  if (kind === 'tab') return 'Tab'
+  if (kind === 'task') return 'Task'
+  return 'Prompt'
 }
 
 function buildTabStatusMap(tasks: Task[]): Map<string, Task['status']> {

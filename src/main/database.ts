@@ -2,6 +2,7 @@ import { app, dialog } from 'electron'
 import Database from 'better-sqlite3'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { existsSync } from 'node:fs'
 import type {
   AppState,
   BoardTab,
@@ -15,8 +16,12 @@ import type {
   Lane,
   MoveTaskInput,
   Project,
+  RecordSearchOpenInput,
+  ReorderTabsInput,
   RenameInput,
   SendTaskMessageInput,
+  SearchResult,
+  SearchWorkspaceInput,
   Task,
   TaskDetail,
   TaskStatus,
@@ -26,6 +31,61 @@ import type {
 
 const now = (): string => new Date().toISOString()
 const id = (): string => crypto.randomUUID()
+const escapeLike = (value: string): string => value.replace(/[\\%_]/g, (match) => `\\${match}`)
+const compactProjectPath = (projectPath: string): string => {
+  const parts = projectPath.split('/').filter(Boolean)
+  if (parts.length <= 3) return projectPath
+  return `.../${parts.slice(-3).join('/')}`
+}
+
+const taskStatusLabel = (status: TaskStatus): string => {
+  if (status === 'processing') return 'Running'
+  if (status === 'attention') return 'Needs attention'
+  if (status === 'done_unread') return 'Done unread'
+  if (status === 'done_read') return 'Done'
+  return 'Idle'
+}
+
+const withPathState = (project: Project): Project => ({
+  ...project,
+  pathMissing: !existsSync(project.path)
+})
+
+const parseSearchQuery = (
+  rawQuery: string
+): {
+  text: string
+  regex: RegExp | null
+  minLength: number | null
+  maxLength: number | null
+} => {
+  let text = rawQuery.trim()
+  let regex: RegExp | null = null
+  let minLength: number | null = null
+  let maxLength: number | null = null
+
+  text = text.replace(/\blen(?:gth)?\s*([<>]=?)\s*(\d+)\b/gi, (_match, operator: string, rawLength: string) => {
+    const value = Number(rawLength)
+    if (operator.startsWith('>')) {
+      minLength = operator === '>' ? value + 1 : value
+    } else {
+      maxLength = operator === '<' ? value - 1 : value
+    }
+    return ''
+  })
+
+  const regexMatch = text.match(/^\/(.+)\/([imsu]*)$/)
+  if (regexMatch) {
+    try {
+      regex = new RegExp(regexMatch[1], regexMatch[2])
+      text = ''
+    } catch {
+      regex = null
+    }
+  }
+
+  return { text: text.trim(), regex, minLength, maxLength }
+}
 
 export class VibeBoardStore {
   private db: Database.Database
@@ -49,16 +109,16 @@ export class VibeBoardStore {
       : undefined
     const fallbackTab = this.db
       .prepare('SELECT id FROM tabs WHERE isClosed = 0 ORDER BY createdAt LIMIT 1')
-      .get() as { id: string }
-    const activeTabId = savedActiveTab?.id ?? fallbackTab.id
+      .get() as { id: string } | undefined
+    const activeTabId = savedActiveTab?.id ?? fallbackTab?.id ?? ''
 
     return {
-      projects: this.db.prepare('SELECT * FROM projects ORDER BY createdAt DESC').all() as Project[],
+      projects: (this.db.prepare('SELECT * FROM projects ORDER BY createdAt DESC').all() as Project[]).map(withPathState),
       tabs: this.db
-        .prepare('SELECT * FROM tabs WHERE isClosed = 0 ORDER BY isPinned DESC, createdAt')
+        .prepare('SELECT * FROM tabs WHERE isClosed = 0 ORDER BY isPinned DESC, position, createdAt')
         .all() as BoardTab[],
       closedTabs: this.db
-        .prepare('SELECT * FROM tabs WHERE isClosed = 1 ORDER BY createdAt DESC')
+        .prepare('SELECT * FROM tabs WHERE isClosed = 1 ORDER BY lastUsedAt DESC, createdAt DESC LIMIT 40')
         .all() as BoardTab[],
       lanes: this.db.prepare('SELECT * FROM lanes ORDER BY position').all() as Lane[],
       tasks: this.db.prepare('SELECT * FROM tasks ORDER BY position').all() as Task[],
@@ -91,6 +151,322 @@ export class VibeBoardStore {
     }
   }
 
+  searchWorkspace(input: SearchWorkspaceInput): SearchResult[] {
+    const limit = Math.min(Math.max(input.limit ?? 18, 1), 40)
+    const parsed = parseSearchQuery(input.query)
+    const isHistoryQuery = !parsed.text && !parsed.regex && parsed.minLength === null && parsed.maxLength === null
+    const hasText = Boolean(parsed.text)
+    const allowPathSearch = parsed.text.length >= 3 || Boolean(parsed.regex) || parsed.minLength !== null || parsed.maxLength !== null
+    const like = `%${escapeLike(parsed.text)}%`
+    const candidates: SearchResult[] = []
+    const candidateLimit = Math.max(limit * 3, 36)
+
+    const matches = (value: string): boolean => {
+      if (parsed.minLength !== null && value.length < parsed.minLength) return false
+      if (parsed.maxLength !== null && value.length > parsed.maxLength) return false
+      if (parsed.regex) return parsed.regex.test(value)
+      return true
+    }
+
+    if (isHistoryQuery) {
+      return this.getSearchHistory(Math.min(limit, 4))
+    }
+
+    const projectRows = this.db
+      .prepare(
+        hasText
+          ? `SELECT
+              projects.id as projectId,
+              projects.name as projectName,
+              projects.path as projectPath,
+              tabs.id as tabId,
+              tabs.isClosed as isClosedTab
+            FROM projects
+            LEFT JOIN tabs ON tabs.activeProjectId = projects.id
+            WHERE projects.name LIKE ? ESCAPE '\\'
+              ${allowPathSearch ? "OR projects.path LIKE ? ESCAPE '\\'" : ''}
+            ORDER BY COALESCE(tabs.lastUsedAt, projects.createdAt) DESC
+            LIMIT ?`
+          : `SELECT
+              projects.id as projectId,
+              projects.name as projectName,
+              projects.path as projectPath,
+              tabs.id as tabId,
+              tabs.isClosed as isClosedTab
+            FROM projects
+            LEFT JOIN tabs ON tabs.activeProjectId = projects.id
+            ORDER BY COALESCE(tabs.lastUsedAt, projects.createdAt) DESC
+            LIMIT ?`
+      )
+      .all(
+        ...(hasText ? (allowPathSearch ? [like, like, candidateLimit] : [like, candidateLimit]) : [candidateLimit])
+      ) as Array<{
+      projectId: string
+      projectName: string
+      projectPath: string
+      tabId: string | null
+      isClosedTab: number | null
+    }>
+
+    for (const row of projectRows) {
+      const match = allowPathSearch ? `${row.projectName} ${row.projectPath}` : row.projectName
+      if (!matches(match)) continue
+      const tabId = row.tabId ?? undefined
+      candidates.push({
+        id: tabId ? `tab:${tabId}` : `project:${row.projectId}`,
+        kind: tabId ? 'tab' : 'project',
+        title: row.projectName,
+        subtitle: compactProjectPath(row.projectPath),
+        match,
+        meta: row.isClosedTab ? 'Closed' : 'Open',
+        projectId: row.projectId,
+        tabId,
+        isClosedTab: Boolean(row.isClosedTab)
+      })
+    }
+
+    const tabRows = this.db
+      .prepare(
+        hasText
+          ? `SELECT tabs.*, projects.path as projectPath
+            FROM tabs
+            LEFT JOIN projects ON projects.id = tabs.activeProjectId
+            WHERE tabs.name LIKE ? ESCAPE '\\'
+              AND tabs.activeProjectId IS NULL
+            ORDER BY tabs.isClosed, tabs.lastUsedAt DESC, tabs.createdAt DESC
+            LIMIT ?`
+          : `SELECT tabs.*, projects.path as projectPath
+            FROM tabs
+            LEFT JOIN projects ON projects.id = tabs.activeProjectId
+            WHERE tabs.activeProjectId IS NULL
+            ORDER BY tabs.isClosed, tabs.lastUsedAt DESC, tabs.createdAt DESC
+            LIMIT ?`
+      )
+      .all(...(hasText ? [like, candidateLimit] : [candidateLimit])) as Array<BoardTab & { projectPath: string | null }>
+
+    for (const row of tabRows) {
+      if (!matches(row.name)) continue
+      candidates.push({
+        id: `tab:${row.id}`,
+        kind: 'tab',
+        title: row.name,
+        subtitle: row.projectPath ?? (row.isClosed ? 'Closed project' : 'Open project'),
+        match: row.name,
+        tabId: row.id,
+        projectId: row.activeProjectId ?? undefined,
+        isClosedTab: Boolean(row.isClosed)
+      })
+    }
+
+    const taskRows = this.db
+      .prepare(
+        hasText
+          ? `SELECT tasks.*, tabs.name as tabName, tabs.isClosed as isClosedTab, lanes.name as laneName, projects.name as projectName
+            FROM tasks
+            JOIN tabs ON tabs.id = tasks.tabId
+            LEFT JOIN lanes ON lanes.id = tasks.laneId
+            LEFT JOIN projects ON projects.id = tasks.projectId
+            WHERE tasks.title LIKE ? ESCAPE '\\'
+            ORDER BY tasks.updatedAt DESC
+            LIMIT ?`
+          : `SELECT tasks.*, tabs.name as tabName, tabs.isClosed as isClosedTab, lanes.name as laneName, projects.name as projectName
+            FROM tasks
+            JOIN tabs ON tabs.id = tasks.tabId
+            LEFT JOIN lanes ON lanes.id = tasks.laneId
+            LEFT JOIN projects ON projects.id = tasks.projectId
+            ORDER BY tasks.updatedAt DESC
+            LIMIT ?`
+      )
+      .all(...(hasText ? [like, candidateLimit] : [candidateLimit])) as Array<
+      Task & { tabName: string; isClosedTab: number; laneName: string | null; projectName: string | null }
+    >
+
+    for (const row of taskRows) {
+      if (!matches(row.title)) continue
+      candidates.push({
+        id: `task:${row.id}`,
+        kind: 'task',
+        title: row.title,
+        subtitle: row.projectName ?? row.tabName,
+        match: row.title,
+        meta: [taskStatusLabel(row.status), row.laneName].filter(Boolean).join(' · '),
+        taskId: row.id,
+        tabId: row.tabId,
+        projectId: row.projectId ?? undefined,
+        isClosedTab: Boolean(row.isClosedTab)
+      })
+    }
+
+    const promptRows = this.db
+      .prepare(
+        hasText
+          ? `SELECT
+              conversations.id,
+              conversations.content,
+              tasks.id as taskId,
+              tasks.title as taskTitle,
+              tasks.tabId,
+              tasks.projectId,
+              tabs.name as tabName,
+              tabs.isClosed as isClosedTab,
+              tasks.status as taskStatus,
+              lanes.name as laneName,
+              projects.name as projectName
+            FROM conversations
+            JOIN tasks ON tasks.id = conversations.taskId
+            JOIN tabs ON tabs.id = tasks.tabId
+            LEFT JOIN lanes ON lanes.id = tasks.laneId
+            LEFT JOIN projects ON projects.id = tasks.projectId
+            WHERE conversations.role = 'user'
+              AND conversations.content LIKE ? ESCAPE '\\'
+            ORDER BY conversations.createdAt DESC
+            LIMIT ?`
+          : `SELECT
+              conversations.id,
+              conversations.content,
+              tasks.id as taskId,
+              tasks.title as taskTitle,
+              tasks.tabId,
+              tasks.projectId,
+              tabs.name as tabName,
+              tabs.isClosed as isClosedTab,
+              tasks.status as taskStatus,
+              lanes.name as laneName,
+              projects.name as projectName
+            FROM conversations
+            JOIN tasks ON tasks.id = conversations.taskId
+            JOIN tabs ON tabs.id = tasks.tabId
+            LEFT JOIN lanes ON lanes.id = tasks.laneId
+            LEFT JOIN projects ON projects.id = tasks.projectId
+            WHERE conversations.role = 'user'
+            ORDER BY conversations.createdAt DESC
+            LIMIT ?`
+      )
+      .all(...(hasText ? [like, candidateLimit] : [candidateLimit])) as Array<{
+      id: string
+      content: string
+      taskId: string
+      taskTitle: string
+      tabId: string
+      projectId: string | null
+      tabName: string
+      isClosedTab: number
+      taskStatus: TaskStatus
+      laneName: string | null
+      projectName: string | null
+    }>
+
+    for (const row of promptRows) {
+      if (!matches(row.content)) continue
+      candidates.push({
+        id: `prompt:${row.id}`,
+        kind: 'prompt',
+        title: row.taskTitle,
+        subtitle: row.projectName ?? row.tabName,
+        match: row.content,
+        meta: [taskStatusLabel(row.taskStatus), row.laneName].filter(Boolean).join(' · '),
+        taskId: row.taskId,
+        tabId: row.tabId,
+        projectId: row.projectId ?? undefined,
+        isClosedTab: Boolean(row.isClosedTab)
+      })
+    }
+
+    const seen = new Set<string>()
+    return candidates
+      .filter((candidate) => {
+        const navigationKey = candidate.taskId
+          ? `task:${candidate.taskId}`
+          : candidate.tabId
+            ? `tab:${candidate.tabId}`
+            : candidate.projectId
+              ? `project:${candidate.projectId}`
+              : candidate.id
+        if (seen.has(navigationKey)) return false
+        seen.add(navigationKey)
+        return true
+      })
+      .slice(0, limit)
+  }
+
+  recordSearchOpen(input: RecordSearchOpenInput): void {
+    const result = input.result
+    this.db
+      .prepare(
+        `INSERT INTO search_history
+          (id, kind, title, subtitle, match, meta, tabId, taskId, projectId, isClosedTab, openedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          kind = excluded.kind,
+          title = excluded.title,
+          subtitle = excluded.subtitle,
+          match = excluded.match,
+          meta = excluded.meta,
+          tabId = excluded.tabId,
+          taskId = excluded.taskId,
+          projectId = excluded.projectId,
+          isClosedTab = excluded.isClosedTab,
+          openedAt = excluded.openedAt`
+      )
+      .run(
+        result.id,
+        result.kind,
+        result.title,
+        result.subtitle,
+        result.match,
+        result.meta ?? '',
+        result.tabId ?? null,
+        result.taskId ?? null,
+        result.projectId ?? null,
+        result.isClosedTab ? 1 : 0,
+        now()
+      )
+  }
+
+  private getSearchHistory(limit: number): SearchResult[] {
+    const rows = this.db
+      .prepare('SELECT * FROM search_history ORDER BY openedAt DESC LIMIT ?')
+      .all(limit) as Array<{
+      id: string
+      kind: SearchResult['kind']
+      title: string
+      subtitle: string
+      match: string
+      meta: string
+      tabId: string | null
+      taskId: string | null
+      projectId: string | null
+      isClosedTab: number
+    }>
+
+    const seen = new Set<string>()
+    return rows
+      .filter((row) => {
+        const navigationKey = row.taskId
+          ? `task:${row.taskId}`
+          : row.tabId
+            ? `tab:${row.tabId}`
+            : row.projectId
+              ? `project:${row.projectId}`
+              : row.id
+        if (seen.has(navigationKey)) return false
+        seen.add(navigationKey)
+        return true
+      })
+      .map((row) => ({
+        id: row.tabId && !row.taskId ? `tab:${row.tabId}` : row.id,
+        kind: row.tabId && !row.taskId ? 'tab' : row.kind,
+        title: row.title,
+        subtitle: row.subtitle,
+        match: row.match,
+        meta: row.meta,
+        tabId: row.tabId ?? undefined,
+        taskId: row.taskId ?? undefined,
+        projectId: row.projectId ?? undefined,
+        isClosedTab: Boolean(row.isClosedTab)
+      }))
+  }
+
   getTaskRunContext(taskId: string): { task: Task; project: Project | null; prompt: string } | null {
     const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as Task | undefined
     if (!task) return null
@@ -111,7 +487,25 @@ export class VibeBoardStore {
 
   getProject(projectId: string): Project | null {
     const project = this.db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as Project | undefined
-    return project ?? null
+    return project ? withPathState(project) : null
+  }
+
+  async relocateProject(projectId: string): Promise<Project | null> {
+    const project = this.db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as Project | undefined
+    if (!project) return null
+
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory'],
+      title: `Relocate ${project.name}`
+    })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null
+    }
+
+    const folderPath = result.filePaths[0]
+    this.db.prepare('UPDATE projects SET path = ? WHERE id = ?').run(folderPath, projectId)
+    return withPathState({ ...project, path: folderPath })
   }
 
   appendConversation(taskId: string, role: ConversationEntry['role'], content: string): void {
@@ -185,13 +579,14 @@ export class VibeBoardStore {
         this.createTab({ name: existingProject.name, projectId: existingProject.id })
       }
 
-      return existingProject
+      return withPathState(existingProject)
     }
 
     const project: Project = {
       id: id(),
       name: input.name?.trim() || path.basename(folderPath),
       path: folderPath,
+      pathMissing: false,
       createdAt: now()
     }
 
@@ -204,6 +599,7 @@ export class VibeBoardStore {
   }
 
   createTab(input: CreateTabInput): BoardTab {
+    const createdAt = now()
     const tab: BoardTab = {
       id: id(),
       name: input.name.trim() || 'Project',
@@ -211,18 +607,30 @@ export class VibeBoardStore {
       isPinned: 0,
       isClosed: 0,
       color: null,
-      createdAt: now()
+      position: this.nextTabPosition(),
+      createdAt,
+      lastUsedAt: createdAt
     }
 
     const insertTab = this.db.prepare(
-      'INSERT INTO tabs (id, name, activeProjectId, isPinned, isClosed, color, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO tabs (id, name, activeProjectId, isPinned, isClosed, color, position, createdAt, lastUsedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )
     const insertLane = this.db.prepare(
       'INSERT INTO lanes (id, tabId, name, position) VALUES (?, ?, ?, ?)'
     )
 
     const transaction = this.db.transaction(() => {
-      insertTab.run(tab.id, tab.name, tab.activeProjectId, tab.isPinned, tab.isClosed, tab.color, tab.createdAt)
+      insertTab.run(
+        tab.id,
+        tab.name,
+        tab.activeProjectId,
+        tab.isPinned,
+        tab.isClosed,
+        tab.color,
+        tab.position,
+        tab.createdAt,
+        tab.lastUsedAt
+      )
       ;['Backlog', 'Active', 'Review', 'Done'].forEach((name, position) => {
         insertLane.run(id(), tab.id, name, position)
       })
@@ -247,22 +655,30 @@ export class VibeBoardStore {
     }
   }
 
+  reorderTabs(input: ReorderTabsInput): void {
+    const updatePosition = this.db.prepare('UPDATE tabs SET position = ? WHERE id = ?')
+    const transaction = this.db.transaction(() => {
+      input.orderedIds.forEach((tabId, position) => {
+        updatePosition.run(position, tabId)
+      })
+    })
+
+    transaction()
+  }
+
   closeTab(tabId: string): void {
     const tabs = this.db
-      .prepare('SELECT id FROM tabs WHERE isClosed = 0 ORDER BY isPinned DESC, createdAt')
+      .prepare('SELECT id FROM tabs WHERE isClosed = 0 ORDER BY isPinned DESC, position, createdAt')
       .all() as Array<{ id: string }>
-    if (tabs.length <= 1) {
-      return
-    }
 
     const activeTabId = this.getSetting('activeTabId')
     const tabIndex = tabs.findIndex((tab) => tab.id === tabId)
     const fallbackTab = tabs[tabIndex + 1] ?? tabs[tabIndex - 1] ?? tabs.find((tab) => tab.id !== tabId)
 
     const transaction = this.db.transaction(() => {
-      this.db.prepare('UPDATE tabs SET isClosed = 1 WHERE id = ?').run(tabId)
-      if (activeTabId === tabId && fallbackTab) {
-        this.setSetting('activeTabId', fallbackTab.id)
+      this.db.prepare('UPDATE tabs SET isClosed = 1, lastUsedAt = ? WHERE id = ?').run(now(), tabId)
+      if (activeTabId === tabId) {
+        this.setSetting('activeTabId', fallbackTab?.id ?? '')
       }
     })
 
@@ -271,7 +687,7 @@ export class VibeBoardStore {
 
   reopenTab(tabId: string): void {
     const transaction = this.db.transaction(() => {
-      this.db.prepare('UPDATE tabs SET isClosed = 0 WHERE id = ?').run(tabId)
+      this.db.prepare('UPDATE tabs SET isClosed = 0, lastUsedAt = ? WHERE id = ?').run(now(), tabId)
       this.setSetting('activeTabId', tabId)
     })
 
@@ -279,22 +695,19 @@ export class VibeBoardStore {
   }
 
   deleteTab(tabId: string): void {
-    const tabs = this.db.prepare('SELECT id, isClosed FROM tabs ORDER BY isPinned DESC, createdAt').all() as Array<{
+    const tabs = this.db.prepare('SELECT id, isClosed FROM tabs ORDER BY isPinned DESC, position, createdAt').all() as Array<{
       id: string
       isClosed: number
     }>
-    if (tabs.length <= 1) {
-      return
-    }
 
     const targetTab = tabs.find((tab) => tab.id === tabId)
     const openTabs = tabs.filter((tab) => tab.isClosed === 0)
-    if (!targetTab || (targetTab.isClosed === 0 && openTabs.length <= 1)) {
+    if (!targetTab) {
       return
     }
 
     const activeTabId = this.getSetting('activeTabId')
-    const fallbackTab = tabs.find((tab) => tab.id !== tabId && tab.isClosed === 0)
+    const fallbackTab = openTabs.find((tab) => tab.id !== tabId)
     const projectRow = this.db.prepare('SELECT activeProjectId FROM tabs WHERE id = ?').get(tabId) as
       | { activeProjectId: string | null }
       | undefined
@@ -309,8 +722,8 @@ export class VibeBoardStore {
           this.db.prepare('DELETE FROM projects WHERE id = ?').run(projectRow.activeProjectId)
         }
       }
-      if (activeTabId === tabId && fallbackTab) {
-        this.setSetting('activeTabId', fallbackTab.id)
+      if (activeTabId === tabId) {
+        this.setSetting('activeTabId', fallbackTab?.id ?? '')
       }
     })
 
@@ -319,6 +732,7 @@ export class VibeBoardStore {
 
   setActiveTab(tabId: string): void {
     this.setSetting('activeTabId', tabId)
+    this.db.prepare('UPDATE tabs SET lastUsedAt = ? WHERE id = ?').run(now(), tabId)
   }
 
   createLane(input: CreateLaneInput): Lane {
@@ -500,7 +914,9 @@ export class VibeBoardStore {
         isPinned INTEGER NOT NULL DEFAULT 0,
         isClosed INTEGER NOT NULL DEFAULT 0,
         color TEXT,
-        createdAt TEXT NOT NULL
+        position INTEGER NOT NULL DEFAULT 0,
+        createdAt TEXT NOT NULL,
+        lastUsedAt TEXT NOT NULL DEFAULT ''
       );
 
       CREATE TABLE IF NOT EXISTS lanes (
@@ -547,14 +963,60 @@ export class VibeBoardStore {
         createdAt TEXT NOT NULL,
         FOREIGN KEY (taskId) REFERENCES tasks(id) ON DELETE CASCADE
       );
+
+      CREATE TABLE IF NOT EXISTS search_history (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL,
+        subtitle TEXT NOT NULL,
+        match TEXT NOT NULL,
+        meta TEXT NOT NULL DEFAULT '',
+        tabId TEXT,
+        taskId TEXT,
+        projectId TEXT,
+        isClosedTab INTEGER NOT NULL DEFAULT 0,
+        openedAt TEXT NOT NULL
+      );
     `)
     this.ensureColumn('tabs', 'isPinned', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('tabs', 'isClosed', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('tabs', 'color', 'TEXT')
     this.ensureColumn('tabs', 'activeProjectId', 'TEXT')
+    this.ensureColumn('tabs', 'position', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('tabs', 'lastUsedAt', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('code_changes', 'language', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('code_changes', 'diffText', "TEXT NOT NULL DEFAULT ''")
+    this.backfillTabLastUsedAt()
+    this.backfillTabPositions()
     this.linkLegacyTabsToProjects()
+  }
+
+  private nextTabPosition(): number {
+    const row = this.db.prepare('SELECT COALESCE(MAX(position), -1) + 1 as position FROM tabs').get() as {
+      position: number
+    }
+    return row.position
+  }
+
+  private backfillTabPositions(): void {
+    const positionedTabs = this.db.prepare('SELECT COUNT(*) as count FROM tabs WHERE position != 0').get() as {
+      count: number
+    }
+    if (positionedTabs.count > 0) return
+
+    const tabs = this.db.prepare('SELECT id FROM tabs ORDER BY createdAt').all() as Array<{ id: string }>
+    const updatePosition = this.db.prepare('UPDATE tabs SET position = ? WHERE id = ?')
+    const transaction = this.db.transaction(() => {
+      tabs.forEach((tab, position) => {
+        updatePosition.run(position, tab.id)
+      })
+    })
+
+    transaction()
+  }
+
+  private backfillTabLastUsedAt(): void {
+    this.db.prepare("UPDATE tabs SET lastUsedAt = createdAt WHERE lastUsedAt = ''").run()
   }
 
   private seed(): void {
@@ -567,6 +1029,7 @@ export class VibeBoardStore {
       id: id(),
       name: 'VibeBoard',
       path: app.getAppPath(),
+      pathMissing: false,
       createdAt: now()
     }
     this.db
