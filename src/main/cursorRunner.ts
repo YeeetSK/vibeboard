@@ -1,9 +1,13 @@
 import { spawn } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { CodeChange } from '../shared/types'
 import { isAgentAuthenticated, resolveAgentCommand } from './cursorAdapter'
 import { VibeBoardStore } from './database'
+
+const projectMemoryFileName = '.vibeboard-memory.md'
+const projectMemoryMaxChars = 12000
+const actualMessageMarker = 'VibeBoardStartActualMessage'
 
 interface RunCursorTaskInput {
   taskId: string
@@ -46,7 +50,7 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
     return
   }
 
-  const optimizedPrompt = await buildFocusedPrompt(projectPath, context.prompt)
+  const optimizedPrompt = await buildFocusedPrompt(projectPath, context.prompt, context.previousPrompts)
   store.appendConversation(taskId, 'system', 'Prepared a focused project brief to reduce unnecessary repo exploration.')
   onStateChanged()
 
@@ -119,11 +123,12 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
   })
 }
 
-async function buildFocusedPrompt(projectPath: string, prompt: string): Promise<string> {
-  const [trackedFiles, changedFiles, manifestSummary] = await Promise.all([
+async function buildFocusedPrompt(projectPath: string, prompt: string, previousPrompts: string[]): Promise<string> {
+  const [trackedFiles, changedFiles, manifestSummary, projectMemory] = await Promise.all([
     listTrackedFiles(projectPath),
     listChangedFiles(projectPath),
-    readManifestSummary(projectPath)
+    readManifestSummary(projectPath),
+    prepareProjectMemory(projectPath)
   ])
   const candidateFiles = rankRelevantFiles(prompt, trackedFiles, changedFiles).slice(0, 40)
 
@@ -136,6 +141,21 @@ async function buildFocusedPrompt(projectPath: string, prompt: string): Promise<
     '- Open only files that are likely relevant to the requested change.',
     '- Prefer targeted searches over broad recursive reading.',
     '- Keep edits scoped to the task.',
+    `- Use ${projectMemoryFileName} for durable project context before re-discovering basics.`,
+    `- Update ${projectMemoryFileName} only when you learn stable project facts, setup steps, conventions, or standing user preferences.`,
+    `- Keep ${projectMemoryFileName} concise and never store secrets, tokens, credentials, or temporary task logs.`,
+    `- Your final user-facing answer must start with ${actualMessageMarker} on its own line.`,
+    `- VibeBoard hides output that does not include ${actualMessageMarker}.`,
+    `- Put only the final answer after ${actualMessageMarker}. Do not put tool logs, stream metadata, progress narration, prompt text, or internal reasoning after it.`,
+    '',
+    projectMemory
+      ? `VibeBoard project memory from ${projectMemoryFileName}:\n${projectMemory}`
+      : `VibeBoard project memory: ${projectMemoryFileName} is available for durable local notes.`,
+    '',
+    previousPrompts.length > 0
+      ? `Recent user messages for this task, oldest to newest:\n${previousPrompts.map((entry) => `- ${entry}`).join('\n')}`
+      : '',
+    previousPrompts.length > 0 ? 'Use these only as context. The current user task below is authoritative.' : '',
     '',
     manifestSummary ? `Project hints:\n${manifestSummary}` : '',
     candidateFiles.length > 0 ? `Focused file candidates:\n${candidateFiles.map((file) => `- ${file}`).join('\n')}` : '',
@@ -145,6 +165,90 @@ async function buildFocusedPrompt(projectPath: string, prompt: string): Promise<
   ]
     .filter(Boolean)
     .join('\n')
+}
+
+async function prepareProjectMemory(projectPath: string): Promise<string> {
+  await ensureProjectMemoryIgnored(projectPath)
+
+  const memoryPath = path.join(projectPath, projectMemoryFileName)
+  let content = ''
+
+  try {
+    content = await readFile(memoryPath, 'utf8')
+  } catch {
+    content = initialProjectMemoryContent()
+    try {
+      await writeFile(memoryPath, content, 'utf8')
+    } catch {
+      return ''
+    }
+  }
+
+  const trimmed = content.trim()
+  if (trimmed.length <= projectMemoryMaxChars) return trimmed
+
+  return `${trimmed.slice(0, projectMemoryMaxChars).trim()}\n\n[Trimmed by VibeBoard. Keep this file shorter so future tasks receive the full memory.]`
+}
+
+function initialProjectMemoryContent(): string {
+  return [
+    '# VibeBoard Project Memory',
+    '',
+    'This is local memory for VibeBoard background agent tasks.',
+    'It helps future tasks avoid re-discovering the same project details.',
+    '',
+    'Keep this file short and durable. Useful entries include:',
+    '- project architecture',
+    '- setup and verification commands',
+    '- recurring conventions',
+    '- standing user preferences for this project',
+    '- known pitfalls',
+    '',
+    'Do not store secrets, tokens, credentials, or temporary task logs.',
+    'This file should stay local and uncommitted.',
+    ''
+  ].join('\n')
+}
+
+async function ensureProjectMemoryIgnored(projectPath: string): Promise<void> {
+  const gitDir = await resolveGitDir(projectPath)
+  if (!gitDir) return
+
+  const infoDir = path.join(gitDir, 'info')
+  const excludePath = path.join(infoDir, 'exclude')
+
+  try {
+    await mkdir(infoDir, { recursive: true })
+    const existing = await readFile(excludePath, 'utf8').catch(() => '')
+    if (existing.split(/\r?\n/).some((line) => line.trim() === projectMemoryFileName)) return
+
+    const prefix = existing && !existing.endsWith('\n') ? '\n' : ''
+    await writeFile(
+      excludePath,
+      `${existing}${prefix}\n# VibeBoard local project memory\n${projectMemoryFileName}\n`,
+      'utf8'
+    )
+  } catch {
+    // Ignoring is best-effort. The prompt still tells the agent not to commit this file.
+  }
+}
+
+async function resolveGitDir(projectPath: string): Promise<string | null> {
+  const dotGitPath = path.join(projectPath, '.git')
+
+  try {
+    const dotGit = await stat(dotGitPath)
+    if (dotGit.isDirectory()) return dotGitPath
+    if (!dotGit.isFile()) return null
+
+    const gitFile = await readFile(dotGitPath, 'utf8')
+    const match = gitFile.match(/^gitdir:\s*(.+)\s*$/m)
+    if (!match) return null
+
+    return path.resolve(projectPath, match[1])
+  } catch {
+    return null
+  }
 }
 
 function listTrackedFiles(cwd: string): Promise<string[]> {
@@ -249,7 +353,11 @@ function summarizeCursorRun(lines: string[]): string {
     if (text && !isProgressNarration(text)) fragments.push(text)
   }
 
-  return mergeTextFragments(fragments).trim()
+  const merged = mergeTextFragments(fragments)
+  const actualMessage = extractActualMessage(merged)
+  if (actualMessage) return normalizeFinalAnswer(actualMessage)
+
+  return extractFallbackAnswer(fragments)
 }
 
 function summarizeCursorLine(line: string): string {
@@ -296,6 +404,7 @@ function shouldDisplayCursorText(text: string, key = ''): boolean {
     return false
   }
   if (trimmed.includes('You are running inside VibeBoard as a background coding agent.')) return false
+  if (/running inside VibeBoard as a background coding agent/i.test(trimmed)) return false
   if (trimmed.includes('Token and exploration rules:')) return false
   if (trimmed.length < 3 && !/[.!?]$/.test(trimmed)) return false
   return true
@@ -304,6 +413,7 @@ function shouldDisplayCursorText(text: string, key = ''): boolean {
 function normalizeCursorText(text: string): string {
   return text
     .trim()
+    .replace(cursorStreamMarkerPattern(), '')
     .replace(
       /^(?:init|start|started|completed|success|done|end)\s+(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s+)?/i,
       ''
@@ -314,10 +424,47 @@ function normalizeCursorText(text: string): string {
     )
     .replace(/\btool_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '')
     .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '')
+    .replace(/[—–]/g, '-')
     .replace(/^(?:(?:started|completed|success|done|end)\s+)+/i, '')
     .replace(/\s+(?:(?:started|completed|success|done|end)\s*)+$/i, '')
     .replace(/[ \t]{2,}/g, ' ')
     .trim()
+}
+
+function extractActualMessage(text: string): string | null {
+  const markerIndex = text.lastIndexOf(actualMessageMarker)
+  if (markerIndex < 0) return null
+  return text.slice(markerIndex + actualMessageMarker.length)
+}
+
+function extractFallbackAnswer(fragments: string[]): string {
+  for (const fragment of [...fragments].reverse()) {
+    const normalized = normalizeFinalAnswer(stripPromptLeak(fragment))
+    if (normalized && !isProgressNarration(normalized) && shouldDisplayCursorText(normalized)) {
+      return normalized
+    }
+  }
+  return ''
+}
+
+function stripPromptLeak(text: string): string {
+  return normalizeCursorText(text).replace(
+    /^(?:login\s+)?(?:while\s+)?running inside VibeBoard as a background coding agent\.\s*/i,
+    ''
+  )
+}
+
+function normalizeFinalAnswer(text: string): string {
+  return normalizeCursorText(text)
+    .split(/\r?\n/)
+    .map((line) => stripPromptLeak(line))
+    .filter((line) => line && !isProgressNarration(line))
+    .join('\n')
+    .trim()
+}
+
+function cursorStreamMarkerPattern(): RegExp {
+  return /\b(?:call--?\d+|call_\d+|tool--?\d+|tool_\d+|fc_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:_\d+)?)\b/gi
 }
 
 function isProgressNarration(text: string): boolean {
@@ -327,7 +474,10 @@ function isProgressNarration(text: string): boolean {
       trimmed
     ) ||
     /^(the user|the request|the context|a modified .+ appears|files to understand|likely about)\b/i.test(trimmed) ||
-    /^the project structure is now clear\b/i.test(trimmed)
+    /^the project structure is now clear\b/i.test(trimmed) ||
+    /^the task is unclear\b/i.test(trimmed) ||
+    /^nothing clear to do yet\b/i.test(trimmed) ||
+    /^what do you want next\b/i.test(trimmed)
   )
 }
 

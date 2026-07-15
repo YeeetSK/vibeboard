@@ -5,3 +5,11 @@ release
 *.log
 .DS_Store
 CHANGELOG.md
+
+# VibeBoard local project memory
+.vibeboard-memory.md
+
+# Local assistant/tooling artifacts
+.codex/
+codex-*
+*.codex.*

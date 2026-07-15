@@ -1,13 +1,17 @@
-import { ReactElement, useEffect, useMemo, useRef, useState } from 'react'
+import { ReactElement, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent } from 'react'
 import {
+  CollisionDetection,
   DndContext,
   DragEndEvent,
   DragOverlay,
+  DragOverEvent,
   DragStartEvent,
   KeyboardSensor,
   PointerSensor,
   closestCorners,
+  pointerWithin,
+  rectIntersection,
   useDroppable,
   useSensor,
   useSensors
@@ -34,6 +38,7 @@ import {
   CheckCircle2,
   Code2,
   Download,
+  Ellipsis,
   ExternalLink,
   FolderPlus,
   FolderOpen,
@@ -92,6 +97,21 @@ const emptyTaskDetail: TaskDetail = {
 const conversationPageSize = 5
 
 const tabColors = ['#ff7a1a', '#f7c56b', '#2fcf75', '#42b883', '#9b8cff', '#ff5f57']
+const platformClass = navigator.userAgent.includes('Mac')
+  ? 'platform-mac'
+  : navigator.userAgent.includes('Windows')
+    ? 'platform-windows'
+    : 'platform-linux'
+const taskCollisionDetection: CollisionDetection = (args) => {
+  const pointerCollisions = pointerWithin(args)
+  if (pointerCollisions.length > 0) return pointerCollisions
+
+  const intersectionCollisions = rectIntersection(args)
+  if (intersectionCollisions.length > 0) return intersectionCollisions
+
+  return closestCorners(args)
+}
+
 const emptyCursorStatus: CursorStatus = {
   available: false,
   label: 'Checking Cursor',
@@ -121,6 +141,7 @@ export function App(): ReactElement {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [newTaskLaneId, setNewTaskLaneId] = useState<string | null>(null)
   const [activeDragTaskId, setActiveDragTaskId] = useState<string | null>(null)
+  const [dragPreviewTarget, setDragPreviewTarget] = useState<{ laneId: string; position: number } | null>(null)
   const [cursorStatus, setCursorStatus] = useState<CursorStatus>(emptyCursorStatus)
   const [isInstallingCursorCli, setInstallingCursorCli] = useState(false)
   const [cursorSetupPhase, setCursorSetupPhase] = useState<CursorSetupPhase>('checking')
@@ -597,36 +618,60 @@ export function App(): ReactElement {
 
   const onDragStart = (event: DragStartEvent): void => {
     setActiveDragTaskId(String(event.active.id))
+    setDragPreviewTarget(null)
   }
 
-  const onDragEnd = async (event: DragEndEvent): Promise<void> => {
+  const getTaskDropTarget = (event: DragOverEvent | DragEndEvent): { laneId: string; position: number } | null => {
     const { active, over } = event
-    setActiveDragTaskId(null)
-    if (!over) return
+    if (!over) return null
 
     const task = state.tasks.find((item) => item.id === active.id)
-    if (!task) return
+    if (!task) return null
 
     const overTask = state.tasks.find((item) => item.id === over.id)
     const overLane = state.lanes.find((lane) => lane.id === over.id)
     const targetLaneId = overTask?.laneId ?? overLane?.id
-    if (!targetLaneId) return
+    if (!targetLaneId) return null
 
     const laneTasks = state.tasks.filter((item) => item.laneId === targetLaneId && item.id !== task.id)
-    const targetIndex = overTask ? laneTasks.findIndex((item) => item.id === overTask.id) : laneTasks.length
+    const overTaskIndex = overTask ? laneTasks.findIndex((item) => item.id === overTask.id) : -1
+    const activeRect = active.rect.current.translated ?? active.rect.current.initial
+    const overMiddleY = over.rect.top + over.rect.height / 2
+    const activeMiddleY = activeRect ? activeRect.top + activeRect.height / 2 : overMiddleY
+    const shouldInsertAfter = Boolean(overTask && activeMiddleY > overMiddleY)
+    const position = overTaskIndex >= 0 ? overTaskIndex + (shouldInsertAfter ? 1 : 0) : laneTasks.length
+
+    return { laneId: targetLaneId, position }
+  }
+
+  const onDragOver = (event: DragOverEvent): void => {
+    setDragPreviewTarget(getTaskDropTarget(event))
+  }
+
+  const onDragEnd = async (event: DragEndEvent): Promise<void> => {
+    setActiveDragTaskId(null)
+    setDragPreviewTarget(null)
+
+    const target = getTaskDropTarget(event)
+    if (!target) return
+
+    const task = state.tasks.find((item) => item.id === event.active.id)
+    if (!task) return
+
     await window.vibeboard.moveTask({
       taskId: task.id,
-      laneId: targetLaneId,
-      position: targetIndex < 0 ? laneTasks.length : targetIndex
+      laneId: target.laneId,
+      position: target.position
     })
     await refresh()
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${platformClass}`}>
       <TopBar
         tabs={state.tabs}
         closedTabs={state.closedTabs}
+        projects={state.projects}
         tabStatuses={tabStatuses}
         activeTabId={activeTab?.id}
         onCloseTab={closeTab}
@@ -721,16 +766,17 @@ export function App(): ReactElement {
                     <FolderOpen size={17} />
                     <span>{openProjectLabel}</span>
                   </button>
-                  <button
-                    className={activeProject?.pathMissing ? 'icon-text-button needs-attention' : 'icon-text-button'}
-                    type="button"
-                    onClick={relocateActiveProject}
-                    disabled={!activeProject}
-                    title="Relocate project folder"
-                  >
-                    <FolderOpen size={17} />
-                    <span>Relocate</span>
-                  </button>
+                  {activeProject?.pathMissing && (
+                    <button
+                      className="icon-text-button needs-attention"
+                      type="button"
+                      onClick={relocateActiveProject}
+                      title="Relocate project folder"
+                    >
+                      <FolderOpen size={17} />
+                      <span>Relocate</span>
+                    </button>
+                  )}
                   <button className="icon-text-button" type="button" onClick={createLane}>
                     <Plus size={17} />
                     <span>Lane</span>
@@ -740,17 +786,26 @@ export function App(): ReactElement {
 
               <DndContext
                 sensors={sensors}
-                collisionDetection={closestCorners}
+                collisionDetection={taskCollisionDetection}
                 onDragStart={onDragStart}
-                onDragCancel={() => setActiveDragTaskId(null)}
+                onDragOver={onDragOver}
+                onDragCancel={() => {
+                  setActiveDragTaskId(null)
+                  setDragPreviewTarget(null)
+                }}
                 onDragEnd={onDragEnd}
               >
-                <div className={activeDragTaskId ? 'lane-grid dragging-card' : 'lane-grid'}>
+                <div
+                  className={activeDragTaskId ? 'lane-grid dragging-card' : 'lane-grid'}
+                  style={{ '--lane-count': Math.min(activeLanes.length, 4) } as React.CSSProperties}
+                >
                   {activeLanes.map((lane) => (
                     <LaneColumn
                       key={lane.id}
                       lane={lane}
                       tasks={tasksByLaneId.get(lane.id) ?? []}
+                      activeDragTaskId={activeDragTaskId}
+                      dropPreviewPosition={dragPreviewTarget?.laneId === lane.id ? dragPreviewTarget.position : null}
                       onOpenTask={openTask}
                       onAddTask={() => setNewTaskLaneId(lane.id)}
                       onDeleteLane={deleteLane}
@@ -1034,7 +1089,12 @@ function CommandSearchPalette({
             <button
               key={result.id}
               ref={index === selectedIndex ? selectedResultRef : null}
-              className={index === selectedIndex ? 'selected' : ''}
+              className={[
+                index === selectedIndex ? 'selected' : '',
+                result.taskStatus ? `result-status-${result.taskStatus}` : ''
+              ]
+                .filter(Boolean)
+                .join(' ')}
               type="button"
               onMouseEnter={() => setSelectedIndex(index)}
               onClick={() => onOpenResult(result)}
@@ -1173,6 +1233,7 @@ function CursorDebugPanel({ status }: { status: CursorStatus }): ReactElement {
 function TopBar({
   tabs,
   closedTabs,
+  projects,
   tabStatuses,
   activeTabId,
   onCloseTab,
@@ -1185,6 +1246,7 @@ function TopBar({
 }: {
   tabs: BoardTab[]
   closedTabs: BoardTab[]
+  projects: Project[]
   tabStatuses: Map<string, Task['status']>
   activeTabId?: string
   onCloseTab: (id: string) => void
@@ -1201,11 +1263,19 @@ function TopBar({
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null)
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null)
   const menuTab = tabs.find((tab) => tab.id === menuState?.tabId) ?? null
+  const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects])
   const filteredClosedTabs = useMemo(() => {
     const query = closedSearch.trim().toLowerCase()
-    const source = query ? closedTabs.filter((tab) => tab.name.toLowerCase().includes(query)) : closedTabs
+    const source = query
+      ? closedTabs.filter((tab) => {
+          const project = tab.activeProjectId ? projectById.get(tab.activeProjectId) : null
+          return [tab.name, project?.name, project?.path]
+            .filter(Boolean)
+            .some((value) => value?.toLowerCase().includes(query))
+        })
+      : closedTabs
     return source.slice(0, 12)
-  }, [closedSearch, closedTabs])
+  }, [closedSearch, closedTabs, projectById])
 
   useEffect(() => {
     if (!menuState && !closedMenuOpen) return
@@ -1335,33 +1405,49 @@ function TopBar({
                     placeholder="Search recent projects"
                   />
                 </label>
-                {filteredClosedTabs.map((tab) => (
-                  <div className="closed-tab-row" key={tab.id}>
-                    <button
-                      className="closed-tab-restore"
-                      type="button"
-                      title={tab.name}
-                      onClick={() => {
-                        onReopenTab(tab.id)
-                        setClosedMenuOpen(false)
-                      }}
-                    >
-                      <RotateCcw size={14} />
-                      <span>{tab.name}</span>
-                    </button>
-                    <button
-                      className="closed-tab-delete"
-                      type="button"
-                      title="Delete permanently"
-                      onClick={() => {
-                        onDeleteTab(tab.id)
-                        setClosedMenuOpen(false)
-                      }}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                ))}
+                <div className="closed-tabs-list">
+                  {filteredClosedTabs.map((tab) => {
+                    const project = tab.activeProjectId ? projectById.get(tab.activeProjectId) : null
+                    const detail = project?.pathMissing
+                      ? 'Missing folder'
+                      : project?.path
+                        ? compactPath(project.path)
+                        : 'Closed board'
+
+                    return (
+                      <div className="closed-tab-row" key={tab.id}>
+                        <button
+                          className="closed-tab-restore"
+                          type="button"
+                          title={tab.name}
+                          onClick={() => {
+                            onReopenTab(tab.id)
+                            setClosedMenuOpen(false)
+                          }}
+                        >
+                          <span className="closed-tab-icon">
+                            <RotateCcw size={15} />
+                          </span>
+                          <span className="closed-tab-copy">
+                            <strong>{tab.name}</strong>
+                            <small className={project?.pathMissing ? 'is-missing' : undefined}>{detail}</small>
+                          </span>
+                        </button>
+                        <button
+                          className="closed-tab-delete"
+                          type="button"
+                          title="Delete permanently"
+                          onClick={() => {
+                            onDeleteTab(tab.id)
+                            setClosedMenuOpen(false)
+                          }}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
                 {filteredClosedTabs.length === 0 && <p className="closed-tabs-empty">No matches</p>}
               </div>
             )}
@@ -1383,7 +1469,6 @@ function TopBar({
           >
             {menuTab.isPinned ? 'Unpin project' : 'Pin project'}
           </button>
-          <div className="tab-menu-label">Color</div>
           <div className="tab-color-grid">
             {tabColors.map((color) => (
               <button
@@ -1447,7 +1532,7 @@ function DeleteTabModal({
   const isConfirmed = draft.trim().toLowerCase() === 'confirm'
 
   return (
-    <div className="modal-backdrop" role="presentation">
+    <div className="modal-backdrop" role="presentation" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <section
         className="modal-panel compact confirm-modal"
         role="dialog"
@@ -1496,6 +1581,14 @@ function DeleteTabModal({
   )
 }
 
+function closeOnBackdropMouseDown(onClose: () => void): (event: ReactMouseEvent<HTMLElement>) => void {
+  return (event) => {
+    if (event.target === event.currentTarget) {
+      onClose()
+    }
+  }
+}
+
 function DeleteTaskModal({
   task,
   onClose,
@@ -1506,7 +1599,7 @@ function DeleteTaskModal({
   onConfirm: () => void
 }): ReactElement {
   return (
-    <div className="modal-backdrop" role="presentation">
+    <div className="modal-backdrop" role="presentation" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <section
         className="modal-panel compact confirm-modal"
         role="dialog"
@@ -1560,7 +1653,7 @@ function QuitConfirmModal({
   onConfirm: () => void
 }): ReactElement {
   return (
-    <div className="modal-backdrop" role="presentation">
+    <div className="modal-backdrop" role="presentation" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <section
         className="modal-panel compact confirm-modal"
         role="dialog"
@@ -1623,6 +1716,8 @@ function SidebarStat({
 function LaneColumn({
   lane,
   tasks,
+  activeDragTaskId,
+  dropPreviewPosition,
   onOpenTask,
   onAddTask,
   onDeleteLane,
@@ -1633,6 +1728,8 @@ function LaneColumn({
 }: {
   lane: Lane
   tasks: Task[]
+  activeDragTaskId: string | null
+  dropPreviewPosition: number | null
   onOpenTask: (task: Task) => void
   onAddTask: () => void
   onDeleteLane: (id: string) => void
@@ -1642,6 +1739,7 @@ function LaneColumn({
   onRenameLane: (id: string, name: string) => void
 }): ReactElement {
   const { setNodeRef, isOver } = useDroppable({ id: lane.id })
+  let visibleTaskIndex = 0
 
   return (
     <section className={isOver ? 'lane over' : 'lane'} ref={setNodeRef}>
@@ -1667,15 +1765,30 @@ function LaneColumn({
       </header>
       <SortableContext items={tasks.map((task) => task.id)} strategy={verticalListSortingStrategy}>
         <div className="task-list">
-          {tasks.map((task) => (
-            <TaskCard
-              key={task.id}
-              task={task}
-              onOpen={() => onOpenTask(task)}
-              onDelete={() => onDeleteTask(task.id)}
-              onFinish={() => onFinishTask(task.id)}
-            />
-          ))}
+          {tasks.map((task) => {
+            const isActiveDragTask = task.id === activeDragTaskId
+            const shouldShowDropPreview = dropPreviewPosition === visibleTaskIndex && !isActiveDragTask
+            const card = (
+              <TaskCard
+                key={task.id}
+                task={task}
+                onOpen={() => onOpenTask(task)}
+                onDelete={() => onDeleteTask(task.id)}
+                onFinish={() => onFinishTask(task.id)}
+              />
+            )
+
+            if (isActiveDragTask) return card
+
+            visibleTaskIndex += 1
+            return (
+              <div className="task-stack-item" key={task.id}>
+                {shouldShowDropPreview && <TaskDropPreview />}
+                {card}
+              </div>
+            )
+          })}
+          {dropPreviewPosition === visibleTaskIndex && <TaskDropPreview />}
         </div>
       </SortableContext>
       <button className="add-task-button" type="button" onClick={onAddTask}>
@@ -1741,6 +1854,8 @@ function TaskCard({
   onDelete: () => void
   onFinish: () => void
 }): ReactElement {
+  const [isMenuOpen, setIsMenuOpen] = useState(false)
+  const cardRef = useRef<HTMLElement | null>(null)
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id
   })
@@ -1748,52 +1863,99 @@ function TaskCard({
     transform: isDragging ? undefined : CSS.Transform.toString(transform),
     transition
   }
+  const canMutate = task.status !== 'processing'
+  const canFinish = canMutate && task.status !== 'done_unread' && task.status !== 'done_read'
+
+  useEffect(() => {
+    if (!isMenuOpen) return
+
+    const closeOnOutsideClick = (event: PointerEvent): void => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (cardRef.current?.contains(target)) return
+      setIsMenuOpen(false)
+    }
+
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setIsMenuOpen(false)
+    }
+
+    window.addEventListener('pointerdown', closeOnOutsideClick, true)
+    window.addEventListener('keydown', closeOnEscape, true)
+    return () => {
+      window.removeEventListener('pointerdown', closeOnOutsideClick, true)
+      window.removeEventListener('keydown', closeOnEscape, true)
+    }
+  }, [isMenuOpen])
 
   return (
     <article
-      ref={setNodeRef}
+      ref={(element) => {
+        setNodeRef(element)
+        cardRef.current = element
+      }}
       style={style}
-      className={`task-card status-${task.status} ${isDragging ? 'dragging' : ''}`}
+      className={`task-card status-${task.status} ${isDragging ? 'dragging' : ''} ${isMenuOpen ? 'menu-open' : ''}`}
+      onClick={onOpen}
       {...attributes}
       {...listeners}
     >
-      <button className="task-open" type="button" onClick={onOpen}>
+      <div className="task-open">
         <div className="task-title-row">
           <h3>{task.title}</h3>
           <TaskStatusChip status={task.status} />
         </div>
         {task.summary && <p>{task.summary}</p>}
-      </button>
-      <div className="task-card-actions" aria-label="Task actions">
-        {task.status !== 'processing' && (
-          <button
-            className="task-action-button danger"
-            type="button"
-            title="Delete task"
-            onClick={(event) => {
-              event.stopPropagation()
-              onDelete()
-            }}
-            onPointerDown={(event) => event.stopPropagation()}
-          >
-            <Trash2 size={14} />
-          </button>
-        )}
-        {task.status !== 'processing' && task.status !== 'done_unread' && task.status !== 'done_read' && (
+      </div>
+      {canMutate && (
+        <div className={isMenuOpen ? 'task-card-actions open' : 'task-card-actions'} aria-label="Task actions">
           <button
             className="task-action-button"
             type="button"
-            title="Finish task"
+            title="Task options"
+            aria-haspopup="menu"
+            aria-expanded={isMenuOpen}
             onClick={(event) => {
               event.stopPropagation()
-              onFinish()
+              setIsMenuOpen((value) => !value)
             }}
             onPointerDown={(event) => event.stopPropagation()}
           >
-            <Check size={14} />
+            <Ellipsis size={15} />
           </button>
-        )}
-      </div>
+          {isMenuOpen && (
+            <div className="task-action-menu" role="menu" onPointerDown={(event) => event.stopPropagation()}>
+              {canFinish && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    setIsMenuOpen(false)
+                    onFinish()
+                  }}
+                >
+                  <Check size={15} />
+                  <span>Finish task</span>
+                </button>
+              )}
+              <button
+                className="danger"
+                type="button"
+                role="menuitem"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setIsMenuOpen(false)
+                  onDelete()
+                }}
+              >
+                <Trash2 size={15} />
+                <span>Delete task</span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </article>
   )
 }
@@ -1810,11 +1972,15 @@ function TaskCardPreview({ task }: { task: Task }): ReactElement {
   )
 }
 
+function TaskDropPreview(): ReactElement {
+  return <div className="task-drop-preview" aria-hidden="true" />
+}
+
 function TaskStatusChip({ status }: { status: Task['status'] }): ReactElement | null {
   if (status === 'attention') {
     return (
       <span className="task-status-chip attention" title="Needs attention">
-        <AlertTriangle size={15} />
+        <AlertTriangle size={13} />
       </span>
     )
   }
@@ -1822,7 +1988,7 @@ function TaskStatusChip({ status }: { status: Task['status'] }): ReactElement | 
   if (status === 'done_unread' || status === 'done_read') {
     return (
       <span className="task-status-chip done" title={status === 'done_unread' ? 'Done' : 'Done read'}>
-        <Check size={16} />
+        <Check size={13} />
       </span>
     )
   }
@@ -1843,9 +2009,17 @@ function TaskFormModal({
 }): ReactElement {
   const [title, setTitle] = useState('')
   const formRef = useRef<HTMLFormElement | null>(null)
+  const titleRef = useRef<HTMLTextAreaElement | null>(null)
+
+  useEffect(() => {
+    const titleInput = titleRef.current
+    if (!titleInput) return
+    titleInput.style.height = '0px'
+    titleInput.style.height = `${Math.min(titleInput.scrollHeight, 112)}px`
+  }, [title])
 
   return (
-    <div className="modal-backdrop">
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <form
         ref={formRef}
         className="task-form modal-panel compact"
@@ -1873,7 +2047,14 @@ function TaskFormModal({
 
         <label>
           <span>Title</span>
-          <input value={title} onChange={(event) => setTitle(event.target.value)} autoFocus />
+          <textarea
+            ref={titleRef}
+            className="task-title-input"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            autoFocus
+            rows={1}
+          />
         </label>
 
         <div className="modal-actions">
@@ -1918,7 +2099,7 @@ function TaskDetailModal({
   const canChat = Boolean(project) && canUseCursor && task.status !== 'processing'
 
   return (
-    <div className="modal-backdrop">
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <section className="modal-panel task-detail">
         <div className="modal-head">
           <div>
@@ -1938,7 +2119,7 @@ function TaskDetailModal({
               <MessageSquare size={16} />
               <span>Prompt</span>
             </div>
-            <CodexThread
+            <AgentThread
               conversations={conversations}
               task={task}
               hasOlderConversations={hasOlderConversations}
@@ -1955,13 +2136,15 @@ function TaskDetailModal({
               <Code2 size={16} />
               <span>Code changes</span>
             </div>
-            {changes.length > 0 && <ChangeSummary changes={changes} />}
-            <div className="change-list">
-              {changes.length === 0 ? (
-                <div className="empty-panel">No changes captured</div>
-              ) : (
-                changes.map((change) => <DiffViewer key={change.id} change={change} />)
-              )}
+            <div className="change-stack">
+              {changes.length > 0 && <ChangeSummary changes={changes} />}
+              <div className="change-list">
+                {changes.length === 0 ? (
+                  <div className="detail-empty-state">No changes captured</div>
+                ) : (
+                  changes.map((change) => <DiffViewer key={change.id} change={change} />)
+                )}
+              </div>
             </div>
           </section>
         </div>
@@ -1970,7 +2153,7 @@ function TaskDetailModal({
   )
 }
 
-function CodexThread({
+function AgentThread({
   conversations,
   task,
   hasOlderConversations,
@@ -2087,7 +2270,7 @@ function CodexThread({
   }
 
   return (
-    <div className="codex-thread">
+    <div className="agent-thread">
       {prompt && (
         <section className="prompt-panel">
           <p>{prompt}</p>
@@ -2222,6 +2405,8 @@ function cleanConversationContent(content: string): string {
 function cleanConversationLine(line: string): string {
   return line
     .trim()
+    .replaceAll('VibeBoardStartActualMessage', '')
+    .replace(cursorStreamMarkerPattern(), '')
     .replace(
       /^(?:init|start|started|completed|success|done|end)\s+(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s+)?/i,
       ''
@@ -2238,13 +2423,20 @@ function cleanConversationLine(line: string): string {
     .trim()
 }
 
+function cursorStreamMarkerPattern(): RegExp {
+  return /\b(?:call--?\d+|call_\d+|tool--?\d+|tool_\d+|fc_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:_\d+)?)\b/gi
+}
+
 function isProgressNarrationLine(line: string): boolean {
   return (
     /^(i('|’)?m|i am|i('|’)?ll|i will|reading|reviewing|examining|checking|running|looking|scanning|opening|inspecting)\b/i.test(
       line
     ) ||
     /^(the user|the request|the context|a modified .+ appears|files to understand|likely about)\b/i.test(line) ||
-    /^the project structure is now clear\b/i.test(line)
+    /^the project structure is now clear\b/i.test(line) ||
+    /^the task is unclear\b/i.test(line) ||
+    /^nothing clear to do yet\b/i.test(line) ||
+    /^what do you want next\b/i.test(line)
   )
 }
 

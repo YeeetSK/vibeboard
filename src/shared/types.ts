@@ -152,6 +152,7 @@ export interface SearchResult {
   subtitle: string
   match: string
   meta?: string
+  taskStatus?: TaskStatus
   tabId?: string
   taskId?: string
   projectId?: string

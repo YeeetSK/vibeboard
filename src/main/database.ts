@@ -290,6 +290,7 @@ export class VibeBoardStore {
         subtitle: row.projectName ?? row.tabName,
         match: row.title,
         meta: [taskStatusLabel(row.status), row.laneName].filter(Boolean).join(' · '),
+        taskStatus: row.status,
         taskId: row.id,
         tabId: row.tabId,
         projectId: row.projectId ?? undefined,
@@ -365,6 +366,7 @@ export class VibeBoardStore {
         subtitle: row.projectName ?? row.tabName,
         match: row.content,
         meta: [taskStatusLabel(row.taskStatus), row.laneName].filter(Boolean).join(' · '),
+        taskStatus: row.taskStatus,
         taskId: row.taskId,
         tabId: row.tabId,
         projectId: row.projectId ?? undefined,
@@ -467,21 +469,27 @@ export class VibeBoardStore {
       }))
   }
 
-  getTaskRunContext(taskId: string): { task: Task; project: Project | null; prompt: string } | null {
+  getTaskRunContext(taskId: string): { task: Task; project: Project | null; prompt: string; previousPrompts: string[] } | null {
     const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as Task | undefined
     if (!task) return null
 
     const project = task.projectId
       ? (this.db.prepare('SELECT * FROM projects WHERE id = ?').get(task.projectId) as Project | undefined)
       : null
-    const promptRow = this.db
-      .prepare("SELECT content FROM conversations WHERE taskId = ? AND role = 'user' ORDER BY createdAt DESC LIMIT 1")
-      .get(taskId) as { content: string } | undefined
+    const promptRows = this.db
+      .prepare("SELECT content FROM conversations WHERE taskId = ? AND role = 'user' ORDER BY createdAt DESC LIMIT 3")
+      .all(taskId) as Array<{ content: string }>
+    const latestPrompt = promptRows[0]?.content
 
     return {
       task,
       project: project ?? null,
-      prompt: promptRow?.content || task.summary || task.title
+      prompt: latestPrompt || task.summary || task.title,
+      previousPrompts: promptRows
+        .slice(1)
+        .map((row) => row.content.trim())
+        .filter(Boolean)
+        .reverse()
     }
   }
 

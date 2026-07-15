@@ -80,6 +80,21 @@ jobs:
           "$CLIFF_BIN" --config cliff.toml --latest --strip header --output CHANGELOG.md
           test -s CHANGELOG.md
 
+      - name: Append download guide
+        run: |
+          cat >> CHANGELOG.md <<'EOF'
+
+          ## Which File To Download
+
+          | System | File |
+          | --- | --- |
+          | Windows | `VibeBoard-*-x64.exe` |
+          | macOS Apple Silicon | `VibeBoard-*-arm64.dmg` |
+          | macOS Intel | `VibeBoard-*-x64.dmg` |
+
+          Files ending in `.blockmap`, `latest.yml`, or `latest-mac.yml` are for automatic updates. Do not install those manually.
+          EOF
+
       - name: Download installers
         uses: actions/download-artifact@v4
         with:

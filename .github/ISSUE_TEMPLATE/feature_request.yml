@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest an improvement for VibeBoard.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What should improve?
+      description: Describe the workflow, UI, or behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested change
+      description: What should VibeBoard do differently?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Boards and lanes
+        - Tasks and chat
+        - Code changes
+        - Projects and tabs
+        - Cursor integration
+        - Updates and releases
+        - Packaging
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Examples or screenshots
+      description: Add references if this is a visual or workflow change.
