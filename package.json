@@ -1,6 +1,6 @@
 {
   "name": "vibeboard",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "A dark desktop board for organizing AI coding tasks across projects.",
   "main": "out/main/index.js",
   "author": "YeeetSK",
@@ -28,6 +28,7 @@
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "better-sqlite3": "^12.2.0",
+    "electron-updater": "^6.8.9",
     "highlight.js": "^11.11.1",
     "lucide-react": "^0.525.0",
     "react": "^19.1.0",

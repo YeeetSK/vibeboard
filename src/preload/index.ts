@@ -14,6 +14,7 @@ import type {
   SendTaskMessageInput,
   UpdateTabMetaInput,
   UpdateTaskStatusInput,
+  UpdateInfo,
   QuitRequest,
   VibeBoardApi
 } from '../shared/types'
@@ -29,10 +30,21 @@ const api: VibeBoardApi = {
     return () => ipcRenderer.removeListener('state:changed', listener)
   },
   onQuitRequested: (callback: (request: QuitRequest) => void) => {
-    const listener = (_event: IpcRendererEvent, request: QuitRequest): void => callback(request)
+    const listener = (_event: IpcRendererEvent, request: QuitRequest): void => {
+      ipcRenderer.send('app:quitPromptShown')
+      callback(request)
+    }
     ipcRenderer.on('app:quit-requested', listener)
     return () => ipcRenderer.removeListener('app:quit-requested', listener)
   },
+  onUpdateChanged: (callback: (info: UpdateInfo) => void) => {
+    const listener = (_event: IpcRendererEvent, info: UpdateInfo): void => callback(info)
+    ipcRenderer.on('updates:changed', listener)
+    return () => ipcRenderer.removeListener('updates:changed', listener)
+  },
+  getUpdateInfo: () => ipcRenderer.invoke('updates:get'),
+  downloadUpdate: () => ipcRenderer.invoke('updates:download'),
+  installUpdate: () => ipcRenderer.invoke('updates:install'),
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke('project:create', input),
   relocateProject: (projectId: string) => ipcRenderer.invoke('project:relocate', projectId),
   openProjectFolder: (projectId: string) => ipcRenderer.invoke('project:openFolder', projectId),

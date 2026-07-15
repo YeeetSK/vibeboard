@@ -21,11 +21,15 @@ jobs:
             artifact-name: windows
             artifact-path: |
               release/*.exe
+              release/*.exe.blockmap
+              release/latest.yml
           - os: macos-latest
             build-command: npm run dist -- --mac --publish never
             artifact-name: macos
             artifact-path: |
               release/*.dmg
+              release/*.dmg.blockmap
+              release/latest-mac.yml
 
     steps:
       - uses: actions/checkout@v4

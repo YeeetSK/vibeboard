@@ -453,6 +453,26 @@ button {
   font-size: 13px;
 }
 
+.empty-board-header .primary-action {
+  height: 40px;
+  gap: 10px;
+  padding: 0 14px;
+  color: #f2f2f2;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.empty-board-header .primary-action span {
+  display: block;
+  margin: 0;
+  color: inherit;
+  line-height: 20px;
+}
+
+.empty-board-header .primary-action svg {
+  color: #f2f2f2;
+}
+
 .empty-board-surface {
   overflow: hidden;
   border: 1px solid var(--line-soft);
@@ -634,6 +654,25 @@ button {
   -webkit-app-region: no-drag;
 }
 
+.icon-button svg,
+.icon-text-button svg,
+.primary-action svg,
+.secondary-action svg,
+.danger-action svg,
+.add-task-button svg,
+.global-search-launcher svg {
+  display: block;
+  flex: 0 0 auto;
+}
+
+.icon-text-button span,
+.primary-action span,
+.secondary-action span,
+.danger-action span,
+.add-task-button span {
+  line-height: 1;
+}
+
 .icon-button:disabled,
 .icon-text-button:disabled,
 .primary-action:disabled,
@@ -759,6 +798,7 @@ button {
 .sidebar-collapsed .sidebar-project-button span,
 .sidebar-collapsed .global-search-launcher span,
 .sidebar-collapsed .global-search-launcher kbd,
+.sidebar-collapsed .update-panel,
 .sidebar-collapsed .panel {
   display: none;
 }
@@ -768,6 +808,13 @@ button {
   width: 38px;
   height: 38px;
   padding: 0;
+}
+
+.sidebar-collapsed .global-search-launcher {
+  display: grid;
+  grid-template-columns: 1fr;
+  place-items: center;
+  gap: 0;
 }
 
 .panel {
@@ -1027,6 +1074,75 @@ button {
 
 .sidebar-stat.tone-green strong {
   color: var(--green);
+}
+
+.update-panel.ready .panel-title {
+  color: var(--green);
+}
+
+.update-panel {
+  margin-top: auto;
+}
+
+.update-panel.error .panel-title {
+  color: var(--red);
+}
+
+.update-card {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.update-panel.ready .update-card {
+  border-color: rgba(47, 207, 117, 0.28);
+}
+
+.update-panel.error .update-card {
+  border-color: rgba(255, 95, 87, 0.3);
+}
+
+.update-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.update-copy strong,
+.update-copy span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.update-copy strong {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.update-copy span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.update-progress {
+  overflow: hidden;
+  height: 5px;
+  border-radius: 999px;
+  background: #111111;
+}
+
+.update-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--orange);
+  transition: width 160ms ease;
 }
 
 .empty-panel {

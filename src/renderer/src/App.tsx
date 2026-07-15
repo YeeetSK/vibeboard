@@ -33,6 +33,7 @@ import {
   Check,
   CheckCircle2,
   Code2,
+  Download,
   ExternalLink,
   FolderPlus,
   FolderOpen,
@@ -63,6 +64,7 @@ import type {
   SearchResult,
   Task,
   TaskDetail,
+  UpdateInfo,
 } from '../../shared/types'
 
 hljs.registerLanguage('bash', bash)
@@ -105,6 +107,14 @@ const emptyCursorStatus: CursorStatus = {
     shellPath: ''
   }
 }
+const emptyUpdateInfo: UpdateInfo = {
+  status: 'idle',
+  currentVersion: '0.0.0',
+  latestVersion: null,
+  message: 'Ready to check for updates.',
+  progress: null,
+  releaseUrl: null
+}
 
 export function App(): ReactElement {
   const [state, setState] = useState<AppState>(emptyState)
@@ -122,6 +132,7 @@ export function App(): ReactElement {
   const [globalSearchQuery, setGlobalSearchQuery] = useState('')
   const [globalSearchResults, setGlobalSearchResults] = useState<SearchResult[]>([])
   const [isGlobalSearchOpen, setGlobalSearchOpen] = useState(false)
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo>(emptyUpdateInfo)
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<TaskDetail>(emptyTaskDetail)
   const [isLoadingOlderConversations, setLoadingOlderConversations] = useState(false)
 
@@ -178,9 +189,14 @@ export function App(): ReactElement {
     const stopQuitListener = window.vibeboard.onQuitRequested((request) => {
       setQuitRequest(request)
     })
+    const stopUpdateListener = window.vibeboard.onUpdateChanged((info) => {
+      setUpdateInfo(info)
+    })
+    window.vibeboard.getUpdateInfo().then(setUpdateInfo)
     return () => {
       stopStateListener()
       stopQuitListener()
+      stopUpdateListener()
     }
   }, [])
 
@@ -479,6 +495,14 @@ export function App(): ReactElement {
     await window.vibeboard.confirmQuit()
   }
 
+  const downloadUpdate = async (): Promise<void> => {
+    setUpdateInfo(await window.vibeboard.downloadUpdate())
+  }
+
+  const installUpdate = async (): Promise<void> => {
+    await window.vibeboard.installUpdate()
+  }
+
   useEffect(() => {
     const switchToTab = async (tabId: string): Promise<void> => {
       await window.vibeboard.setActiveTab(tabId)
@@ -667,6 +691,12 @@ export function App(): ReactElement {
               </>
             )}
           </section>
+
+          <UpdatePanel
+            info={updateInfo}
+            onDownload={downloadUpdate}
+            onInstall={installUpdate}
+          />
         </aside>
 
         <section className="board-area">
@@ -1060,6 +1090,55 @@ function CursorConnection({
       {feedback && <div className="cursor-feedback">{feedback}</div>}
       {import.meta.env.DEV && <CursorDebugPanel status={status} />}
     </div>
+  )
+}
+
+function UpdatePanel({
+  info,
+  onDownload,
+  onInstall
+}: {
+  info: UpdateInfo
+  onDownload: () => void
+  onInstall: () => void
+}): ReactElement {
+  const isVisible = info.status === 'available' || info.status === 'downloading' || info.status === 'downloaded'
+  if (!isVisible) return <></>
+
+  const isBusy = info.status === 'checking' || info.status === 'downloading'
+  const canDownload = info.status === 'available'
+  const canInstall = info.status === 'downloaded'
+  const buttonLabel = canInstall ? 'Restart' : canDownload ? 'Update' : 'Downloading'
+  const buttonAction = canInstall ? onInstall : onDownload
+  const tone =
+    info.status === 'available' || info.status === 'downloaded'
+      ? 'ready'
+      : info.status === 'error'
+        ? 'error'
+        : 'idle'
+
+  return (
+    <section className={`panel update-panel ${tone}`}>
+      <div className="panel-title">
+        <Download size={16} />
+        <span>Updates</span>
+      </div>
+      <div className="update-card">
+        <div className="update-copy">
+          <strong>{info.latestVersion ? `v${info.latestVersion}` : `v${info.currentVersion}`}</strong>
+          <span>{info.message}</span>
+        </div>
+        {info.status === 'downloading' && (
+          <div className="update-progress" aria-label={`Download ${info.progress ?? 0}%`}>
+            <span style={{ width: `${info.progress ?? 0}%` }} />
+          </div>
+        )}
+        <button className="primary-action setup-button" type="button" onClick={buttonAction} disabled={isBusy}>
+          {canInstall ? <Check size={15} /> : <Download size={15} />}
+          <span>{buttonLabel}</span>
+        </button>
+      </div>
+    </section>
   )
 }
 

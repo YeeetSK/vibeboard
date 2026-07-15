@@ -187,6 +187,24 @@ export interface QuitRequest {
   hasRunningTasks: boolean
 }
 
+export type UpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not_available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+
+export interface UpdateInfo {
+  status: UpdateStatus
+  currentVersion: string
+  latestVersion: string | null
+  message: string
+  progress: number | null
+  releaseUrl: string | null
+}
+
 export interface VibeBoardApi {
   getState: () => Promise<AppState>
   getTaskDetail: (input: GetTaskDetailInput) => Promise<TaskDetail>
@@ -194,6 +212,10 @@ export interface VibeBoardApi {
   recordSearchOpen: (input: RecordSearchOpenInput) => Promise<void>
   onStateChanged: (callback: () => void) => () => void
   onQuitRequested: (callback: (request: QuitRequest) => void) => () => void
+  onUpdateChanged: (callback: (info: UpdateInfo) => void) => () => void
+  getUpdateInfo: () => Promise<UpdateInfo>
+  downloadUpdate: () => Promise<UpdateInfo>
+  installUpdate: () => Promise<void>
   createProject: (input: CreateProjectInput) => Promise<Project | null>
   relocateProject: (projectId: string) => Promise<Project | null>
   openProjectFolder: (projectId: string) => Promise<void>

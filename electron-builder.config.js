@@ -79,6 +79,11 @@ module.exports = {
   directories: {
     output: 'release'
   },
+  publish: {
+    provider: 'github',
+    owner: 'YeeetSK',
+    repo: 'vibeboard'
+  },
   files: [
     'out/**/*',
     'build/icon.png',
