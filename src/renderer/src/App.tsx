@@ -373,12 +373,16 @@ export function App(): ReactElement {
     const stopUpdateListener = window.vibeboard.onUpdateChanged((info) => {
       setUpdateInfo(info)
     })
+    const stopNotificationOpenListener = window.vibeboard.onNotificationOpened((request) => {
+      void openTaskFromNotification(request.taskId)
+    })
     window.vibeboard.getUpdateInfo().then(setUpdateInfo)
     window.vibeboard.getNotificationSettings().then(setNotificationSettings)
     return () => {
       stopStateListener()
       stopQuitListener()
       stopUpdateListener()
+      stopNotificationOpenListener()
     }
   }, [])
 
@@ -597,6 +601,30 @@ export function App(): ReactElement {
     })
   }
 
+  const openTaskFromNotification = async (taskId: string): Promise<void> => {
+    await runAction(`notification:open:${taskId}`, async () => {
+      const nextState = await window.vibeboard.getState()
+      const task = nextState.tasks.find((item) => item.id === taskId)
+      if (!task) return
+
+      const isOpenTab = nextState.tabs.some((tab) => tab.id === task.tabId)
+      const isClosedTab = nextState.closedTabs.some((tab) => tab.id === task.tabId)
+      if (!isOpenTab && isClosedTab) {
+        await window.vibeboard.reopenTab(task.tabId)
+      }
+
+      await window.vibeboard.setActiveTab(task.tabId)
+      if (task.status === 'done_unread') {
+        await window.vibeboard.markTaskRead(task.id)
+      }
+
+      setGlobalSearchOpen(false)
+      setGlobalSearchQuery('')
+      setSelectedTaskId(task.id)
+      setState(await window.vibeboard.getState())
+    })
+  }
+
   const openSearchResult = async (result: SearchResult): Promise<void> => {
     const actionKey = `search:open:${result.kind}:${result.tabId ?? result.projectId ?? result.taskId ?? result.title}`
     await runAction(actionKey, async () => {
@@ -768,7 +796,7 @@ export function App(): ReactElement {
       setUpdateInfo((current) => ({
         ...current,
         status: 'downloading',
-        message: current.mode === 'auto' ? 'Starting download.' : 'Opening release page.',
+        message: current.mode === 'dev' ? 'Simulating update download.' : 'Starting download.',
         progress: current.progress ?? 0
       }))
       setUpdateInfo(await window.vibeboard.downloadUpdate())
@@ -1387,6 +1415,7 @@ function NotificationSettingsModal({
   onTest: (settings: NotificationSettings) => Promise<void>
 }): ReactElement {
   const [draft, setDraft] = useState(settings)
+  useModalEscape(onClose)
 
   useEffect(() => {
     setDraft(settings)
@@ -1753,9 +1782,7 @@ function UpdateBanner({
       ? 'Show notes'
       : 'Restart'
     : canDownload
-      ? info.mode === 'auto'
-        ? 'Update'
-        : 'Open release'
+      ? 'Update'
       : info.status === 'installing'
         ? info.mode === 'dev'
           ? 'Finishing'
@@ -1785,7 +1812,7 @@ function UpdateBanner({
       </div>
       {(canDownload || canInstall || isBusy) && (
         <button className="primary-action" type="button" onClick={buttonAction} disabled={isBusy}>
-          {canInstall ? <Check size={15} /> : info.mode === 'auto' ? <Download size={15} /> : <ExternalLink size={15} />}
+          {canInstall ? <Check size={15} /> : <Download size={15} />}
           <span>{buttonLabel}</span>
         </button>
       )}
@@ -1800,6 +1827,8 @@ function ReleaseNotesModal({
   release: PendingReleaseNotes
   onClose: () => void
 }): ReactElement {
+  useModalEscape(onClose)
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <section
@@ -2246,6 +2275,7 @@ function DeleteTabModal({
 }): ReactElement {
   const [draft, setDraft] = useState('')
   const isConfirmed = draft.trim().toLowerCase() === 'confirm'
+  useModalEscape(onClose)
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={closeOnBackdropMouseDown(onClose)}>
@@ -2307,6 +2337,19 @@ function closeOnBackdropMouseDown(onClose: () => void): (event: ReactMouseEvent<
   }
 }
 
+function useModalEscape(onClose: () => void): void {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || event.isComposing || event.key !== 'Escape') return
+      event.preventDefault()
+      onClose()
+    }
+
+    window.addEventListener('keydown', closeOnEscape, true)
+    return () => window.removeEventListener('keydown', closeOnEscape, true)
+  }, [onClose])
+}
+
 function DeleteTaskModal({
   task,
   onClose,
@@ -2316,6 +2359,8 @@ function DeleteTaskModal({
   onClose: () => void
   onConfirm: () => void
 }): ReactElement {
+  useModalEscape(onClose)
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <section
@@ -2374,6 +2419,8 @@ function DeleteLaneModal({
   onClose: () => void
   onConfirm: () => void
 }): ReactElement {
+  useModalEscape(onClose)
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <section
@@ -2434,6 +2481,8 @@ function QuitConfirmModal({
   onClose: () => void
   onConfirm: () => void
 }): ReactElement {
+  useModalEscape(onClose)
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <section
@@ -2811,6 +2860,7 @@ function TaskFormModal({
   const [title, setTitle] = useState('')
   const formRef = useRef<HTMLFormElement | null>(null)
   const titleRef = useRef<HTMLTextAreaElement | null>(null)
+  useModalEscape(onClose)
 
   useEffect(() => {
     const titleInput = titleRef.current
@@ -2888,6 +2938,7 @@ function RenameTaskModal({
   const [title, setTitle] = useState(task?.title ?? '')
   const formRef = useRef<HTMLFormElement | null>(null)
   const titleRef = useRef<HTMLTextAreaElement | null>(null)
+  useModalEscape(onClose)
 
   useEffect(() => {
     setTitle(task?.title ?? '')
@@ -2987,6 +3038,7 @@ function TaskDetailModal({
 }): ReactElement {
   const canChat = Boolean(project) && canUseCursor && task.status !== 'processing'
   const hasCapturedChanges = changes.length > 0
+  useModalEscape(onClose)
 
   const requestCommit = (): void => {
     if (!canChat || !hasCapturedChanges) return
@@ -3128,7 +3180,6 @@ function AgentThread({
     conversations
       .filter(
         (entry) =>
-          entry.id !== activePromptEntry?.id &&
           !isNoisyConversationEntry(entry) &&
           (showSystemEntries || entry.role !== 'system')
       )
@@ -3192,16 +3243,19 @@ function AgentThread({
     if (!stream || userEntries.length === 0) return
 
     const anchorY = stream.scrollTop + 32
-    let currentEntry = userEntries[0]
+    let currentEntry = latestUserEntry ?? userEntries[0]
+    let hasMountedUserMessage = false
     for (const entry of userEntries) {
       const element = userMessageRefs.current.get(entry.id)
       if (!element) continue
+      hasMountedUserMessage = true
       if (element.offsetTop <= anchorY) {
         currentEntry = entry
       } else {
         break
       }
     }
+    if (!hasMountedUserMessage) return
     setActivePromptId((currentId) => (currentId === currentEntry.id ? currentId : currentEntry.id))
   }
 
@@ -3221,12 +3275,9 @@ function AgentThread({
   return (
     <div className="agent-thread">
       {prompt && (
-        <section className="prompt-panel agent-step role-user">
-          <MessageSquare size={16} />
-          <div>
-            <div className="user-message-bubble">
-              <MessageMarkdown content={prompt} />
-            </div>
+        <section className="prompt-panel prompt-panel-pinned role-user">
+          <div className="user-message-bubble">
+            <MessageMarkdown content={prompt} />
           </div>
         </section>
       )}

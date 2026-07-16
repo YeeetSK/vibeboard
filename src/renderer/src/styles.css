@@ -2193,6 +2193,8 @@ textarea {
   margin: 3px 0 0;
   color: var(--muted);
   font-size: 12px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .task-form {
@@ -2270,6 +2272,8 @@ button:focus-visible {
   color: var(--muted);
   line-height: 1.4;
   font-size: 13px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .confirm-modal .modal-actions {
@@ -2347,6 +2351,10 @@ button:focus-visible {
 .prompt-panel {
   padding: 0;
   overflow: hidden;
+}
+
+.prompt-panel-pinned {
+  padding-left: 32px;
 }
 
 .thread-empty-state {

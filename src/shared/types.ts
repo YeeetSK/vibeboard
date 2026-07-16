@@ -188,6 +188,10 @@ export interface QuitRequest {
   hasRunningTasks: boolean
 }
 
+export interface NotificationOpenRequest {
+  taskId: string
+}
+
 export type NotificationEventKey = 'taskCompleted' | 'taskFailed' | 'allTasksFinished'
 
 export interface NotificationEventSettings {
@@ -240,6 +244,7 @@ export interface VibeBoardApi {
   onStateChanged: (callback: () => void) => () => void
   onQuitRequested: (callback: (request: QuitRequest) => void) => () => void
   onUpdateChanged: (callback: (info: UpdateInfo) => void) => () => void
+  onNotificationOpened: (callback: (request: NotificationOpenRequest) => void) => () => void
   getUpdateInfo: () => Promise<UpdateInfo>
   downloadUpdate: () => Promise<UpdateInfo>
   installUpdate: () => Promise<UpdateInfo>

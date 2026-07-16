@@ -2,8 +2,9 @@ import { app, BrowserWindow, ipcMain, Notification, shell } from 'electron'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import path from 'node:path'
-import { existsSync } from 'node:fs'
-import { execFile } from 'node:child_process'
+import { existsSync, promises as fsPromises } from 'node:fs'
+import { execFile, spawn } from 'node:child_process'
+import os from 'node:os'
 import { promisify } from 'node:util'
 import { VibeBoardStore } from './database'
 import { PlaceholderCursorAdapter, cursorInstallCommand } from './cursorAdapter'
@@ -37,6 +38,7 @@ const execFileAsync = promisify(execFile)
 let isQuitConfirmed = false
 let isQuitPromptOpen = false
 let quitPromptFallbackTimer: NodeJS.Timeout | null = null
+let pendingMacFallbackAppPath: string | null = null
 let updateInfo: UpdateInfo = {
   status: 'idle',
   mode: getUpdateMode(),
@@ -56,6 +58,7 @@ interface NotificationPayload {
   title: string
   body: string
   priority: 'default' | 'high'
+  taskId?: string
 }
 
 const appUserModelId = 'com.yeeetsk.vibeboard'
@@ -71,7 +74,6 @@ if (process.platform === 'win32') {
 
 function getUpdateMode(): UpdateInfo['mode'] {
   if (is.dev) return 'dev'
-  if (process.platform === 'darwin' && process.env.VIBEBOARD_ALLOW_MAC_AUTO_UPDATE !== '1') return 'manual'
   return 'auto'
 }
 
@@ -257,6 +259,20 @@ const registerUpdaterEvents = (): void => {
   })
 
   autoUpdater.on('error', (error) => {
+    if (process.platform === 'darwin' && updateInfo.status === 'downloading' && updateInfo.latestVersion) {
+      void downloadMacZipFallback(updateInfo.latestVersion).catch((fallbackError) => {
+        setUpdateInfo({
+          status: 'error',
+          latestVersion: updateInfo.latestVersion,
+          message: fallbackError instanceof Error ? fallbackError.message : error.message,
+          progress: null,
+          releaseUrl: updateInfo.releaseUrl,
+          releaseNotes: updateInfo.releaseNotes
+        })
+      })
+      return
+    }
+
     setUpdateInfo({
       status: 'error',
       latestVersion: updateInfo.latestVersion,
@@ -287,10 +303,6 @@ const checkForUpdates = async (): Promise<UpdateInfo> => {
       return checkMockUpdateForDev()
     }
     return checkGithubReleaseMetadata('dev')
-  }
-
-  if (getUpdateMode() === 'manual') {
-    return checkGithubReleaseMetadata('manual')
   }
 
   try {
@@ -384,9 +396,9 @@ const checkGithubReleaseMetadata = async (mode: UpdateInfo['mode']): Promise<Upd
         mode,
         latestVersion,
         message:
-          mode === 'manual'
-            ? `Version ${latestVersion} is available. Open the release to install it.`
-            : `Version ${latestVersion} is available. Dev builds open the release page instead of installing.`,
+          mode === 'dev'
+            ? `Version ${latestVersion} is available. Dev will simulate the update flow.`
+            : `Version ${latestVersion} is available. Ready to download.`,
         progress: null,
         releaseUrl: release.html_url ?? `https://github.com/YeeetSK/vibeboard/releases/tag/v${latestVersion}`,
         releaseNotes: release.body?.trim() || null
@@ -419,37 +431,7 @@ const downloadUpdate = async (): Promise<UpdateInfo> => {
   if (updateInfo.status !== 'available') return updateInfo
 
   if (is.dev) {
-    if (isDevUpdateMockEnabled()) {
-      return simulateDevUpdateDownload()
-    }
-    if (updateInfo.releaseUrl) {
-      await shell.openExternal(updateInfo.releaseUrl)
-    }
-    setUpdateInfo({
-      status: 'available',
-      mode: 'dev',
-      latestVersion: updateInfo.latestVersion,
-      message: 'Opened the release page. Start with VIBEBOARD_UPDATE_MOCK=1 to test the update UI locally.',
-      progress: null,
-      releaseUrl: updateInfo.releaseUrl,
-      releaseNotes: updateInfo.releaseNotes
-    })
-    return updateInfo
-  }
-
-  if (getUpdateMode() === 'manual') {
-    if (updateInfo.releaseUrl) {
-      await shell.openExternal(updateInfo.releaseUrl)
-    }
-    return setUpdateInfo({
-      status: 'available',
-      mode: 'manual',
-      latestVersion: updateInfo.latestVersion,
-      message: 'Opened the release page. Mac builds need a signed release before in-app install can be used.',
-      progress: null,
-      releaseUrl: updateInfo.releaseUrl,
-      releaseNotes: updateInfo.releaseNotes
-    })
+    return simulateDevUpdateDownload()
   }
 
   try {
@@ -463,6 +445,22 @@ const downloadUpdate = async (): Promise<UpdateInfo> => {
     })
     await autoUpdater.downloadUpdate()
   } catch (error) {
+    if (process.platform === 'darwin' && updateInfo.latestVersion) {
+      try {
+        return await downloadMacZipFallback(updateInfo.latestVersion)
+      } catch (fallbackError) {
+        setUpdateInfo({
+          status: 'error',
+          mode: 'auto',
+          message: fallbackError instanceof Error ? fallbackError.message : 'Mac update download failed.',
+          progress: null,
+          releaseUrl: updateInfo.releaseUrl,
+          releaseNotes: updateInfo.releaseNotes
+        })
+        return updateInfo
+      }
+    }
+
     setUpdateInfo({
       status: 'error',
       mode: getUpdateMode(),
@@ -497,25 +495,13 @@ const simulateDevUpdateDownload = async (): Promise<UpdateInfo> => {
 const installUpdate = (): UpdateInfo => {
   if (updateInfo.status !== 'downloaded') return updateInfo
 
-  if (isDevUpdateMockEnabled()) {
+  if (is.dev) {
     return setUpdateInfo({
       status: 'not_available',
       mode: 'dev',
       latestVersion: updateInfo.latestVersion,
       message: `Dev update v${updateInfo.latestVersion} installed.`,
       progress: 100,
-      releaseUrl: updateInfo.releaseUrl,
-      releaseNotes: updateInfo.releaseNotes
-    })
-  }
-
-  if (getUpdateMode() !== 'auto') {
-    return setUpdateInfo({
-      status: 'available',
-      mode: getUpdateMode(),
-      latestVersion: updateInfo.latestVersion,
-      message: 'Automatic install is not available for this build.',
-      progress: null,
       releaseUrl: updateInfo.releaseUrl,
       releaseNotes: updateInfo.releaseNotes
     })
@@ -530,8 +516,148 @@ const installUpdate = (): UpdateInfo => {
     releaseNotes: updateInfo.releaseNotes
   })
   isQuitConfirmed = true
+
+  if (pendingMacFallbackAppPath) {
+    installMacZipFallback(pendingMacFallbackAppPath).catch((error) => {
+      setUpdateInfo({
+        status: 'error',
+        mode: 'auto',
+        message: error instanceof Error ? error.message : 'Mac update install failed.',
+        progress: null,
+        releaseUrl: updateInfo.releaseUrl,
+        releaseNotes: updateInfo.releaseNotes
+      })
+    })
+    return updateInfo
+  }
+
   autoUpdater.quitAndInstall(false, true)
   return updateInfo
+}
+
+const downloadMacZipFallback = async (version: string): Promise<UpdateInfo> => {
+  setUpdateInfo({
+    status: 'downloading',
+    mode: 'auto',
+    latestVersion: version,
+    message: 'Downloading macOS app update.',
+    progress: 5,
+    releaseUrl: updateInfo.releaseUrl,
+    releaseNotes: updateInfo.releaseNotes
+  })
+
+  const assetUrl = await getMacZipAssetUrl(version)
+  const tempRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'vibeboard-update-'))
+  const zipPath = path.join(tempRoot, `VibeBoard-${version}-${process.arch}.zip`)
+  const extractPath = path.join(tempRoot, 'expanded')
+
+  const response = await fetch(assetUrl, {
+    headers: {
+      Accept: 'application/octet-stream',
+      'User-Agent': 'VibeBoard'
+    }
+  })
+  if (!response.ok) {
+    throw new Error(`GitHub returned ${response.status} while downloading the macOS update.`)
+  }
+
+  setUpdateInfo({
+    status: 'downloading',
+    mode: 'auto',
+    latestVersion: version,
+    message: 'Writing macOS app update.',
+    progress: 45,
+    releaseUrl: updateInfo.releaseUrl,
+    releaseNotes: updateInfo.releaseNotes
+  })
+
+  await fsPromises.writeFile(zipPath, Buffer.from(await response.arrayBuffer()))
+  await fsPromises.mkdir(extractPath, { recursive: true })
+
+  setUpdateInfo({
+    status: 'downloading',
+    mode: 'auto',
+    latestVersion: version,
+    message: 'Preparing macOS app update.',
+    progress: 76,
+    releaseUrl: updateInfo.releaseUrl,
+    releaseNotes: updateInfo.releaseNotes
+  })
+
+  await execFileAsync('/usr/bin/ditto', ['-x', '-k', zipPath, extractPath])
+  const appPath = await findExtractedMacApp(extractPath)
+  pendingMacFallbackAppPath = appPath
+
+  return setUpdateInfo({
+    status: 'downloaded',
+    mode: 'auto',
+    latestVersion: version,
+    message: `Version ${version} is ready to install.`,
+    progress: 100,
+    releaseUrl: updateInfo.releaseUrl,
+    releaseNotes: updateInfo.releaseNotes
+  })
+}
+
+const getMacZipAssetUrl = async (version: string): Promise<string> => {
+  const response = await fetch(`https://api.github.com/repos/YeeetSK/vibeboard/releases/tags/v${version}`, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'VibeBoard'
+    }
+  })
+  if (!response.ok) {
+    throw new Error(`GitHub returned ${response.status} while finding the macOS update asset.`)
+  }
+
+  const release = (await response.json()) as {
+    assets?: Array<{ name?: string; browser_download_url?: string }>
+  }
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
+  const asset = release.assets?.find((item) => {
+    const name = item.name ?? ''
+    return name.endsWith(`-${arch}.zip`) && !name.endsWith('.blockmap')
+  })
+  if (!asset?.browser_download_url) {
+    throw new Error(`No macOS ${arch} zip update asset found for v${version}.`)
+  }
+  return asset.browser_download_url
+}
+
+const findExtractedMacApp = async (rootPath: string): Promise<string> => {
+  const entries = await fsPromises.readdir(rootPath, { withFileTypes: true })
+  const appEntry = entries.find((entry) => entry.isDirectory() && entry.name.endsWith('.app'))
+  if (!appEntry) {
+    throw new Error('The macOS update zip did not contain a .app bundle.')
+  }
+  return path.join(rootPath, appEntry.name)
+}
+
+const installMacZipFallback = async (newAppPath: string): Promise<void> => {
+  if (process.platform !== 'darwin') return
+
+  const currentAppPath = path.resolve(process.execPath, '../../..')
+  const scriptPath = path.join(os.tmpdir(), `vibeboard-install-${Date.now()}.sh`)
+  const script = [
+    '#!/bin/bash',
+    'set -e',
+    'APP_PATH="$1"',
+    'NEW_APP_PATH="$2"',
+    'BACKUP_PATH="${APP_PATH}.old.$(date +%s)"',
+    'sleep 1',
+    'if [ -d "$APP_PATH" ]; then mv "$APP_PATH" "$BACKUP_PATH"; fi',
+    'ditto "$NEW_APP_PATH" "$APP_PATH"',
+    'open "$APP_PATH"',
+    'if [ -d "$BACKUP_PATH" ]; then rm -rf "$BACKUP_PATH"; fi'
+  ].join('\n')
+
+  await fsPromises.writeFile(scriptPath, script, { mode: 0o755 })
+  const child = spawn('/bin/bash', [scriptPath, currentAppPath, newAppPath], {
+    detached: true,
+    stdio: 'ignore'
+  })
+  child.unref()
+  app.quit()
 }
 
 const openExternalUrl = async (url: string): Promise<void> => {
@@ -673,6 +799,18 @@ const broadcastStateChanged = (): void => {
   }
 }
 
+const openTaskFromNotification = (taskId: string): void => {
+  const targetWindow = BrowserWindow.getAllWindows()[0]
+  if (!targetWindow || targetWindow.webContents.isDestroyed()) return
+
+  if (targetWindow.isMinimized()) {
+    targetWindow.restore()
+  }
+  targetWindow.show()
+  targetWindow.focus()
+  targetWindow.webContents.send('notifications:opened', { taskId })
+}
+
 const normalizeNtfyServerUrl = (serverUrl: string): string =>
   (serverUrl.trim() || 'https://ntfy.sh').replace(/\/+$/, '')
 
@@ -706,17 +844,16 @@ const sendMacOsNotification = async (payload: NotificationPayload): Promise<void
 }
 
 const sendDesktopNotification = async (payload: NotificationPayload): Promise<void> => {
-  if (process.platform === 'darwin' && is.dev) {
-    await sendMacOsNotification(payload)
-    return
-  }
-
   if (Notification.isSupported()) {
-    new Notification({
+    const notification = new Notification({
       title: notificationTitle,
       body: formatNotificationBody(payload),
       silent: false
-    }).show()
+    })
+    if (payload.taskId) {
+      notification.on('click', () => openTaskFromNotification(payload.taskId!))
+    }
+    notification.show()
     return
   }
 
@@ -769,7 +906,8 @@ const handleTaskStatusChange = (event: TaskStatusChangeEvent): void => {
       event: 'taskFailed',
       title: 'Task needs attention',
       body: event.task.title,
-      priority: 'high'
+      priority: 'high',
+      taskId: event.task.id
     })
   }
 
@@ -778,7 +916,8 @@ const handleTaskStatusChange = (event: TaskStatusChangeEvent): void => {
       event: 'taskCompleted',
       title: 'Task completed',
       body: event.task.title,
-      priority: 'default'
+      priority: 'default',
+      taskId: event.task.id
     })
   }
 

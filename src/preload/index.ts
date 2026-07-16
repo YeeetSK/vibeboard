@@ -7,6 +7,7 @@ import type {
   CreateTaskInput,
   GetTaskDetailInput,
   MoveTaskInput,
+  NotificationOpenRequest,
   NotificationSettings,
   RecordSearchOpenInput,
   ReorderTabsInput,
@@ -42,6 +43,11 @@ const api: VibeBoardApi = {
     const listener = (_event: IpcRendererEvent, info: UpdateInfo): void => callback(info)
     ipcRenderer.on('updates:changed', listener)
     return () => ipcRenderer.removeListener('updates:changed', listener)
+  },
+  onNotificationOpened: (callback: (request: NotificationOpenRequest) => void) => {
+    const listener = (_event: IpcRendererEvent, request: NotificationOpenRequest): void => callback(request)
+    ipcRenderer.on('notifications:opened', listener)
+    return () => ipcRenderer.removeListener('notifications:opened', listener)
   },
   getUpdateInfo: () => ipcRenderer.invoke('updates:get'),
   downloadUpdate: () => ipcRenderer.invoke('updates:download'),
