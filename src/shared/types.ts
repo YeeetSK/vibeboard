@@ -188,6 +188,27 @@ export interface QuitRequest {
   hasRunningTasks: boolean
 }
 
+export type NotificationEventKey = 'taskCompleted' | 'taskFailed' | 'allTasksFinished'
+
+export interface NotificationEventSettings {
+  taskCompleted: boolean
+  taskFailed: boolean
+  allTasksFinished: boolean
+}
+
+export interface NtfySettings {
+  enabled: boolean
+  serverUrl: string
+  topic: string
+  events: NotificationEventSettings
+}
+
+export interface NotificationSettings {
+  desktopEnabled: boolean
+  desktopEvents: NotificationEventSettings
+  ntfy: NtfySettings
+}
+
 export type UpdateStatus =
   | 'idle'
   | 'checking'
@@ -222,6 +243,9 @@ export interface VibeBoardApi {
   getUpdateInfo: () => Promise<UpdateInfo>
   downloadUpdate: () => Promise<UpdateInfo>
   installUpdate: () => Promise<UpdateInfo>
+  getNotificationSettings: () => Promise<NotificationSettings>
+  updateNotificationSettings: (settings: NotificationSettings) => Promise<NotificationSettings>
+  sendTestNotification: () => Promise<void>
   createProject: (input: CreateProjectInput) => Promise<Project | null>
   relocateProject: (projectId: string) => Promise<Project | null>
   openProjectFolder: (projectId: string) => Promise<void>
@@ -238,6 +262,7 @@ export interface VibeBoardApi {
   renameLane: (input: RenameInput) => Promise<void>
   deleteLane: (laneId: string) => Promise<void>
   createTask: (input: CreateTaskInput) => Promise<Task>
+  renameTask: (input: RenameInput) => Promise<void>
   moveTask: (input: MoveTaskInput) => Promise<void>
   deleteTask: (taskId: string) => Promise<void>
   sendTaskMessage: (input: SendTaskMessageInput) => Promise<RunTaskResult>

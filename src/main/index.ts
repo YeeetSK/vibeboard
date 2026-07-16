@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Notification, shell } from 'electron'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import path from 'node:path'
@@ -15,6 +15,8 @@ import type {
   CreateTaskInput,
   GetTaskDetailInput,
   MoveTaskInput,
+  NotificationEventKey,
+  NotificationSettings,
   RecordSearchOpenInput,
   ReorderTabsInput,
   RenameInput,
@@ -24,6 +26,7 @@ import type {
   UpdateTabMetaInput,
   UpdateTaskStatusInput
 } from '../shared/types'
+import type { TaskStatusChangeEvent } from './database'
 
 let store: VibeBoardStore
 const cursorAdapter = new PlaceholderCursorAdapter()
@@ -47,6 +50,24 @@ let updateInfo: UpdateInfo = {
 
 autoUpdater.autoDownload = false
 autoUpdater.autoInstallOnAppQuit = true
+
+interface NotificationPayload {
+  event: NotificationEventKey
+  title: string
+  body: string
+  priority: 'default' | 'high'
+}
+
+const appUserModelId = 'com.yeeetsk.vibeboard'
+const notificationTitle = 'VibeBoard 🌊'
+
+const formatNotificationBody = (payload: NotificationPayload): string =>
+  payload.body ? `${payload.title}: ${payload.body}` : payload.title
+
+app.setName('VibeBoard')
+if (process.platform === 'win32') {
+  app.setAppUserModelId(appUserModelId)
+}
 
 function getUpdateMode(): UpdateInfo['mode'] {
   if (is.dev) return 'dev'
@@ -134,6 +155,7 @@ const registerIpc = (): void => {
     const task = store.createTask(input)
     return task
   })
+  ipcMain.handle('task:rename', (_event, input: RenameInput) => store.renameTask(input))
   ipcMain.handle('task:move', (_event, input: MoveTaskInput) => store.moveTask(input))
   ipcMain.handle('task:delete', (_event, taskId: string) => store.deleteTask(taskId))
   ipcMain.handle('task:message', (_event, input: SendTaskMessageInput) => {
@@ -151,6 +173,18 @@ const registerIpc = (): void => {
   ipcMain.handle('updates:check', () => checkForUpdates())
   ipcMain.handle('updates:download', () => downloadUpdate())
   ipcMain.handle('updates:install', () => installUpdate())
+  ipcMain.handle('notifications:get', () => store.getNotificationSettings())
+  ipcMain.handle('notifications:update', (_event, settings: NotificationSettings) =>
+    store.updateNotificationSettings(settings)
+  )
+  ipcMain.handle('notifications:test', () =>
+    sendConfiguredNotification({
+      event: 'taskCompleted',
+      title: 'VibeBoard notification test',
+      body: 'Notifications are configured.',
+      priority: 'default'
+    })
+  )
   ipcMain.on('app:quitPromptShown', () => {
     clearQuitPromptFallback()
   })
@@ -639,6 +673,129 @@ const broadcastStateChanged = (): void => {
   }
 }
 
+const normalizeNtfyServerUrl = (serverUrl: string): string =>
+  (serverUrl.trim() || 'https://ntfy.sh').replace(/\/+$/, '')
+
+const sendNtfyNotification = async (
+  ntfy: NotificationSettings['ntfy'],
+  payload: NotificationPayload
+): Promise<void> => {
+  const topic = ntfy.topic.trim()
+  if (!topic) return
+
+  const response = await fetch(`${normalizeNtfyServerUrl(ntfy.serverUrl)}/${encodeURIComponent(topic)}`, {
+    method: 'POST',
+    body: formatNotificationBody(payload),
+    headers: {
+      Title: notificationTitle,
+      Priority: payload.priority === 'high' ? '4' : '3',
+      Tags: 'vibeboard'
+    }
+  })
+
+  if (!response.ok) {
+    throw new Error(`ntfy notification failed with ${response.status}`)
+  }
+}
+
+const sendMacOsNotification = async (payload: NotificationPayload): Promise<void> => {
+  await execFileAsync('osascript', [
+    '-e',
+    `display notification ${JSON.stringify(formatNotificationBody(payload))} with title ${JSON.stringify(notificationTitle)}`
+  ])
+}
+
+const sendDesktopNotification = async (payload: NotificationPayload): Promise<void> => {
+  if (process.platform === 'darwin' && is.dev) {
+    await sendMacOsNotification(payload)
+    return
+  }
+
+  if (Notification.isSupported()) {
+    new Notification({
+      title: notificationTitle,
+      body: formatNotificationBody(payload),
+      silent: false
+    }).show()
+    return
+  }
+
+  if (process.platform === 'darwin') {
+    await sendMacOsNotification(payload)
+  }
+}
+
+const sendConfiguredNotification = async (payload: NotificationPayload): Promise<void> => {
+  const settings = store.getNotificationSettings()
+
+  if (settings.desktopEnabled && settings.desktopEvents[payload.event]) {
+    try {
+      await sendDesktopNotification(payload)
+    } catch (error) {
+      if (process.platform === 'darwin' && !is.dev) {
+        try {
+          await sendMacOsNotification(payload)
+        } catch (fallbackError) {
+          if (is.dev) {
+            console.error('[VibeBoard desktop notifications]', fallbackError)
+          }
+        }
+      } else if (is.dev) {
+        console.error('[VibeBoard desktop notifications]', error)
+      }
+    }
+  }
+
+  if (settings.ntfy.enabled && settings.ntfy.events[payload.event]) {
+    try {
+      await sendNtfyNotification(settings.ntfy, payload)
+    } catch (error) {
+      if (is.dev) {
+        console.error('[VibeBoard notifications]', error)
+      }
+    }
+  }
+}
+
+const handleTaskStatusChange = (event: TaskStatusChangeEvent): void => {
+  const notifications: NotificationPayload[] = []
+  const wasRunning = event.oldStatus === 'processing'
+  const runningTaskCount = store.getRunningTaskCount()
+  const runningTaskCountBeforeChange = runningTaskCount + (wasRunning && event.newStatus !== 'processing' ? 1 : 0)
+  const isDone = event.newStatus === 'done_unread' || event.newStatus === 'done_read'
+
+  if (!isDone && event.newStatus === 'attention') {
+    notifications.push({
+      event: 'taskFailed',
+      title: 'Task needs attention',
+      body: event.task.title,
+      priority: 'high'
+    })
+  }
+
+  if (event.oldStatus !== 'done_unread' && event.oldStatus !== 'done_read' && isDone) {
+    notifications.push({
+      event: 'taskCompleted',
+      title: 'Task completed',
+      body: event.task.title,
+      priority: 'default'
+    })
+  }
+
+  if (wasRunning && event.newStatus !== 'processing' && runningTaskCountBeforeChange > 1 && runningTaskCount === 0) {
+    notifications.push({
+      event: 'allTasksFinished',
+      title: 'All tasks finished',
+      body: 'No tasks are running.',
+      priority: 'default'
+    })
+  }
+
+  for (const notification of notifications) {
+    void sendConfiguredNotification(notification)
+  }
+}
+
 const requestQuitConfirmation = (): void => {
   if (isQuitPromptOpen) return
 
@@ -673,8 +830,9 @@ const quitWithoutPrompt = (): void => {
 }
 
 app.whenReady().then(() => {
-  electronApp.setAppUserModelId('com.yeeetsk.vibeboard')
+  electronApp.setAppUserModelId(appUserModelId)
   store = new VibeBoardStore()
+  store.setTaskStatusListener(handleTaskStatusChange)
   registerIpc()
   registerUpdaterEvents()
 

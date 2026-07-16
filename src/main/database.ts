@@ -15,6 +15,7 @@ import type {
   GetTaskDetailInput,
   Lane,
   MoveTaskInput,
+  NotificationSettings,
   Project,
   RecordSearchOpenInput,
   ReorderTabsInput,
@@ -45,6 +46,52 @@ const taskStatusLabel = (status: TaskStatus): string => {
   if (status === 'done_read') return 'Done'
   return 'Idle'
 }
+
+export interface TaskStatusChangeEvent {
+  task: Task
+  oldStatus: TaskStatus
+  newStatus: TaskStatus
+}
+
+export const defaultNotificationSettings: NotificationSettings = {
+  desktopEnabled: false,
+  desktopEvents: {
+    taskCompleted: true,
+    taskFailed: true,
+    allTasksFinished: false
+  },
+  ntfy: {
+    enabled: false,
+    serverUrl: 'https://ntfy.sh',
+    topic: '',
+    events: {
+      taskCompleted: true,
+      taskFailed: true,
+      allTasksFinished: false
+    }
+  }
+}
+
+const mergeNotificationSettings = (settings: Partial<NotificationSettings>): NotificationSettings => ({
+  desktopEnabled: Boolean(settings.desktopEnabled),
+  desktopEvents: {
+    taskCompleted: settings.desktopEvents?.taskCompleted ?? defaultNotificationSettings.desktopEvents.taskCompleted,
+    taskFailed: settings.desktopEvents?.taskFailed ?? defaultNotificationSettings.desktopEvents.taskFailed,
+    allTasksFinished:
+      settings.desktopEvents?.allTasksFinished ?? defaultNotificationSettings.desktopEvents.allTasksFinished
+  },
+  ntfy: {
+    enabled: Boolean(settings.ntfy?.enabled),
+    serverUrl: settings.ntfy?.serverUrl?.trim() || defaultNotificationSettings.ntfy.serverUrl,
+    topic: settings.ntfy?.topic?.trim() || '',
+    events: {
+      taskCompleted: settings.ntfy?.events?.taskCompleted ?? defaultNotificationSettings.ntfy.events.taskCompleted,
+      taskFailed: settings.ntfy?.events?.taskFailed ?? defaultNotificationSettings.ntfy.events.taskFailed,
+      allTasksFinished:
+        settings.ntfy?.events?.allTasksFinished ?? defaultNotificationSettings.ntfy.events.allTasksFinished
+    }
+  }
+})
 
 const withPathState = (project: Project): Project => ({
   ...project,
@@ -89,6 +136,7 @@ const parseSearchQuery = (
 
 export class VibeBoardStore {
   private db: Database.Database
+  private taskStatusListener: ((event: TaskStatusChangeEvent) => void) | null = null
 
   constructor() {
     const dbPath = path.join(app.getPath('userData'), 'vibeboard.sqlite')
@@ -98,6 +146,28 @@ export class VibeBoardStore {
     this.migrate()
     this.replaceOldDemoSeed()
     this.seed()
+  }
+
+  setTaskStatusListener(listener: (event: TaskStatusChangeEvent) => void): void {
+    this.taskStatusListener = listener
+  }
+
+  getNotificationSettings(): NotificationSettings {
+    const raw = this.getSetting('notificationSettings')
+    if (!raw) return defaultNotificationSettings
+
+    try {
+      const parsed = JSON.parse(raw) as Partial<NotificationSettings>
+      return mergeNotificationSettings(parsed)
+    } catch {
+      return defaultNotificationSettings
+    }
+  }
+
+  updateNotificationSettings(settings: NotificationSettings): NotificationSettings {
+    const nextSettings = mergeNotificationSettings(settings)
+    this.setSetting('notificationSettings', JSON.stringify(nextSettings))
+    return nextSettings
   }
 
   getState(): AppState {
@@ -498,6 +568,13 @@ export class VibeBoardStore {
     return project ? withPathState(project) : null
   }
 
+  getRunningTaskCount(): number {
+    const row = this.db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'processing'").get() as {
+      count: number
+    }
+    return row.count
+  }
+
   async relocateProject(projectId: string): Promise<Project | null> {
     const project = this.db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as Project | undefined
     if (!project) return null
@@ -889,10 +966,26 @@ export class VibeBoardStore {
     transaction()
   }
 
+  renameTask(input: RenameInput): void {
+    const title = input.name.trim()
+    if (!title) return
+
+    this.db.prepare('UPDATE tasks SET title = ?, updatedAt = ? WHERE id = ?').run(title, now(), input.id)
+  }
+
   updateTaskStatus(input: UpdateTaskStatusInput): void {
+    const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(input.taskId) as Task | undefined
+    if (!task || task.status === input.status) return
+    const timestamp = now()
+
     this.db
       .prepare('UPDATE tasks SET status = ?, updatedAt = ? WHERE id = ?')
-      .run(input.status, now(), input.taskId)
+      .run(input.status, timestamp, input.taskId)
+    this.taskStatusListener?.({
+      task: { ...task, status: input.status, updatedAt: timestamp },
+      oldStatus: task.status,
+      newStatus: input.status
+    })
   }
 
   markTaskRead(taskId: string): void {
