@@ -1390,6 +1390,12 @@ button {
   max-width: none;
 }
 
+.release-notes-modal .modal-actions {
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--line-soft);
+  background: #171717;
+}
+
 .empty-panel {
   border: 1px solid var(--line-soft);
   border-radius: 8px;
