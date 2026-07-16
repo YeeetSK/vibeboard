@@ -46,6 +46,14 @@ npm run dev
 
 This starts Electron through Vite. You do not need GitHub releases or downloaded installers for development.
 
+Test the update UI locally:
+
+```bash
+npm run dev:update
+```
+
+This runs the same dev app with a mocked update available. The banner, progress bar, restart action, and release notes can be tested without downloading a GitHub release.
+
 Reset local app data:
 
 ```bash
@@ -107,7 +115,9 @@ Release notes are generated from conventional commits with `git-cliff`.
 
 Packaged builds check GitHub Releases for newer versions. When an update is available, VibeBoard shows an update control in the sidebar. The app does not show manual update controls when no update exists.
 
-During development, update checking uses GitHub release metadata only for visibility and debugging. Installing updates is only meaningful in packaged builds.
+During development, `npm run dev:update` uses a local mocked update flow so the updater UI can be tested without installing a release build.
+
+On macOS, unsigned or ad-hoc signed builds open the GitHub release page instead of attempting an in-app install. Fully automatic macOS updates require a properly signed release. Windows packaged builds use the normal in-app updater path.
 
 ## Design Rules
 

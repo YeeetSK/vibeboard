@@ -1,6 +1,6 @@
 {
   "name": "vibeboard",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "A dark desktop board for organizing AI coding tasks across projects.",
   "main": "out/main/index.js",
   "author": "YeeetSK",
@@ -8,6 +8,7 @@
   "private": true,
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:update": "node scripts/dev-update.cjs",
     "icons": "node scripts/generate-icons.mjs",
     "postinstall": "electron-builder install-app-deps",
     "reset:data": "node scripts/reset-data.mjs",

@@ -173,6 +173,7 @@ const emptyCursorStatus: CursorStatus = {
 }
 const emptyUpdateInfo: UpdateInfo = {
   status: 'idle',
+  mode: 'auto',
   currentVersion: '0.0.0',
   latestVersion: null,
   message: 'Ready to check for updates.',
@@ -727,7 +728,7 @@ export function App(): ReactElement {
       setUpdateInfo((current) => ({
         ...current,
         status: 'downloading',
-        message: import.meta.env.DEV ? 'Opening release page for this development build.' : 'Starting download.',
+        message: current.mode === 'auto' ? 'Starting download.' : 'Opening release page.',
         progress: current.progress ?? 0
       }))
       setUpdateInfo(await window.vibeboard.downloadUpdate())
@@ -740,10 +741,18 @@ export function App(): ReactElement {
       setUpdateInfo((current) => ({
         ...current,
         status: 'installing',
-        message: 'Restarting to finish update.',
+        message: current.mode === 'dev' ? 'Finishing simulated update.' : 'Restarting to finish update.',
         progress: 100
       }))
-      await window.vibeboard.installUpdate()
+      const nextInfo = await window.vibeboard.installUpdate()
+      setUpdateInfo(nextInfo)
+      if (nextInfo.mode === 'dev' && nextInfo.latestVersion) {
+        setReleaseNotesModal({
+          version: nextInfo.latestVersion,
+          notes: nextInfo.releaseNotes,
+          releaseUrl: nextInfo.releaseUrl
+        })
+      }
     })
   }
 
@@ -1431,7 +1440,19 @@ function UpdateBanner({
   const isBusy = info.status === 'checking' || info.status === 'downloading' || info.status === 'installing'
   const canDownload = info.status === 'available'
   const canInstall = info.status === 'downloaded'
-  const buttonLabel = canInstall ? 'Restart' : canDownload ? 'Update' : info.status === 'installing' ? 'Restarting' : 'Downloading'
+  const buttonLabel = canInstall
+    ? info.mode === 'dev'
+      ? 'Show notes'
+      : 'Restart'
+    : canDownload
+      ? info.mode === 'auto'
+        ? 'Update'
+        : 'Open release'
+      : info.status === 'installing'
+        ? info.mode === 'dev'
+          ? 'Finishing'
+          : 'Restarting'
+        : 'Downloading'
   const buttonAction = canInstall ? onInstall : onDownload
   const tone =
     info.status === 'available' || info.status === 'downloaded'
@@ -1456,7 +1477,7 @@ function UpdateBanner({
       </div>
       {(canDownload || canInstall || isBusy) && (
         <button className="primary-action" type="button" onClick={buttonAction} disabled={isBusy}>
-          {canInstall ? <Check size={15} /> : <Download size={15} />}
+          {canInstall ? <Check size={15} /> : info.mode === 'auto' ? <Download size={15} /> : <ExternalLink size={15} />}
           <span>{buttonLabel}</span>
         </button>
       )}

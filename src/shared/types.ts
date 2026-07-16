@@ -198,8 +198,11 @@ export type UpdateStatus =
   | 'installing'
   | 'error'
 
+export type UpdateMode = 'auto' | 'manual' | 'dev'
+
 export interface UpdateInfo {
   status: UpdateStatus
+  mode: UpdateMode
   currentVersion: string
   latestVersion: string | null
   message: string
@@ -218,7 +221,7 @@ export interface VibeBoardApi {
   onUpdateChanged: (callback: (info: UpdateInfo) => void) => () => void
   getUpdateInfo: () => Promise<UpdateInfo>
   downloadUpdate: () => Promise<UpdateInfo>
-  installUpdate: () => Promise<void>
+  installUpdate: () => Promise<UpdateInfo>
   createProject: (input: CreateProjectInput) => Promise<Project | null>
   relocateProject: (projectId: string) => Promise<Project | null>
   openProjectFolder: (projectId: string) => Promise<void>

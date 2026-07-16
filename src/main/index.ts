@@ -36,6 +36,7 @@ let isQuitPromptOpen = false
 let quitPromptFallbackTimer: NodeJS.Timeout | null = null
 let updateInfo: UpdateInfo = {
   status: 'idle',
+  mode: getUpdateMode(),
   currentVersion: app.getVersion(),
   latestVersion: null,
   message: 'Ready to check for updates.',
@@ -46,6 +47,16 @@ let updateInfo: UpdateInfo = {
 
 autoUpdater.autoDownload = false
 autoUpdater.autoInstallOnAppQuit = true
+
+function getUpdateMode(): UpdateInfo['mode'] {
+  if (is.dev) return 'dev'
+  if (process.platform === 'darwin' && process.env.VIBEBOARD_ALLOW_MAC_AUTO_UPDATE !== '1') return 'manual'
+  return 'auto'
+}
+
+function isDevUpdateMockEnabled(): boolean {
+  return is.dev && process.env.VIBEBOARD_UPDATE_MOCK === '1'
+}
 
 const createWindow = (): void => {
   const mainWindow = new BrowserWindow({
@@ -227,6 +238,7 @@ const setUpdateInfo = (next: Partial<UpdateInfo>): UpdateInfo => {
   updateInfo = {
     ...updateInfo,
     ...next,
+    mode: next.mode ?? getUpdateMode(),
     currentVersion: app.getVersion()
   }
   for (const window of windows) {
@@ -237,7 +249,14 @@ const setUpdateInfo = (next: Partial<UpdateInfo>): UpdateInfo => {
 
 const checkForUpdates = async (): Promise<UpdateInfo> => {
   if (is.dev) {
-    return checkGithubReleaseForDev()
+    if (isDevUpdateMockEnabled()) {
+      return checkMockUpdateForDev()
+    }
+    return checkGithubReleaseMetadata('dev')
+  }
+
+  if (getUpdateMode() === 'manual') {
+    return checkGithubReleaseMetadata('manual')
   }
 
   try {
@@ -262,10 +281,30 @@ const checkForUpdates = async (): Promise<UpdateInfo> => {
   return updateInfo
 }
 
-const checkGithubReleaseForDev = async (): Promise<UpdateInfo> => {
+const checkMockUpdateForDev = (): UpdateInfo => {
+  const latestVersion = incrementPatchVersion(app.getVersion())
+  return setUpdateInfo({
+    status: 'available',
+    mode: 'dev',
+    latestVersion,
+    message: `Dev update test v${latestVersion} is available.`,
+    progress: null,
+    releaseUrl: 'https://github.com/YeeetSK/vibeboard/releases',
+    releaseNotes: [
+      '## Dev update test',
+      '',
+      '- Simulates download progress inside npm run dev.',
+      '- Simulates install completion without quitting Electron.',
+      '- Use this to verify update banners and release notes locally.'
+    ].join('\n')
+  })
+}
+
+const checkGithubReleaseMetadata = async (mode: UpdateInfo['mode']): Promise<UpdateInfo> => {
   try {
     setUpdateInfo({
       status: 'checking',
+      mode,
       latestVersion: null,
       message: 'Checking GitHub releases.',
       progress: null,
@@ -283,6 +322,7 @@ const checkGithubReleaseForDev = async (): Promise<UpdateInfo> => {
       if (response.status === 404) {
         return setUpdateInfo({
           status: 'not_available',
+          mode,
           latestVersion: null,
           message: 'GitHub release metadata is not public yet.',
           progress: null,
@@ -307,8 +347,12 @@ const checkGithubReleaseForDev = async (): Promise<UpdateInfo> => {
     if (compareVersions(latestVersion, app.getVersion()) > 0) {
       return setUpdateInfo({
         status: 'available',
+        mode,
         latestVersion,
-        message: `Version ${latestVersion} is available.`,
+        message:
+          mode === 'manual'
+            ? `Version ${latestVersion} is available. Open the release to install it.`
+            : `Version ${latestVersion} is available. Dev builds open the release page instead of installing.`,
         progress: null,
         releaseUrl: release.html_url ?? `https://github.com/YeeetSK/vibeboard/releases/tag/v${latestVersion}`,
         releaseNotes: release.body?.trim() || null
@@ -317,6 +361,7 @@ const checkGithubReleaseForDev = async (): Promise<UpdateInfo> => {
 
     return setUpdateInfo({
       status: 'not_available',
+      mode,
       latestVersion,
       message: 'VibeBoard is up to date.',
       progress: null,
@@ -326,6 +371,7 @@ const checkGithubReleaseForDev = async (): Promise<UpdateInfo> => {
   } catch (error) {
     return setUpdateInfo({
       status: 'error',
+      mode,
       latestVersion: null,
       message: error instanceof Error ? error.message : 'Update check failed.',
       progress: null,
@@ -339,13 +385,17 @@ const downloadUpdate = async (): Promise<UpdateInfo> => {
   if (updateInfo.status !== 'available') return updateInfo
 
   if (is.dev) {
+    if (isDevUpdateMockEnabled()) {
+      return simulateDevUpdateDownload()
+    }
     if (updateInfo.releaseUrl) {
       await shell.openExternal(updateInfo.releaseUrl)
     }
     setUpdateInfo({
       status: 'available',
+      mode: 'dev',
       latestVersion: updateInfo.latestVersion,
-      message: 'Development builds cannot self-update. Install the release build from GitHub to test automatic updates.',
+      message: 'Opened the release page. Start with VIBEBOARD_UPDATE_MOCK=1 to test the update UI locally.',
       progress: null,
       releaseUrl: updateInfo.releaseUrl,
       releaseNotes: updateInfo.releaseNotes
@@ -353,9 +403,25 @@ const downloadUpdate = async (): Promise<UpdateInfo> => {
     return updateInfo
   }
 
+  if (getUpdateMode() === 'manual') {
+    if (updateInfo.releaseUrl) {
+      await shell.openExternal(updateInfo.releaseUrl)
+    }
+    return setUpdateInfo({
+      status: 'available',
+      mode: 'manual',
+      latestVersion: updateInfo.latestVersion,
+      message: 'Opened the release page. Mac builds need a signed release before in-app install can be used.',
+      progress: null,
+      releaseUrl: updateInfo.releaseUrl,
+      releaseNotes: updateInfo.releaseNotes
+    })
+  }
+
   try {
     setUpdateInfo({
       status: 'downloading',
+      mode: 'auto',
       message: 'Downloading update.',
       progress: 0,
       releaseUrl: updateInfo.releaseUrl,
@@ -365,6 +431,7 @@ const downloadUpdate = async (): Promise<UpdateInfo> => {
   } catch (error) {
     setUpdateInfo({
       status: 'error',
+      mode: getUpdateMode(),
       message: error instanceof Error ? error.message : 'Update download failed.',
       progress: null,
       releaseUrl: updateInfo.releaseUrl,
@@ -375,10 +442,54 @@ const downloadUpdate = async (): Promise<UpdateInfo> => {
   return updateInfo
 }
 
-const installUpdate = (): void => {
-  if (updateInfo.status !== 'downloaded') return
+const simulateDevUpdateDownload = async (): Promise<UpdateInfo> => {
+  for (const progress of [0, 18, 34, 57, 76, 92, 100]) {
+    setUpdateInfo({
+      status: progress === 100 ? 'downloaded' : 'downloading',
+      mode: 'dev',
+      latestVersion: updateInfo.latestVersion,
+      message: progress === 100 ? `Dev update v${updateInfo.latestVersion} is ready.` : 'Simulating update download.',
+      progress,
+      releaseUrl: updateInfo.releaseUrl,
+      releaseNotes: updateInfo.releaseNotes
+    })
+    if (progress < 100) {
+      await new Promise((resolve) => setTimeout(resolve, 180))
+    }
+  }
+  return updateInfo
+}
+
+const installUpdate = (): UpdateInfo => {
+  if (updateInfo.status !== 'downloaded') return updateInfo
+
+  if (isDevUpdateMockEnabled()) {
+    return setUpdateInfo({
+      status: 'not_available',
+      mode: 'dev',
+      latestVersion: updateInfo.latestVersion,
+      message: `Dev update v${updateInfo.latestVersion} installed.`,
+      progress: 100,
+      releaseUrl: updateInfo.releaseUrl,
+      releaseNotes: updateInfo.releaseNotes
+    })
+  }
+
+  if (getUpdateMode() !== 'auto') {
+    return setUpdateInfo({
+      status: 'available',
+      mode: getUpdateMode(),
+      latestVersion: updateInfo.latestVersion,
+      message: 'Automatic install is not available for this build.',
+      progress: null,
+      releaseUrl: updateInfo.releaseUrl,
+      releaseNotes: updateInfo.releaseNotes
+    })
+  }
+
   setUpdateInfo({
     status: 'installing',
+    mode: 'auto',
     message: 'Restarting to finish update.',
     progress: 100,
     releaseUrl: updateInfo.releaseUrl,
@@ -386,6 +497,7 @@ const installUpdate = (): void => {
   })
   isQuitConfirmed = true
   autoUpdater.quitAndInstall(false, true)
+  return updateInfo
 }
 
 const openExternalUrl = async (url: string): Promise<void> => {
@@ -419,6 +531,13 @@ const readUpdaterReleaseNotes = (info: { releaseNotes?: unknown }): string | nul
 }
 
 const normalizeVersion = (version: string): string => version.trim().replace(/^v/i, '')
+
+const incrementPatchVersion = (version: string): string => {
+  const parts = normalizeVersion(version).split('.').map((part) => Number.parseInt(part, 10) || 0)
+  while (parts.length < 3) parts.push(0)
+  parts[2] += 1
+  return parts.slice(0, 3).join('.')
+}
 
 const compareVersions = (a: string, b: string): number => {
   const left = normalizeVersion(a).split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0)
