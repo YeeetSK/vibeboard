@@ -1,7 +1,8 @@
+import { app } from 'electron'
 import { spawn } from 'node:child_process'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import type { CodeChange } from '../shared/types'
+import type { CodeChange, Project, RunMode, Task } from '../shared/types'
 import { isAgentAuthenticated, resolveAgentCommand } from './cursorAdapter'
 import { VibeBoardStore } from './database'
 
@@ -13,6 +14,13 @@ interface RunCursorTaskInput {
   taskId: string
   store: VibeBoardStore
   onStateChanged: () => void
+}
+
+interface TaskRunTarget {
+  cwd: string
+  mode: RunMode
+  branchName: string | null
+  worktreePath: string | null
 }
 
 export async function runCursorTask({ taskId, store, onStateChanged }: RunCursorTaskInput): Promise<void> {
@@ -27,13 +35,11 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
     onStateChanged()
     return
   }
-  const projectPath = context.project.path
   const isRevertRun = context.prompt.includes('Revert the code changes made for this specific task only.')
 
   store.updateTaskStatus({ taskId, status: 'processing' })
   store.appendConversation(taskId, 'system', 'Starting Cursor CLI agent in the project folder.')
   onStateChanged()
-  const baselineDiff = await collectGitDiffText(projectPath)
 
   const agentCommand = await resolveAgentCommand()
   if (!agentCommand) {
@@ -50,15 +56,31 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
     return
   }
 
-  const optimizedPrompt = await buildFocusedPrompt(projectPath, context.prompt, context.previousPrompts)
+  let runTarget: TaskRunTarget
+  try {
+    runTarget = await prepareTaskRunTarget(context.task, context.project, store)
+  } catch (error) {
+    store.updateTaskStatus({ taskId, status: 'attention' })
+    store.appendConversation(
+      taskId,
+      'system',
+      error instanceof Error ? error.message : 'Could not prepare the task run workspace.'
+    )
+    onStateChanged()
+    return
+  }
+
+  const baselineDiff = await collectGitDiffText(runTarget.cwd)
+  store.appendConversation(taskId, 'system', formatRunTargetMessage(runTarget))
+  const optimizedPrompt = await buildFocusedPrompt(runTarget.cwd, context.prompt, context.previousPrompts)
   store.appendConversation(taskId, 'system', 'Prepared a focused project brief to reduce unnecessary repo exploration.')
   onStateChanged()
 
   const child = spawn(agentCommand, ['--print', '--force', '--trust', '--output-format', 'stream-json', optimizedPrompt], {
-    cwd: projectPath,
+    cwd: runTarget.cwd,
     env: process.env
   })
-  console.info('[VibeBoard Cursor run]', { taskId, projectPath, agentCommand })
+  console.info('[VibeBoard Cursor run]', { taskId, projectPath: runTarget.cwd, agentCommand })
 
   let stdoutBuffer = ''
   let stderrBuffer = ''
@@ -89,7 +111,11 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
 
     child.on('error', (error) => {
       store.updateTaskStatus({ taskId, status: 'attention' })
-      store.appendConversation(taskId, 'system', error.message)
+      store.appendConversation(
+        taskId,
+        'system',
+        `${error.message}\nRetry keeps the saved conversation and focused project context.`
+      )
       onStateChanged()
       finish()
     })
@@ -105,7 +131,7 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
       }
 
       if (code === 0) {
-        const nextDiff = await collectGitDiffText(projectPath)
+        const nextDiff = await collectGitDiffText(runTarget.cwd)
         const changes = nextDiff === baselineDiff ? [] : parseGitDiff(nextDiff, baselineDiff)
         if (isRevertRun || changes.length > 0) {
           store.replaceCodeChanges(taskId, changes)
@@ -113,16 +139,122 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
         store.updateTaskStatus({ taskId, status: 'done_unread' })
       } else {
         store.updateTaskStatus({ taskId, status: 'attention' })
+        const failureText = stderrBuffer.trim() || `Cursor CLI agent exited with code ${code ?? 'unknown'}.`
+        const recoveryText = assistantMessage
+          ? 'Recovered partial agent output above. Retry keeps the saved conversation and focused project context.'
+          : 'Retry keeps the saved conversation and focused project context.'
         store.appendConversation(
           taskId,
           'system',
-          stderrBuffer.trim() || `Cursor CLI agent exited with code ${code ?? 'unknown'}.`
+          `${failureText}\n${recoveryText}`
         )
       }
       onStateChanged()
       finish()
     })
   })
+}
+
+async function prepareTaskRunTarget(task: Task, project: Project, store: VibeBoardStore): Promise<TaskRunTarget> {
+  const mode = task.runModeOverride ?? project.runMode ?? 'worktree'
+  const branchName = task.branchName ?? buildTaskBranchName(task)
+
+  if (mode === 'shared') {
+    return {
+      cwd: project.path,
+      mode,
+      branchName: task.branchName,
+      worktreePath: task.worktreePath
+    }
+  }
+
+  await assertGitWorkTree(project.path)
+
+  if (mode === 'branch') {
+    await ensureBranch(project.path, branchName)
+    await runCommandStrict('git', ['checkout', branchName], project.path)
+    store.updateTaskRunWorkspace({ taskId: task.id, branchName, worktreePath: null })
+    return {
+      cwd: project.path,
+      mode,
+      branchName,
+      worktreePath: null
+    }
+  }
+
+  const worktreePath = task.worktreePath ?? taskWorktreePath(project.id, task.id)
+  await ensureWorktree(project.path, worktreePath, branchName)
+  store.updateTaskRunWorkspace({ taskId: task.id, branchName, worktreePath })
+
+  return {
+    cwd: worktreePath,
+    mode,
+    branchName,
+    worktreePath
+  }
+}
+
+function formatRunTargetMessage(target: TaskRunTarget): string {
+  if (target.mode === 'branch') {
+    return `Run mode: branch per task (${target.branchName ?? 'task branch'}).`
+  }
+  if (target.mode === 'worktree') {
+    return `Run mode: worktree per task (${target.branchName ?? 'task branch'}).`
+  }
+  return 'Run mode: shared working tree.'
+}
+
+async function assertGitWorkTree(cwd: string): Promise<void> {
+  const output = await runCommandStrict('git', ['rev-parse', '--is-inside-work-tree'], cwd).catch((error) => {
+    throw new Error(`This run mode needs a Git repository. ${error instanceof Error ? error.message : ''}`.trim())
+  })
+  if (output.trim() !== 'true') {
+    throw new Error('This run mode needs a Git repository.')
+  }
+}
+
+async function ensureBranch(cwd: string, branchName: string): Promise<void> {
+  const exists = await runCommandStrict('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`], cwd)
+    .then(() => true)
+    .catch(() => false)
+  if (exists) return
+  await runCommandStrict('git', ['branch', branchName], cwd)
+}
+
+async function ensureWorktree(cwd: string, worktreePath: string, branchName: string): Promise<void> {
+  let worktreeExists = false
+  try {
+    const worktreeStat = await stat(worktreePath)
+    worktreeExists = worktreeStat.isDirectory()
+  } catch {
+    // The worktree does not exist yet.
+  }
+  if (worktreeExists) {
+    await assertGitWorkTree(worktreePath)
+    return
+  }
+
+  await mkdir(path.dirname(worktreePath), { recursive: true })
+  const branchExists = await runCommandStrict('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`], cwd)
+    .then(() => true)
+    .catch(() => false)
+  const args = branchExists
+    ? ['worktree', 'add', worktreePath, branchName]
+    : ['worktree', 'add', '-b', branchName, worktreePath, 'HEAD']
+  await runCommandStrict('git', args, cwd)
+}
+
+function taskWorktreePath(projectId: string, taskId: string): string {
+  return path.join(app.getPath('userData'), 'task-worktrees', projectId, taskId)
+}
+
+function buildTaskBranchName(task: Task): string {
+  const slug = task.title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 42) || 'task'
+  return `vibeboard/${slug}-${task.id.slice(0, 8)}`
 }
 
 async function buildFocusedPrompt(projectPath: string, prompt: string, previousPrompts: string[]): Promise<string> {
@@ -284,6 +416,34 @@ function runCommand(command: string, args: string[], cwd: string): Promise<strin
 
     child.on('close', () => resolve(output))
     child.on('error', () => resolve(''))
+  })
+}
+
+function runCommandStrict(command: string, args: string[], cwd: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd })
+    let output = ''
+    let errorOutput = ''
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString()
+    })
+
+    child.stderr.on('data', (chunk: Buffer) => {
+      errorOutput += chunk.toString()
+    })
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve(output)
+        return
+      }
+      reject(new Error(errorOutput.trim() || `${command} ${args.join(' ')} exited with code ${code ?? 'unknown'}.`))
+    })
+
+    child.on('error', (error) => {
+      reject(error)
+    })
   })
 }
 

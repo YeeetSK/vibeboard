@@ -2,9 +2,8 @@ import { app, BrowserWindow, ipcMain, Notification, shell } from 'electron'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import path from 'node:path'
-import { existsSync, promises as fsPromises } from 'node:fs'
-import { execFile, spawn } from 'node:child_process'
-import os from 'node:os'
+import { existsSync } from 'node:fs'
+import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { VibeBoardStore } from './database'
 import { PlaceholderCursorAdapter, cursorInstallCommand } from './cursorAdapter'
@@ -24,6 +23,7 @@ import type {
   SearchWorkspaceInput,
   SendTaskMessageInput,
   UpdateInfo,
+  UpdateProjectRunModeInput,
   UpdateTabMetaInput,
   UpdateTaskStatusInput
 } from '../shared/types'
@@ -38,7 +38,6 @@ const execFileAsync = promisify(execFile)
 let isQuitConfirmed = false
 let isQuitPromptOpen = false
 let quitPromptFallbackTimer: NodeJS.Timeout | null = null
-let pendingMacFallbackAppPath: string | null = null
 let lastRendererActivityAt = Date.now()
 let updateInfo: UpdateInfo = {
   status: 'idle',
@@ -82,6 +81,29 @@ function getUpdateMode(): UpdateInfo['mode'] {
 function isDevUpdateMockEnabled(): boolean {
   return is.dev && process.env.VIBEBOARD_UPDATE_MOCK === '1'
 }
+
+const getMacAppBundlePath = (): string => path.resolve(path.dirname(process.execPath), '../..')
+
+const isMacDeveloperIdSigned = async (): Promise<boolean> => {
+  if (process.platform !== 'darwin' || !app.isPackaged) return false
+
+  try {
+    const appBundlePath = getMacAppBundlePath()
+    const result = await execFileAsync('/usr/bin/codesign', ['-dv', '--verbose=4', appBundlePath])
+    const output = `${result.stdout}\n${result.stderr}`
+    return /Authority=Developer ID Application:/i.test(output) && /TeamIdentifier=/i.test(output)
+  } catch {
+    return false
+  }
+}
+
+const shouldUseManualMacUpdates = async (): Promise<boolean> =>
+  process.platform === 'darwin' && !(await isMacDeveloperIdSigned())
+
+const manualMacUpdateMessage = (version: string | null): string =>
+  version
+    ? `Version ${version} is available. This macOS build is not Developer ID signed, so open GitHub and install the new DMG manually.`
+    : 'This macOS build is not Developer ID signed, so automatic macOS updates are disabled.'
 
 const createWindow = (): void => {
   const mainWindow = new BrowserWindow({
@@ -134,6 +156,9 @@ const registerIpc = (): void => {
   ipcMain.handle('search:workspace', (_event, input: SearchWorkspaceInput) => store.searchWorkspace(input))
   ipcMain.handle('search:recordOpen', (_event, input: RecordSearchOpenInput) => store.recordSearchOpen(input))
   ipcMain.handle('project:create', (_event, input: CreateProjectInput) => store.createProject(input))
+  ipcMain.handle('project:runMode', (_event, input: UpdateProjectRunModeInput) =>
+    store.updateProjectRunMode(input.projectId, input.runMode)
+  )
   ipcMain.handle('project:openFolder', async (_event, projectId: string) => {
     const project = store.getProject(projectId)
     if (!project) return
@@ -267,20 +292,6 @@ const registerUpdaterEvents = (): void => {
   })
 
   autoUpdater.on('error', (error) => {
-    if (process.platform === 'darwin' && updateInfo.status === 'downloading' && updateInfo.latestVersion) {
-      void downloadMacZipFallback(updateInfo.latestVersion).catch((fallbackError) => {
-        setUpdateInfo({
-          status: 'error',
-          latestVersion: updateInfo.latestVersion,
-          message: fallbackError instanceof Error ? fallbackError.message : error.message,
-          progress: null,
-          releaseUrl: updateInfo.releaseUrl,
-          releaseNotes: updateInfo.releaseNotes
-        })
-      })
-      return
-    }
-
     setUpdateInfo({
       status: 'error',
       latestVersion: updateInfo.latestVersion,
@@ -311,6 +322,10 @@ const checkForUpdates = async (): Promise<UpdateInfo> => {
       return checkMockUpdateForDev()
     }
     return checkGithubReleaseMetadata('dev')
+  }
+
+  if (await shouldUseManualMacUpdates()) {
+    return checkGithubReleaseMetadata('manual')
   }
 
   try {
@@ -406,7 +421,9 @@ const checkGithubReleaseMetadata = async (mode: UpdateInfo['mode']): Promise<Upd
         message:
           mode === 'dev'
             ? `Version ${latestVersion} is available. Dev will simulate the update flow.`
-            : `Version ${latestVersion} is available. Ready to download.`,
+            : mode === 'manual' && process.platform === 'darwin'
+              ? manualMacUpdateMessage(latestVersion)
+              : `Version ${latestVersion} is available. Ready to download.`,
         progress: null,
         releaseUrl: release.html_url ?? `https://github.com/YeeetSK/vibeboard/releases/tag/v${latestVersion}`,
         releaseNotes: release.body?.trim() || null
@@ -442,6 +459,21 @@ const downloadUpdate = async (): Promise<UpdateInfo> => {
     return simulateDevUpdateDownload()
   }
 
+  if (await shouldUseManualMacUpdates()) {
+    if (updateInfo.releaseUrl) {
+      await shell.openExternal(updateInfo.releaseUrl)
+    }
+    return setUpdateInfo({
+      status: 'available',
+      mode: 'manual',
+      latestVersion: updateInfo.latestVersion,
+      message: 'Opened the GitHub release. Download and install the new macOS DMG manually.',
+      progress: null,
+      releaseUrl: updateInfo.releaseUrl,
+      releaseNotes: updateInfo.releaseNotes
+    })
+  }
+
   try {
     setUpdateInfo({
       status: 'downloading',
@@ -453,22 +485,6 @@ const downloadUpdate = async (): Promise<UpdateInfo> => {
     })
     await autoUpdater.downloadUpdate()
   } catch (error) {
-    if (process.platform === 'darwin' && updateInfo.latestVersion) {
-      try {
-        return await downloadMacZipFallback(updateInfo.latestVersion)
-      } catch (fallbackError) {
-        setUpdateInfo({
-          status: 'error',
-          mode: 'auto',
-          message: fallbackError instanceof Error ? fallbackError.message : 'Mac update download failed.',
-          progress: null,
-          releaseUrl: updateInfo.releaseUrl,
-          releaseNotes: updateInfo.releaseNotes
-        })
-        return updateInfo
-      }
-    }
-
     setUpdateInfo({
       status: 'error',
       mode: getUpdateMode(),
@@ -525,147 +541,8 @@ const installUpdate = (): UpdateInfo => {
   })
   isQuitConfirmed = true
 
-  if (pendingMacFallbackAppPath) {
-    installMacZipFallback(pendingMacFallbackAppPath).catch((error) => {
-      setUpdateInfo({
-        status: 'error',
-        mode: 'auto',
-        message: error instanceof Error ? error.message : 'Mac update install failed.',
-        progress: null,
-        releaseUrl: updateInfo.releaseUrl,
-        releaseNotes: updateInfo.releaseNotes
-      })
-    })
-    return updateInfo
-  }
-
   autoUpdater.quitAndInstall(false, true)
   return updateInfo
-}
-
-const downloadMacZipFallback = async (version: string): Promise<UpdateInfo> => {
-  setUpdateInfo({
-    status: 'downloading',
-    mode: 'auto',
-    latestVersion: version,
-    message: 'Downloading macOS app update.',
-    progress: 5,
-    releaseUrl: updateInfo.releaseUrl,
-    releaseNotes: updateInfo.releaseNotes
-  })
-
-  const assetUrl = await getMacZipAssetUrl(version)
-  const tempRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'vibeboard-update-'))
-  const zipPath = path.join(tempRoot, `VibeBoard-${version}-${process.arch}.zip`)
-  const extractPath = path.join(tempRoot, 'expanded')
-
-  const response = await fetch(assetUrl, {
-    headers: {
-      Accept: 'application/octet-stream',
-      'User-Agent': 'VibeBoard'
-    }
-  })
-  if (!response.ok) {
-    throw new Error(`GitHub returned ${response.status} while downloading the macOS update.`)
-  }
-
-  setUpdateInfo({
-    status: 'downloading',
-    mode: 'auto',
-    latestVersion: version,
-    message: 'Writing macOS app update.',
-    progress: 45,
-    releaseUrl: updateInfo.releaseUrl,
-    releaseNotes: updateInfo.releaseNotes
-  })
-
-  await fsPromises.writeFile(zipPath, Buffer.from(await response.arrayBuffer()))
-  await fsPromises.mkdir(extractPath, { recursive: true })
-
-  setUpdateInfo({
-    status: 'downloading',
-    mode: 'auto',
-    latestVersion: version,
-    message: 'Preparing macOS app update.',
-    progress: 76,
-    releaseUrl: updateInfo.releaseUrl,
-    releaseNotes: updateInfo.releaseNotes
-  })
-
-  await execFileAsync('/usr/bin/ditto', ['-x', '-k', zipPath, extractPath])
-  const appPath = await findExtractedMacApp(extractPath)
-  pendingMacFallbackAppPath = appPath
-
-  return setUpdateInfo({
-    status: 'downloaded',
-    mode: 'auto',
-    latestVersion: version,
-    message: `Version ${version} is ready to install.`,
-    progress: 100,
-    releaseUrl: updateInfo.releaseUrl,
-    releaseNotes: updateInfo.releaseNotes
-  })
-}
-
-const getMacZipAssetUrl = async (version: string): Promise<string> => {
-  const response = await fetch(`https://api.github.com/repos/YeeetSK/vibeboard/releases/tags/v${version}`, {
-    headers: {
-      Accept: 'application/vnd.github+json',
-      'User-Agent': 'VibeBoard'
-    }
-  })
-  if (!response.ok) {
-    throw new Error(`GitHub returned ${response.status} while finding the macOS update asset.`)
-  }
-
-  const release = (await response.json()) as {
-    assets?: Array<{ name?: string; browser_download_url?: string }>
-  }
-  const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
-  const asset = release.assets?.find((item) => {
-    const name = item.name ?? ''
-    return name.endsWith(`-${arch}.zip`) && !name.endsWith('.blockmap')
-  })
-  if (!asset?.browser_download_url) {
-    throw new Error(`No macOS ${arch} zip update asset found for v${version}.`)
-  }
-  return asset.browser_download_url
-}
-
-const findExtractedMacApp = async (rootPath: string): Promise<string> => {
-  const entries = await fsPromises.readdir(rootPath, { withFileTypes: true })
-  const appEntry = entries.find((entry) => entry.isDirectory() && entry.name.endsWith('.app'))
-  if (!appEntry) {
-    throw new Error('The macOS update zip did not contain a .app bundle.')
-  }
-  return path.join(rootPath, appEntry.name)
-}
-
-const installMacZipFallback = async (newAppPath: string): Promise<void> => {
-  if (process.platform !== 'darwin') return
-
-  const currentAppPath = path.resolve(process.execPath, '../../..')
-  const scriptPath = path.join(os.tmpdir(), `vibeboard-install-${Date.now()}.sh`)
-  const script = [
-    '#!/bin/bash',
-    'set -e',
-    'APP_PATH="$1"',
-    'NEW_APP_PATH="$2"',
-    'BACKUP_PATH="${APP_PATH}.old.$(date +%s)"',
-    'sleep 1',
-    'if [ -d "$APP_PATH" ]; then mv "$APP_PATH" "$BACKUP_PATH"; fi',
-    'ditto "$NEW_APP_PATH" "$APP_PATH"',
-    'open "$APP_PATH"',
-    'if [ -d "$BACKUP_PATH" ]; then rm -rf "$BACKUP_PATH"; fi'
-  ].join('\n')
-
-  await fsPromises.writeFile(scriptPath, script, { mode: 0o755 })
-  const child = spawn('/bin/bash', [scriptPath, currentAppPath, newAppPath], {
-    detached: true,
-    stdio: 'ignore'
-  })
-  child.unref()
-  app.quit()
 }
 
 const openExternalUrl = async (url: string): Promise<void> => {
@@ -728,10 +605,16 @@ const startCursorTask = (taskId: string): { started: boolean; message: string } 
   }
 
   const context = store.getTaskRunContext(taskId)
-  const projectQueueKey = context?.project?.path ?? null
+  const effectiveRunMode = context?.task.runModeOverride ?? context?.project?.runMode ?? 'shared'
+  const projectQueueKey = context?.project?.path && effectiveRunMode !== 'worktree' ? context.project.path : null
   const previousProjectRun = projectQueueKey ? projectRunQueues.get(projectQueueKey) : null
+  const isRetry = context?.task.status === 'attention'
 
   runningTasks.add(taskId)
+
+  if (isRetry) {
+    store.appendConversation(taskId, 'system', 'Retrying with the saved task conversation and focused project context.')
+  }
 
   if (previousProjectRun) {
     store.updateTaskStatus({ taskId, status: 'processing' })

@@ -1,9 +1,11 @@
 export type TaskStatus = 'idle' | 'processing' | 'attention' | 'done_unread' | 'done_read'
+export type RunMode = 'shared' | 'branch' | 'worktree'
 
 export interface Project {
   id: string
   name: string
   path: string
+  runMode: RunMode
   pathMissing: boolean
   createdAt: string
 }
@@ -35,6 +37,9 @@ export interface Task {
   title: string
   summary: string
   status: TaskStatus
+  runModeOverride: RunMode | null
+  branchName: string | null
+  worktreePath: string | null
   position: number
   createdAt: string
   updatedAt: string
@@ -127,6 +132,11 @@ export interface MoveTaskInput {
 export interface UpdateTaskStatusInput {
   taskId: string
   status: TaskStatus
+}
+
+export interface UpdateProjectRunModeInput {
+  projectId: string
+  runMode: RunMode
 }
 
 export interface SendTaskMessageInput {
@@ -254,6 +264,7 @@ export interface VibeBoardApi {
   reportUserActivity: () => void
   createProject: (input: CreateProjectInput) => Promise<Project | null>
   relocateProject: (projectId: string) => Promise<Project | null>
+  updateProjectRunMode: (input: UpdateProjectRunModeInput) => Promise<void>
   openProjectFolder: (projectId: string) => Promise<void>
   openExternalUrl: (url: string) => Promise<void>
   createTab: (input: CreateTabInput) => Promise<BoardTab>

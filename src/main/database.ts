@@ -20,6 +20,7 @@ import type {
   RecordSearchOpenInput,
   ReorderTabsInput,
   RenameInput,
+  RunMode,
   SendTaskMessageInput,
   SearchResult,
   SearchWorkspaceInput,
@@ -41,10 +42,18 @@ const compactProjectPath = (projectPath: string): string => {
 
 const taskStatusLabel = (status: TaskStatus): string => {
   if (status === 'processing') return 'Running'
-  if (status === 'attention') return 'Needs attention'
+  if (status === 'attention') return 'Needs you'
   if (status === 'done_unread') return 'Done unread'
   if (status === 'done_read') return 'Done'
   return 'Idle'
+}
+
+const statusLaneMatchers: Record<TaskStatus, RegExp[]> = {
+  idle: [/\b(backlog|todo|waiting|ideas?)\b/i],
+  processing: [/\b(active|running|in progress|doing|working)\b/i],
+  attention: [/\b(needs you|attention|review|blocked|issue|fix)\b/i],
+  done_unread: [/\b(done|complete|completed|finished|shipped)\b/i],
+  done_read: [/\b(done|complete|completed|finished|shipped)\b/i]
 }
 
 export interface TaskStatusChangeEvent {
@@ -93,8 +102,14 @@ const mergeNotificationSettings = (settings: Partial<NotificationSettings>): Not
   }
 })
 
+const normalizeRunMode = (value: string | null | undefined): RunMode => {
+  if (value === 'branch' || value === 'worktree') return value
+  return 'worktree'
+}
+
 const withPathState = (project: Project): Project => ({
   ...project,
+  runMode: normalizeRunMode(project.runMode),
   pathMissing: !existsSync(project.path)
 })
 
@@ -568,6 +583,11 @@ export class VibeBoardStore {
     return project ? withPathState(project) : null
   }
 
+  updateProjectRunMode(projectId: string, runMode: RunMode): void {
+    const normalizedRunMode = normalizeRunMode(runMode)
+    this.db.prepare('UPDATE projects SET runMode = ? WHERE id = ?').run(normalizedRunMode, projectId)
+  }
+
   getRunningTaskCount(): number {
     const row = this.db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'processing'").get() as {
       count: number
@@ -671,13 +691,14 @@ export class VibeBoardStore {
       id: id(),
       name: input.name?.trim() || path.basename(folderPath),
       path: folderPath,
+      runMode: 'worktree',
       pathMissing: false,
       createdAt: now()
     }
 
     this.db
-      .prepare('INSERT INTO projects (id, name, path, createdAt) VALUES (?, ?, ?, ?)')
-      .run(project.id, project.name, project.path, project.createdAt)
+      .prepare('INSERT INTO projects (id, name, path, runMode, createdAt) VALUES (?, ?, ?, ?, ?)')
+      .run(project.id, project.name, project.path, project.runMode, project.createdAt)
 
     this.createTab({ name: project.name, projectId: project.id })
     return project
@@ -884,6 +905,9 @@ export class VibeBoardStore {
       title: input.title.trim() || 'Untitled task',
       summary: input.prompt?.trim() ?? '',
       status: 'idle',
+      runModeOverride: null,
+      branchName: null,
+      worktreePath: null,
       position: positionRow.position,
       createdAt: timestamp,
       updatedAt: timestamp
@@ -892,7 +916,7 @@ export class VibeBoardStore {
     const transaction = this.db.transaction(() => {
       this.db
         .prepare(
-          'INSERT INTO tasks (id, tabId, laneId, projectId, title, summary, status, position, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO tasks (id, tabId, laneId, projectId, title, summary, status, runModeOverride, branchName, worktreePath, position, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         )
         .run(
           task.id,
@@ -902,6 +926,9 @@ export class VibeBoardStore {
           task.title,
           task.summary,
           task.status,
+          task.runModeOverride,
+          task.branchName,
+          task.worktreePath,
           task.position,
           task.createdAt,
           task.updatedAt
@@ -910,6 +937,12 @@ export class VibeBoardStore {
 
     transaction()
     return task
+  }
+
+  updateTaskRunWorkspace(input: { taskId: string; branchName: string | null; worktreePath: string | null }): void {
+    this.db
+      .prepare('UPDATE tasks SET branchName = ?, worktreePath = ?, updatedAt = ? WHERE id = ?')
+      .run(input.branchName, input.worktreePath, now(), input.taskId)
   }
 
   moveTask(input: MoveTaskInput): void {
@@ -977,12 +1010,25 @@ export class VibeBoardStore {
     const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(input.taskId) as Task | undefined
     if (!task || task.status === input.status) return
     const timestamp = now()
+    const targetLane = this.findStatusLane(task.tabId, input.status)
 
-    this.db
-      .prepare('UPDATE tasks SET status = ?, updatedAt = ? WHERE id = ?')
-      .run(input.status, timestamp, input.taskId)
+    const transaction = this.db.transaction(() => {
+      if (targetLane && targetLane.id !== task.laneId) {
+        const targetPosition = this.nextTaskPosition(targetLane.id)
+        this.db
+          .prepare('UPDATE tasks SET laneId = ?, position = ?, status = ?, updatedAt = ? WHERE id = ?')
+          .run(targetLane.id, targetPosition, input.status, timestamp, input.taskId)
+        this.reorderLaneTasks(task.laneId, timestamp)
+      } else {
+        this.db
+          .prepare('UPDATE tasks SET status = ?, updatedAt = ? WHERE id = ?')
+          .run(input.status, timestamp, input.taskId)
+      }
+    })
+
+    transaction()
     this.taskStatusListener?.({
-      task: { ...task, status: input.status, updatedAt: timestamp },
+      task: { ...task, laneId: targetLane?.id ?? task.laneId, status: input.status, updatedAt: timestamp },
       oldStatus: task.status,
       newStatus: input.status
     })
@@ -992,6 +1038,29 @@ export class VibeBoardStore {
     this.db
       .prepare("UPDATE tasks SET status = 'done_read', updatedAt = ? WHERE id = ? AND status = 'done_unread'")
       .run(now(), taskId)
+  }
+
+  private findStatusLane(tabId: string, status: TaskStatus): Lane | null {
+    const lanes = this.getLanesForTab(tabId)
+    const matchers = statusLaneMatchers[status]
+    return lanes.find((lane) => matchers.some((matcher) => matcher.test(lane.name))) ?? null
+  }
+
+  private nextTaskPosition(laneId: string): number {
+    const row = this.db
+      .prepare('SELECT COALESCE(MAX(position), -1) + 1 as position FROM tasks WHERE laneId = ?')
+      .get(laneId) as { position: number }
+    return row.position
+  }
+
+  private reorderLaneTasks(laneId: string, timestamp: string): void {
+    const tasks = this.db
+      .prepare('SELECT id FROM tasks WHERE laneId = ? ORDER BY position')
+      .all(laneId) as Array<{ id: string }>
+    const updatePosition = this.db.prepare('UPDATE tasks SET position = ?, updatedAt = ? WHERE id = ?')
+    tasks.forEach((item, position) => {
+      updatePosition.run(position, timestamp, item.id)
+    })
   }
 
   private migrate(): void {
@@ -1005,6 +1074,7 @@ export class VibeBoardStore {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         path TEXT NOT NULL,
+        runMode TEXT NOT NULL DEFAULT 'worktree',
         createdAt TEXT NOT NULL
       );
 
@@ -1036,6 +1106,9 @@ export class VibeBoardStore {
         title TEXT NOT NULL,
         summary TEXT NOT NULL,
         status TEXT NOT NULL,
+        runModeOverride TEXT,
+        branchName TEXT,
+        worktreePath TEXT,
         position INTEGER NOT NULL,
         createdAt TEXT NOT NULL,
         updatedAt TEXT NOT NULL,
@@ -1085,11 +1158,23 @@ export class VibeBoardStore {
     this.ensureColumn('tabs', 'activeProjectId', 'TEXT')
     this.ensureColumn('tabs', 'position', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('tabs', 'lastUsedAt', "TEXT NOT NULL DEFAULT ''")
+    this.ensureColumn('projects', 'runMode', "TEXT NOT NULL DEFAULT 'worktree'")
+    this.ensureColumn('tasks', 'runModeOverride', 'TEXT')
+    this.ensureColumn('tasks', 'branchName', 'TEXT')
+    this.ensureColumn('tasks', 'worktreePath', 'TEXT')
     this.ensureColumn('code_changes', 'language', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('code_changes', 'diffText', "TEXT NOT NULL DEFAULT ''")
     this.backfillTabLastUsedAt()
     this.backfillTabPositions()
     this.linkLegacyTabsToProjects()
+    this.defaultProjectsToWorktree()
+  }
+
+  private defaultProjectsToWorktree(): void {
+    if (this.getSetting('defaultedProjectsToWorktree')) return
+
+    this.db.prepare("UPDATE projects SET runMode = 'worktree' WHERE runMode = 'shared'").run()
+    this.setSetting('defaultedProjectsToWorktree', now())
   }
 
   private nextTabPosition(): number {
@@ -1130,12 +1215,13 @@ export class VibeBoardStore {
       id: id(),
       name: 'VibeBoard',
       path: app.getAppPath(),
+      runMode: 'worktree',
       pathMissing: false,
       createdAt: now()
     }
     this.db
-      .prepare('INSERT INTO projects (id, name, path, createdAt) VALUES (?, ?, ?, ?)')
-      .run(project.id, project.name, project.path, project.createdAt)
+      .prepare('INSERT INTO projects (id, name, path, runMode, createdAt) VALUES (?, ?, ?, ?, ?)')
+      .run(project.id, project.name, project.path, project.runMode, project.createdAt)
 
     const productTab = this.createTab({ name: 'VibeBoard', projectId: project.id })
     this.updateTabMeta({ id: productTab.id, isPinned: true, color: '#ff7a1a' })
