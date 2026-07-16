@@ -21,17 +21,11 @@ jobs:
             artifact-name: windows
             artifact-path: |
               release/*.exe
-              release/*.exe.blockmap
-              release/latest.yml
           - os: macos-latest
             build-command: npm run dist -- --mac --publish never
             artifact-name: macos
             artifact-path: |
               release/*.dmg
-              release/*.dmg.blockmap
-              release/*.zip
-              release/*.zip.blockmap
-              release/latest-mac.yml
 
     steps:
       - uses: actions/checkout@v4
@@ -81,21 +75,6 @@ jobs:
           chmod +x "$CLIFF_BIN"
           "$CLIFF_BIN" --config cliff.toml --latest --strip header --output CHANGELOG.md
           test -s CHANGELOG.md
-
-      - name: Append download guide
-        run: |
-          cat >> CHANGELOG.md <<'EOF'
-
-          ## Which File To Download
-
-          | System | File |
-          | --- | --- |
-          | Windows | `VibeBoard-*-x64.exe` |
-          | macOS Apple Silicon | `VibeBoard-*-arm64.dmg` |
-          | macOS Intel | `VibeBoard-*-x64.dmg` |
-
-          Files ending in `.zip`, `.blockmap`, `latest.yml`, or `latest-mac.yml` are for automatic updates. Do not install those manually.
-          EOF
 
       - name: Download installers
         uses: actions/download-artifact@v4
