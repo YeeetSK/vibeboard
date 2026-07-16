@@ -25,11 +25,31 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
+import c from 'highlight.js/lib/languages/c'
+import cpp from 'highlight.js/lib/languages/cpp'
+import csharp from 'highlight.js/lib/languages/csharp'
 import css from 'highlight.js/lib/languages/css'
+import dart from 'highlight.js/lib/languages/dart'
+import dockerfile from 'highlight.js/lib/languages/dockerfile'
+import go from 'highlight.js/lib/languages/go'
+import ini from 'highlight.js/lib/languages/ini'
+import java from 'highlight.js/lib/languages/java'
 import javascript from 'highlight.js/lib/languages/javascript'
 import json from 'highlight.js/lib/languages/json'
+import kotlin from 'highlight.js/lib/languages/kotlin'
+import less from 'highlight.js/lib/languages/less'
+import lua from 'highlight.js/lib/languages/lua'
+import markdown from 'highlight.js/lib/languages/markdown'
+import php from 'highlight.js/lib/languages/php'
+import python from 'highlight.js/lib/languages/python'
+import ruby from 'highlight.js/lib/languages/ruby'
+import rust from 'highlight.js/lib/languages/rust'
+import scss from 'highlight.js/lib/languages/scss'
+import sql from 'highlight.js/lib/languages/sql'
+import swift from 'highlight.js/lib/languages/swift'
 import typescript from 'highlight.js/lib/languages/typescript'
 import xml from 'highlight.js/lib/languages/xml'
+import yaml from 'highlight.js/lib/languages/yaml'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
@@ -37,11 +57,14 @@ import {
   Check,
   CheckCircle2,
   Code2,
+  CornerDownLeft,
   Download,
   Ellipsis,
   ExternalLink,
   FolderPlus,
   FolderOpen,
+  GitCommitHorizontal,
+  GitPullRequestDraft,
   History,
   LayoutDashboard,
   MessageSquare,
@@ -54,6 +77,7 @@ import {
   Search,
   Send,
   Trash2,
+  Undo2,
   X
 } from 'lucide-react'
 import type {
@@ -73,12 +97,32 @@ import type {
 } from '../../shared/types'
 
 hljs.registerLanguage('bash', bash)
+hljs.registerLanguage('c', c)
+hljs.registerLanguage('cpp', cpp)
+hljs.registerLanguage('csharp', csharp)
 hljs.registerLanguage('css', css)
+hljs.registerLanguage('dart', dart)
+hljs.registerLanguage('dockerfile', dockerfile)
+hljs.registerLanguage('go', go)
+hljs.registerLanguage('ini', ini)
+hljs.registerLanguage('java', java)
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('json', json)
+hljs.registerLanguage('kotlin', kotlin)
+hljs.registerLanguage('less', less)
+hljs.registerLanguage('lua', lua)
+hljs.registerLanguage('markdown', markdown)
+hljs.registerLanguage('php', php)
+hljs.registerLanguage('python', python)
+hljs.registerLanguage('ruby', ruby)
+hljs.registerLanguage('rust', rust)
+hljs.registerLanguage('scss', scss)
+hljs.registerLanguage('sql', sql)
+hljs.registerLanguage('swift', swift)
 hljs.registerLanguage('tsx', typescript)
 hljs.registerLanguage('typescript', typescript)
 hljs.registerLanguage('xml', xml)
+hljs.registerLanguage('yaml', yaml)
 
 const emptyState: AppState = {
   projects: [],
@@ -145,6 +189,65 @@ interface PendingReleaseNotes {
 
 const pendingReleaseNotesStorageKey = 'vibeboard.pendingReleaseNotes'
 const seenReleaseNotesStorageKey = 'vibeboard.seenReleaseNotesVersion'
+const taskComposerDraftStoragePrefix = 'vibeboard.taskComposerDraft.'
+const commitTaskPrompt = [
+  'Commit the current working tree changes for this task.',
+  'Inspect git status and git diff first.',
+  'Stage only files that belong to this task.',
+  'Choose a concise conventional commit message yourself.',
+  'Create the commit locally.',
+  'Do not push.',
+  'If there are no commit-worthy changes, say that clearly.'
+].join('\n')
+const draftPrPrompt = [
+  'Create a draft pull request for the current task changes.',
+  'Inspect git status, current branch, and remote first.',
+  'If needed, create a focused local commit with a concise conventional commit message.',
+  'Push the branch to origin.',
+  'Open a draft PR with a clear title and useful body.',
+  'Return the PR URL when it is created.',
+  'If a draft PR cannot be created, explain the exact blocker.'
+].join('\n')
+
+function buildRevertTaskPrompt(changes: CodeChange[]): string {
+  const files = [...new Set(changes.map((change) => change.filePath).filter(Boolean))]
+  return [
+    'Revert the code changes made for this specific task only.',
+    'Inspect git status and git diff first.',
+    'Only touch the captured files listed below.',
+    'Do not revert unrelated local work.',
+    'Do not commit.',
+    'After reverting, report exactly which files changed.',
+    '',
+    'Captured files:',
+    ...files.map((file) => `- ${file}`)
+  ].join('\n')
+}
+
+function getTaskComposerDraftStorageKey(taskId: string): string {
+  return `${taskComposerDraftStoragePrefix}${taskId}`
+}
+
+function readTaskComposerDraft(taskId: string): string {
+  try {
+    return localStorage.getItem(getTaskComposerDraftStorageKey(taskId)) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function writeTaskComposerDraft(taskId: string, value: string): void {
+  try {
+    const key = getTaskComposerDraftStorageKey(taskId)
+    if (value) {
+      localStorage.setItem(key, value)
+    } else {
+      localStorage.removeItem(key)
+    }
+  } catch {
+    // Draft persistence is best-effort. The composer still works if storage is unavailable.
+  }
+}
 
 export function App(): ReactElement {
   const [state, setState] = useState<AppState>(emptyState)
@@ -158,6 +261,7 @@ export function App(): ReactElement {
   const [cursorFeedback, setCursorFeedback] = useState('')
   const [isSidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [deleteTabId, setDeleteTabId] = useState<string | null>(null)
+  const [deleteLaneId, setDeleteLaneId] = useState<string | null>(null)
   const [deleteTaskId, setDeleteTaskId] = useState<string | null>(null)
   const [quitRequest, setQuitRequest] = useState<QuitRequest | null>(null)
   const [globalSearchQuery, setGlobalSearchQuery] = useState('')
@@ -167,6 +271,8 @@ export function App(): ReactElement {
   const [releaseNotesModal, setReleaseNotesModal] = useState<PendingReleaseNotes | null>(null)
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<TaskDetail>(emptyTaskDetail)
   const [isLoadingOlderConversations, setLoadingOlderConversations] = useState(false)
+  const pendingActionsRef = useRef(new Set<string>())
+  const [, setPendingActionVersion] = useState(0)
 
   const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0]
   const activeProject = activeTab?.activeProjectId
@@ -206,6 +312,19 @@ export function App(): ReactElement {
   }, [activeTasks])
   const selectedTask = state.tasks.find((task) => task.id === selectedTaskId) ?? null
   const activeDragTask = state.tasks.find((task) => task.id === activeDragTaskId) ?? null
+
+  const runAction = async (key: string, action: () => Promise<void>): Promise<void> => {
+    if (pendingActionsRef.current.has(key)) return
+    pendingActionsRef.current.add(key)
+    setPendingActionVersion((version) => version + 1)
+    try {
+      await action()
+    } finally {
+      pendingActionsRef.current.delete(key)
+      setPendingActionVersion((version) => version + 1)
+    }
+  }
+  const isActionPending = (key: string): boolean => pendingActionsRef.current.has(key)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { delay: 180, tolerance: 6 } }),
@@ -378,13 +497,15 @@ export function App(): ReactElement {
   }
 
   const openCursorRepair = async (): Promise<void> => {
-    setInstallingCursorCli(true)
-    setCursorFeedback('Terminal install opened. VibeBoard will recheck automatically.')
-    try {
-      await window.vibeboard.openCursorInstallTerminal()
-    } finally {
-      setInstallingCursorCli(false)
-    }
+    await runAction('cursor:repair', async () => {
+      setInstallingCursorCli(true)
+      setCursorFeedback('Terminal install opened. VibeBoard will recheck automatically.')
+      try {
+        await window.vibeboard.openCursorInstallTerminal()
+      } finally {
+        setInstallingCursorCli(false)
+      }
+    })
   }
 
   const refresh = async (): Promise<void> => {
@@ -392,8 +513,10 @@ export function App(): ReactElement {
   }
 
   const createProject = async (): Promise<void> => {
-    await window.vibeboard.createProject({})
-    await refresh()
+    await runAction('project:create', async () => {
+      await window.vibeboard.createProject({})
+      await refresh()
+    })
   }
 
   const createTab = async (): Promise<void> => {
@@ -401,168 +524,227 @@ export function App(): ReactElement {
   }
 
   const closeTab = async (tabId: string): Promise<void> => {
-    await window.vibeboard.closeTab(tabId)
-    await refresh()
+    await runAction(`tab:close:${tabId}`, async () => {
+      await window.vibeboard.closeTab(tabId)
+      await refresh()
+    })
   }
 
   const reopenTab = async (tabId: string): Promise<void> => {
-    await window.vibeboard.reopenTab(tabId)
-    await refresh()
+    await runAction(`tab:reopen:${tabId}`, async () => {
+      await window.vibeboard.reopenTab(tabId)
+      await refresh()
+    })
   }
 
   const deleteTab = async (tabId: string): Promise<void> => {
-    await window.vibeboard.deleteTab(tabId)
-    setDeleteTabId(null)
-    await refresh()
+    await runAction(`tab:delete:${tabId}`, async () => {
+      await window.vibeboard.deleteTab(tabId)
+      setDeleteTabId(null)
+      await refresh()
+    })
   }
 
   const updateTabMeta = async (input: { id: string; isPinned?: boolean; color?: string | null }): Promise<void> => {
-    await window.vibeboard.updateTabMeta(input)
-    await refresh()
+    await runAction(`tab:update:${input.id}`, async () => {
+      await window.vibeboard.updateTabMeta(input)
+      await refresh()
+    })
   }
 
   const reorderTabs = async (orderedIds: string[]): Promise<void> => {
-    await window.vibeboard.reorderTabs({ orderedIds })
-    await refresh()
+    await runAction('tab:reorder', async () => {
+      await window.vibeboard.reorderTabs({ orderedIds })
+      await refresh()
+    })
   }
 
   const setActiveTab = async (tabId: string): Promise<void> => {
-    await window.vibeboard.setActiveTab(tabId)
-    await refresh()
+    await runAction(`tab:active:${tabId}`, async () => {
+      await window.vibeboard.setActiveTab(tabId)
+      await refresh()
+    })
   }
 
   const openSearchResult = async (result: SearchResult): Promise<void> => {
-    await window.vibeboard.recordSearchOpen({ result })
+    const actionKey = `search:open:${result.kind}:${result.tabId ?? result.projectId ?? result.taskId ?? result.title}`
+    await runAction(actionKey, async () => {
+      await window.vibeboard.recordSearchOpen({ result })
 
-    if (result.tabId) {
-      if (result.isClosedTab) {
-        await window.vibeboard.reopenTab(result.tabId)
-      } else {
-        await window.vibeboard.setActiveTab(result.tabId)
+      if (result.tabId) {
+        if (result.isClosedTab) {
+          await window.vibeboard.reopenTab(result.tabId)
+        } else {
+          await window.vibeboard.setActiveTab(result.tabId)
+        }
+        await refresh()
+      } else if (result.projectId) {
+        await window.vibeboard.createTab({ name: result.title, projectId: result.projectId })
+        await refresh()
       }
-      await refresh()
-    } else if (result.projectId) {
-      await window.vibeboard.createTab({ name: result.title, projectId: result.projectId })
-      await refresh()
-    }
 
-    if (result.taskId) {
-      setSelectedTaskId(result.taskId)
-    }
+      if (result.taskId) {
+        setSelectedTaskId(result.taskId)
+      }
 
-    setGlobalSearchQuery('')
-    setGlobalSearchResults([])
-    setGlobalSearchOpen(false)
+      setGlobalSearchQuery('')
+      setGlobalSearchResults([])
+      setGlobalSearchOpen(false)
+    })
   }
 
   const createLane = async (): Promise<void> => {
     if (!activeTab) return
-    await window.vibeboard.createLane({ tabId: activeTab.id, name: 'New lane' })
-    await refresh()
+    await runAction(`lane:create:${activeTab.id}`, async () => {
+      await window.vibeboard.createLane({ tabId: activeTab.id, name: 'New lane' })
+      await refresh()
+    })
   }
 
   const openActiveProjectFolder = async (): Promise<void> => {
     if (!activeProject || activeProject.pathMissing) return
-    await window.vibeboard.openProjectFolder(activeProject.id)
+    await runAction(`project:open:${activeProject.id}`, async () => {
+      await window.vibeboard.openProjectFolder(activeProject.id)
+    })
   }
 
   const relocateActiveProject = async (): Promise<void> => {
     if (!activeProject) return
-    await window.vibeboard.relocateProject(activeProject.id)
-    await refresh()
+    await runAction(`project:relocate:${activeProject.id}`, async () => {
+      await window.vibeboard.relocateProject(activeProject.id)
+      await refresh()
+    })
   }
 
   const renameActiveTab = async (name: string): Promise<void> => {
     if (!activeTab || !name.trim()) return
-    await window.vibeboard.renameTab({ id: activeTab.id, name })
-    await refresh()
+    await runAction(`tab:rename:${activeTab.id}`, async () => {
+      await window.vibeboard.renameTab({ id: activeTab.id, name })
+      await refresh()
+    })
   }
 
   const renameLane = async (id: string, name: string): Promise<void> => {
     if (!name.trim()) return
-    await window.vibeboard.renameLane({ id, name })
-    await refresh()
+    await runAction(`lane:rename:${id}`, async () => {
+      await window.vibeboard.renameLane({ id, name })
+      await refresh()
+    })
   }
 
   const deleteLane = async (id: string): Promise<void> => {
     if (activeLanes.length <= 1) return
-    await window.vibeboard.deleteLane(id)
-    await refresh()
+    await runAction(`lane:delete:${id}`, async () => {
+      setDeleteLaneId(null)
+      await window.vibeboard.deleteLane(id)
+      await refresh()
+    })
   }
 
   const deleteTask = async (id: string): Promise<void> => {
     const task = state.tasks.find((item) => item.id === id)
     if (task?.status === 'processing') return
-    if (selectedTaskId === id) {
-      setSelectedTaskId(null)
-    }
-    setDeleteTaskId(null)
-    await window.vibeboard.deleteTask(id)
-    await refresh()
+    await runAction(`task:delete:${id}`, async () => {
+      if (selectedTaskId === id) {
+        setSelectedTaskId(null)
+      }
+      setDeleteTaskId(null)
+      await window.vibeboard.deleteTask(id)
+      await refresh()
+    })
   }
 
   const finishTask = async (id: string): Promise<void> => {
     const task = state.tasks.find((item) => item.id === id)
     if (task?.status === 'processing') return
-    await window.vibeboard.updateTaskStatus({ taskId: id, status: 'done_unread' })
-    await refresh()
+    await runAction(`task:finish:${id}`, async () => {
+      await window.vibeboard.updateTaskStatus({ taskId: id, status: 'done_unread' })
+      await refresh()
+    })
   }
 
   const createTask = async (input: NewTaskInput): Promise<void> => {
     if (!activeTab || !newTaskLaneId) return
-    await window.vibeboard.createTask({
-      tabId: activeTab.id,
-      laneId: newTaskLaneId,
-      projectId: activeProject?.id ?? null,
-      title: input.title
+    await runAction(`task:create:${newTaskLaneId}`, async () => {
+      await window.vibeboard.createTask({
+        tabId: activeTab.id,
+        laneId: newTaskLaneId,
+        projectId: activeProject?.id ?? null,
+        title: input.title
+      })
+      setNewTaskLaneId(null)
+      await refresh()
     })
-    setNewTaskLaneId(null)
-    await refresh()
   }
 
   const openTask = async (task: Task): Promise<void> => {
     setSelectedTaskId(task.id)
     if (task.status === 'done_unread') {
-      await window.vibeboard.markTaskRead(task.id)
-      await refresh()
+      await runAction(`task:read:${task.id}`, async () => {
+        await window.vibeboard.markTaskRead(task.id)
+        await refresh()
+      })
     }
   }
 
   const sendTaskMessage = async (taskId: string, content: string): Promise<void> => {
     const task = state.tasks.find((item) => item.id === taskId)
     if (!cursorStatus.available || !task?.projectId) return
-    await window.vibeboard.sendTaskMessage({ taskId, content })
-    await refresh()
+    await runAction(`task:message:${taskId}`, async () => {
+      if (selectedTaskId === taskId) {
+        const optimisticEntry: ConversationEntry = {
+          id: `optimistic-${crypto.randomUUID()}`,
+          taskId,
+          role: 'user',
+          content,
+          createdAt: new Date().toISOString()
+        }
+        setSelectedTaskDetail((current) => ({
+          ...current,
+          conversations: mergeConversationEntries(current.conversations, [optimisticEntry])
+        }))
+      }
+      await window.vibeboard.sendTaskMessage({ taskId, content })
+      await refresh()
+    })
   }
 
   const cancelQuit = async (): Promise<void> => {
-    setQuitRequest(null)
-    await window.vibeboard.cancelQuit()
+    await runAction('quit:cancel', async () => {
+      setQuitRequest(null)
+      await window.vibeboard.cancelQuit()
+    })
   }
 
   const confirmQuit = async (): Promise<void> => {
-    await window.vibeboard.confirmQuit()
+    await runAction('quit:confirm', async () => {
+      await window.vibeboard.confirmQuit()
+    })
   }
 
   const downloadUpdate = async (): Promise<void> => {
-    setUpdateInfo((current) => ({
-      ...current,
-      status: 'downloading',
-      message: import.meta.env.DEV ? 'Opening release page for this development build.' : 'Starting download.',
-      progress: current.progress ?? 0
-    }))
-    setUpdateInfo(await window.vibeboard.downloadUpdate())
+    await runAction('update:download', async () => {
+      setUpdateInfo((current) => ({
+        ...current,
+        status: 'downloading',
+        message: import.meta.env.DEV ? 'Opening release page for this development build.' : 'Starting download.',
+        progress: current.progress ?? 0
+      }))
+      setUpdateInfo(await window.vibeboard.downloadUpdate())
+    })
   }
 
   const installUpdate = async (): Promise<void> => {
-    writePendingReleaseNotes(updateInfo)
-    setUpdateInfo((current) => ({
-      ...current,
-      status: 'installing',
-      message: 'Restarting to finish update.',
-      progress: 100
-    }))
-    await window.vibeboard.installUpdate()
+    await runAction('update:install', async () => {
+      writePendingReleaseNotes(updateInfo)
+      setUpdateInfo((current) => ({
+        ...current,
+        status: 'installing',
+        message: 'Restarting to finish update.',
+        progress: 100
+      }))
+      await window.vibeboard.installUpdate()
+    })
   }
 
   useEffect(() => {
@@ -699,12 +881,14 @@ export function App(): ReactElement {
     const task = state.tasks.find((item) => item.id === event.active.id)
     if (!task) return
 
-    await window.vibeboard.moveTask({
-      taskId: task.id,
-      laneId: target.laneId,
-      position: target.position
+    await runAction(`task:move:${task.id}`, async () => {
+      await window.vibeboard.moveTask({
+        taskId: task.id,
+        laneId: target.laneId,
+        position: target.position
+      })
+      await refresh()
     })
-    await refresh()
   }
 
   return (
@@ -722,6 +906,7 @@ export function App(): ReactElement {
         onReorderTabs={reorderTabs}
         onSelectTab={setActiveTab}
         onUpdateTabMeta={updateTabMeta}
+        isCreatingProject={isActionPending('project:create')}
       />
 
       <main className={isSidebarCollapsed ? 'workspace sidebar-collapsed' : 'workspace'}>
@@ -741,7 +926,13 @@ export function App(): ReactElement {
             </button>
           </div>
 
-          <button className="primary-action sidebar-project-button" type="button" onClick={createProject} title="Add project">
+          <button
+            className="primary-action sidebar-project-button"
+            type="button"
+            onClick={createProject}
+            disabled={isActionPending('project:create')}
+            title="Add project"
+          >
             <FolderPlus size={18} />
             <span>Add project</span>
           </button>
@@ -796,7 +987,7 @@ export function App(): ReactElement {
                     className="icon-text-button"
                     type="button"
                     onClick={openActiveProjectFolder}
-                    disabled={!activeProject || activeProject.pathMissing}
+                    disabled={!activeProject || activeProject.pathMissing || isActionPending(`project:open:${activeProject.id}`)}
                     title={`Open in ${openProjectLabel}`}
                   >
                     <FolderOpen size={17} />
@@ -807,13 +998,19 @@ export function App(): ReactElement {
                       className="icon-text-button needs-attention"
                       type="button"
                       onClick={relocateActiveProject}
+                      disabled={isActionPending(`project:relocate:${activeProject.id}`)}
                       title="Relocate project folder"
                     >
                       <FolderOpen size={17} />
                       <span>Relocate</span>
                     </button>
                   )}
-                  <button className="icon-text-button" type="button" onClick={createLane}>
+                  <button
+                    className="icon-text-button"
+                    type="button"
+                    onClick={createLane}
+                    disabled={isActionPending(`lane:create:${activeTab.id}`)}
+                  >
                     <Plus size={17} />
                     <span>Lane</span>
                   </button>
@@ -844,7 +1041,7 @@ export function App(): ReactElement {
                       dropPreviewPosition={dragPreviewTarget?.laneId === lane.id ? dragPreviewTarget.position : null}
                       onOpenTask={openTask}
                       onAddTask={() => setNewTaskLaneId(lane.id)}
-                      onDeleteLane={deleteLane}
+                      onDeleteLane={setDeleteLaneId}
                       onDeleteTask={setDeleteTaskId}
                       onFinishTask={finishTask}
                       canDelete={activeLanes.length > 1}
@@ -866,6 +1063,7 @@ export function App(): ReactElement {
               onCreateProject={createProject}
               onDeleteTab={(id) => setDeleteTabId(id)}
               onReopenTab={reopenTab}
+              isCreatingProject={isActionPending('project:create')}
             />
           )}
         </section>
@@ -902,6 +1100,15 @@ export function App(): ReactElement {
           }
           onClose={() => setDeleteTabId(null)}
           onConfirm={() => deleteTab(deleteTabId)}
+        />
+      )}
+
+      {deleteLaneId && (
+        <DeleteLaneModal
+          lane={state.lanes.find((lane) => lane.id === deleteLaneId) ?? null}
+          taskCount={state.tasks.filter((task) => task.laneId === deleteLaneId).length}
+          onClose={() => setDeleteLaneId(null)}
+          onConfirm={() => deleteLane(deleteLaneId)}
         />
       )}
 
@@ -955,13 +1162,15 @@ function EmptyBoard({
   projects,
   onCreateProject,
   onDeleteTab,
-  onReopenTab
+  onReopenTab,
+  isCreatingProject
 }: {
   closedTabs: BoardTab[]
   projects: Project[]
   onCreateProject: () => void
   onDeleteTab: (id: string) => void
   onReopenTab: (id: string) => void
+  isCreatingProject: boolean
 }): ReactElement {
   const [query, setQuery] = useState('')
   const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects])
@@ -986,7 +1195,7 @@ function EmptyBoard({
             <h2>Recent projects</h2>
             <span>{closedTabs.length} closed</span>
           </div>
-          <button className="primary-action" type="button" onClick={onCreateProject}>
+          <button className="primary-action" type="button" onClick={onCreateProject} disabled={isCreatingProject}>
             <FolderPlus size={18} />
             <span>Add project</span>
           </button>
@@ -1290,14 +1499,22 @@ function ReleaseNotesModal({
         </div>
         <footer className="modal-actions">
           {release.releaseUrl && (
-            <button className="secondary-action" type="button" onClick={() => window.open(release.releaseUrl ?? undefined, '_blank')}>
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={() => {
+                if (release.releaseUrl) void window.vibeboard.openExternalUrl(release.releaseUrl)
+              }}
+            >
               <ExternalLink size={15} />
               <span>GitHub</span>
             </button>
           )}
           <button className="primary-action" type="button" onClick={onClose} autoFocus>
             Done
-            <span className="key-hint">Enter</span>
+            <span className="key-hint key-hint-icon" aria-label="Enter">
+              <CornerDownLeft size={14} />
+            </span>
           </button>
         </footer>
       </section>
@@ -1373,7 +1590,8 @@ function TopBar({
   onReopenTab,
   onReorderTabs,
   onSelectTab,
-  onUpdateTabMeta
+  onUpdateTabMeta,
+  isCreatingProject
 }: {
   tabs: BoardTab[]
   closedTabs: BoardTab[]
@@ -1387,14 +1605,25 @@ function TopBar({
   onReorderTabs: (orderedIds: string[]) => void
   onSelectTab: (id: string) => void
   onUpdateTabMeta: (input: { id: string; isPinned?: boolean; color?: string | null }) => void
+  isCreatingProject: boolean
 }): ReactElement {
   const [menuState, setMenuState] = useState<{ tabId: string; x: number; y: number } | null>(null)
   const [closedMenuOpen, setClosedMenuOpen] = useState(false)
   const [closedSearch, setClosedSearch] = useState('')
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null)
-  const [dragOverTabId, setDragOverTabId] = useState<string | null>(null)
+  const [tabDropIndex, setTabDropIndex] = useState<number | null>(null)
   const menuTab = tabs.find((tab) => tab.id === menuState?.tabId) ?? null
   const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects])
+  const previewTabs = useMemo(() => {
+    if (!draggedTabId || tabDropIndex === null) return tabs
+    const draggedTab = tabs.find((tab) => tab.id === draggedTabId)
+    if (!draggedTab) return tabs
+
+    const otherTabs = tabs.filter((tab) => tab.id !== draggedTabId)
+    const nextTabs = [...otherTabs]
+    nextTabs.splice(Math.max(0, Math.min(tabDropIndex, nextTabs.length)), 0, draggedTab)
+    return nextTabs
+  }, [draggedTabId, tabDropIndex, tabs])
   const filteredClosedTabs = useMemo(() => {
     const query = closedSearch.trim().toLowerCase()
     const source = query
@@ -1418,21 +1647,33 @@ function TopBar({
     return () => window.removeEventListener('click', close)
   }, [menuState, closedMenuOpen])
 
-  const moveTab = (draggedId: string, targetId: string): void => {
-    if (draggedId === targetId) return
-    const draggedIndex = tabs.findIndex((tab) => tab.id === draggedId)
-    const targetIndex = tabs.findIndex((tab) => tab.id === targetId)
-    if (draggedIndex < 0 || targetIndex < 0) return
+  const moveTab = (draggedId: string, position: number): void => {
+    const draggedTab = tabs.find((tab) => tab.id === draggedId)
+    if (!draggedTab) return
 
-    const nextTabs = [...tabs]
-    const [draggedTab] = nextTabs.splice(draggedIndex, 1)
-    nextTabs.splice(targetIndex, 0, draggedTab)
-    onReorderTabs(nextTabs.map((tab) => tab.id))
+    const nextTabs = tabs.filter((tab) => tab.id !== draggedId)
+    nextTabs.splice(Math.max(0, Math.min(position, nextTabs.length)), 0, draggedTab)
+    const nextIds = nextTabs.map((tab) => tab.id)
+    if (nextIds.every((id, index) => id === tabs[index]?.id)) return
+    onReorderTabs(nextIds)
+  }
+
+  const getTabDropIndex = (event: ReactDragEvent<HTMLElement>, targetTabId?: string): number => {
+    if (!draggedTabId) return 0
+    const otherTabs = tabs.filter((tab) => tab.id !== draggedTabId)
+    if (!targetTabId || targetTabId === draggedTabId) return otherTabs.length
+
+    const targetIndex = otherTabs.findIndex((tab) => tab.id === targetTabId)
+    if (targetIndex < 0) return otherTabs.length
+
+    const targetRect = event.currentTarget.getBoundingClientRect()
+    const shouldInsertAfter = event.clientX > targetRect.left + targetRect.width / 2
+    return targetIndex + (shouldInsertAfter ? 1 : 0)
   }
 
   const handleTabDragStart = (event: ReactDragEvent<HTMLDivElement>, tabId: string): void => {
     setDraggedTabId(tabId)
-    setDragOverTabId(null)
+    setTabDropIndex(tabs.findIndex((tab) => tab.id === tabId))
     setMenuState(null)
     setClosedMenuOpen(false)
     event.dataTransfer.effectAllowed = 'move'
@@ -1440,37 +1681,52 @@ function TopBar({
   }
 
   const handleTabDragOver = (event: ReactDragEvent<HTMLDivElement>, tabId: string): void => {
-    if (!draggedTabId || draggedTabId === tabId) return
+    if (!draggedTabId) return
     event.preventDefault()
     event.dataTransfer.dropEffect = 'move'
-    setDragOverTabId(tabId)
+    if (draggedTabId === tabId) return
+    setTabDropIndex(getTabDropIndex(event, tabId))
   }
 
-  const handleTabDrop = (event: ReactDragEvent<HTMLDivElement>, tabId: string): void => {
+  const handleTabsDragOver = (event: ReactDragEvent<HTMLDivElement>): void => {
+    if (!draggedTabId) return
     event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    if (event.currentTarget === event.target) {
+      setTabDropIndex(tabs.filter((tab) => tab.id !== draggedTabId).length)
+    }
+  }
+
+  const handleTabDrop = (event: ReactDragEvent<HTMLElement>, targetTabId?: string): void => {
+    event.preventDefault()
+    event.stopPropagation()
     const draggedId = event.dataTransfer.getData('text/plain') || draggedTabId
     if (draggedId) {
-      moveTab(draggedId, tabId)
+      moveTab(draggedId, tabDropIndex ?? getTabDropIndex(event, targetTabId))
     }
     setDraggedTabId(null)
-    setDragOverTabId(null)
+    setTabDropIndex(null)
   }
 
   const clearTabDrag = (): void => {
     setDraggedTabId(null)
-    setDragOverTabId(null)
+    setTabDropIndex(null)
   }
 
   return (
     <div className="tabs-bar">
-      <div className="tabs">
-        {tabs.map((tab) => (
+      <div
+        className={draggedTabId ? 'tabs dragging-tab' : 'tabs'}
+        onDragOver={handleTabsDragOver}
+        onDrop={(event) => handleTabDrop(event)}
+      >
+        {previewTabs.map((tab) => (
           <div
             key={tab.id}
             draggable
             className={`tab status-${tabStatuses.get(tab.id) ?? 'idle'} ${tab.id === activeTabId ? 'active' : ''} ${
               draggedTabId === tab.id ? 'dragging' : ''
-            } ${dragOverTabId === tab.id ? 'drag-over' : ''}`}
+            }`}
             style={
               {
                 '--tab-bg': tab.color ? hexToRgba(tab.color, tab.id === activeTabId ? 0.24 : 0.14) : '#202020'
@@ -1506,7 +1762,7 @@ function TopBar({
         ))}
       </div>
       <div className="tabs-actions">
-        <button className="icon-button" type="button" onClick={onCreateTab} title="Add project">
+        <button className="icon-button" type="button" onClick={onCreateTab} disabled={isCreatingProject} title="Add project">
           <Plus size={17} />
         </button>
         {closedTabs.length > 0 && (
@@ -1704,7 +1960,9 @@ function DeleteTabModal({
           </button>
           <button className="danger-action" type="button" disabled={!isConfirmed || !canDelete} onClick={onConfirm}>
             Delete
-            <span className="key-hint">Enter</span>
+            <span className="key-hint key-hint-icon" aria-label="Enter">
+              <CornerDownLeft size={14} />
+            </span>
           </button>
         </footer>
       </section>
@@ -1766,7 +2024,71 @@ function DeleteTaskModal({
           </button>
           <button className="danger-action" type="button" onClick={onConfirm}>
             Delete
-            <span className="key-hint">Enter</span>
+            <span className="key-hint key-hint-icon" aria-label="Enter">
+              <CornerDownLeft size={14} />
+            </span>
+          </button>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
+function DeleteLaneModal({
+  lane,
+  taskCount,
+  onClose,
+  onConfirm
+}: {
+  lane: Lane | null
+  taskCount: number
+  onClose: () => void
+  onConfirm: () => void
+}): ReactElement {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={closeOnBackdropMouseDown(onClose)}>
+      <section
+        className="modal-panel compact confirm-modal"
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
+        onKeyDownCapture={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            onClose()
+          }
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            onConfirm()
+          }
+        }}
+      >
+        <header className="modal-head">
+          <div>
+            <h2>Delete lane</h2>
+            <p>{lane?.name ?? 'Lane'}</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} title="Close">
+            <X size={18} />
+          </button>
+        </header>
+        <div className="confirm-body">
+          <p>
+            {taskCount > 0
+              ? `This removes the lane and ${taskCount} task${taskCount === 1 ? '' : 's'} inside it.`
+              : 'This removes the empty lane.'}
+          </p>
+        </div>
+        <footer className="modal-actions">
+          <button className="secondary-action" type="button" onClick={onClose} autoFocus>
+            Cancel
+            <span className="key-hint">Esc</span>
+          </button>
+          <button className="danger-action" type="button" onClick={onConfirm}>
+            Delete
+            <span className="key-hint key-hint-icon" aria-label="Enter">
+              <CornerDownLeft size={14} />
+            </span>
           </button>
         </footer>
       </section>
@@ -1819,7 +2141,9 @@ function QuitConfirmModal({
           </button>
           <button className="danger-action" type="button" onClick={onConfirm}>
             Quit
-            <span className="key-hint">Enter</span>
+            <span className="key-hint key-hint-icon" aria-label="Enter">
+              <CornerDownLeft size={14} />
+            </span>
           </button>
         </footer>
       </section>
@@ -2196,7 +2520,9 @@ function TaskFormModal({
           <button className="primary-action" type="submit">
             <Plus size={18} />
             <span>Create</span>
-            <span className="key-hint">Enter</span>
+            <span className="key-hint key-hint-icon" aria-label="Enter">
+              <CornerDownLeft size={14} />
+            </span>
           </button>
         </div>
       </form>
@@ -2228,6 +2554,22 @@ function TaskDetailModal({
   onClose: () => void
 }): ReactElement {
   const canChat = Boolean(project) && canUseCursor && task.status !== 'processing'
+  const hasCapturedChanges = changes.length > 0
+
+  const requestCommit = (): void => {
+    if (!canChat || !hasCapturedChanges) return
+    onSendMessage(task.id, commitTaskPrompt)
+  }
+
+  const requestDraftPr = (): void => {
+    if (!canChat || !hasCapturedChanges) return
+    onSendMessage(task.id, draftPrPrompt)
+  }
+
+  const requestRevert = (): void => {
+    if (!canChat || !hasCapturedChanges) return
+    onSendMessage(task.id, buildRevertTaskPrompt(changes))
+  }
 
   return (
     <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
@@ -2238,6 +2580,40 @@ function TaskDetailModal({
             <p>{project?.name ?? 'No project'}</p>
           </div>
           <div className="modal-head-actions">
+            {hasCapturedChanges && (
+              <>
+                <button
+                  className="icon-text-button task-git-action"
+                  type="button"
+                  onClick={requestCommit}
+                  disabled={!canChat}
+                  title="Ask agent to commit these changes"
+                >
+                  <GitCommitHorizontal size={16} />
+                  <span>Commit</span>
+                </button>
+                <button
+                  className="icon-text-button task-git-action"
+                  type="button"
+                  onClick={requestDraftPr}
+                  disabled={!canChat}
+                  title="Ask agent to create a draft pull request"
+                >
+                  <GitPullRequestDraft size={16} />
+                  <span>Draft PR</span>
+                </button>
+                <button
+                  className="icon-text-button task-git-action danger"
+                  type="button"
+                  onClick={requestRevert}
+                  disabled={!canChat}
+                  title="Ask agent to revert this task's captured changes"
+                >
+                  <Undo2 size={16} />
+                  <span>Revert</span>
+                </button>
+              </>
+            )}
             <button className="icon-button" type="button" onClick={onClose} title="Close">
               <X size={18} />
             </button>
@@ -2251,6 +2627,7 @@ function TaskDetailModal({
               <span>Prompt</span>
             </div>
             <AgentThread
+              key={task.id}
               conversations={conversations}
               task={task}
               hasOlderConversations={hasOlderConversations}
@@ -2303,7 +2680,7 @@ function AgentThread({
   onLoadOlderConversations: () => void
   onSendMessage: (taskId: string, content: string) => void
 }): ReactElement {
-  const [draft, setDraft] = useState('')
+  const [draft, setDraft] = useState(() => readTaskComposerDraft(task.id))
   const [activePromptId, setActivePromptId] = useState<string | null>(null)
   const streamRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
@@ -2336,10 +2713,18 @@ function AgentThread({
   }, [latestUserEntry?.id, task.id])
 
   useEffect(() => {
+    setDraft(readTaskComposerDraft(task.id))
+  }, [task.id])
+
+  useEffect(() => {
+    writeTaskComposerDraft(task.id, draft)
+  }, [draft, task.id])
+
+  useEffect(() => {
     const composer = composerRef.current
     if (!composer) return
-    composer.style.height = '0px'
-    composer.style.height = `${Math.min(composer.scrollHeight, 150)}px`
+    composer.style.height = '36px'
+    composer.style.height = `${Math.min(Math.max(composer.scrollHeight, 36), 120)}px`
   }, [draft])
 
   useEffect(() => {
@@ -2397,14 +2782,19 @@ function AgentThread({
     const content = draft.trim()
     if (!canSend || !content) return
     onSendMessage(task.id, content)
+    writeTaskComposerDraft(task.id, '')
     setDraft('')
   }
 
   return (
     <div className="agent-thread">
       {prompt && (
-        <section className="prompt-panel">
-          <p>{prompt}</p>
+        <section className="prompt-panel agent-step role-user">
+          <MessageSquare size={16} />
+          <div>
+            <strong className="agent-step-label">Prompt</strong>
+            <p>{prompt}</p>
+          </div>
         </section>
       )}
 
@@ -2454,7 +2844,7 @@ function AgentThread({
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           disabled={!canSend}
-          rows={2}
+          rows={1}
           placeholder={canSend ? 'Message' : disabledLabel}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
@@ -2479,7 +2869,14 @@ function MessageMarkdown({ content }: { content: string }): ReactElement {
         components={{
           a({ href, children }) {
             return (
-              <a href={href} target="_blank" rel="noreferrer">
+              <a
+                href={href}
+                onClick={(event) => {
+                  if (!href) return
+                  event.preventDefault()
+                  void window.vibeboard.openExternalUrl(href)
+                }}
+              >
                 {children}
               </a>
             )
@@ -2525,7 +2922,7 @@ function isNoisyConversationEntry(entry: ConversationEntry): boolean {
 }
 
 function cleanConversationContent(content: string): string {
-  return content
+  return stripLeadingActualMessageMarker(content)
     .split(/\r?\n/)
     .map((line) => cleanConversationLine(line))
     .filter((line) => line && !isProgressNarrationLine(line))
@@ -2536,7 +2933,6 @@ function cleanConversationContent(content: string): string {
 function cleanConversationLine(line: string): string {
   return line
     .trim()
-    .replaceAll('VibeBoardStartActualMessage', '')
     .replace(cursorStreamMarkerPattern(), '')
     .replace(
       /^(?:init|start|started|completed|success|done|end)\s+(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s+)?/i,
@@ -2552,6 +2948,10 @@ function cleanConversationLine(line: string): string {
     .replace(/\s+(?:(?:started|completed|success|done|end)\s*)+$/i, '')
     .replace(/[ \t]{2,}/g, ' ')
     .trim()
+}
+
+function stripLeadingActualMessageMarker(content: string): string {
+  return content.replace(/^\s*VibeBoardStartActualMessage\s*(?:\r?\n|$)/, '')
 }
 
 function cursorStreamMarkerPattern(): RegExp {
@@ -2579,7 +2979,15 @@ function mergeConversationEntries(left: ConversationEntry[], right: Conversation
   for (const entry of right) {
     entriesById.set(entry.id, entry)
   }
-  return Array.from(entriesById.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  const entries = Array.from(entriesById.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  const realEntryKeys = new Set(
+    entries
+      .filter((entry) => !entry.id.startsWith('optimistic-'))
+      .map((entry) => `${entry.taskId}:${entry.role}:${entry.content}`)
+  )
+  return entries.filter(
+    (entry) => !entry.id.startsWith('optimistic-') || !realEntryKeys.has(`${entry.taskId}:${entry.role}:${entry.content}`)
+  )
 }
 
 function compactConversationEntries(entries: ConversationEntry[]): ConversationEntry[] {
@@ -2627,11 +3035,12 @@ function ChangeSummary({ changes }: { changes: CodeChange[] }): ReactElement {
 
 function DiffViewer({ change }: { change: CodeChange }): ReactElement {
   const diffText = useMemo(() => change.diffText.trim() || fallbackDiff(change), [change])
-  const rows = useMemo(() => parseDiffRows(diffText), [diffText])
+  const rows = useMemo(() => compactDiffRows(parseDiffRows(diffText)), [diffText])
   const language = useMemo(
     () => normalizeLanguage(change.language || languageFromPath(change.filePath)),
     [change.filePath, change.language]
   )
+  const languageLabel = useMemo(() => displayLanguage(language), [language])
 
   return (
     <article className="diff-file">
@@ -2640,18 +3049,18 @@ function DiffViewer({ change }: { change: CodeChange }): ReactElement {
           <span className={`change-type ${change.changeType}`}>{change.changeType}</span>
           <strong>{change.filePath}</strong>
         </div>
-        <span>{change.language || languageFromPath(change.filePath)}</span>
+        <span>{languageLabel}</span>
       </header>
       <div className="diff-table" role="table" aria-label={`${change.filePath} diff`}>
         <div className="diff-rows">
           {rows.map((row, index) => {
             return (
               <div key={`${index}-${row.raw}`} className={`diff-line ${row.kind}`} role="row">
-                <span className="diff-gutter">{row.kind === 'context' ? ' ' : (row.raw[0] ?? ' ')}</span>
+                <span className="diff-gutter">{diffGutterLabel(row)}</span>
                 <span className="diff-number">{row.newLine ?? row.oldLine ?? ''}</span>
                 <code
                   dangerouslySetInnerHTML={{
-                    __html: row.kind === 'hunk' ? escapeHtml(row.text) : highlightCode(row.text, language)
+                    __html: row.kind === 'hunk' || row.kind === 'omitted' ? escapeHtml(row.text) : highlightCode(row.text, language)
                   }}
                 />
               </div>
@@ -2666,7 +3075,7 @@ function DiffViewer({ change }: { change: CodeChange }): ReactElement {
 interface DiffRow {
   raw: string
   text: string
-  kind: 'added' | 'removed' | 'hunk' | 'context'
+  kind: 'added' | 'removed' | 'hunk' | 'context' | 'omitted'
   oldLine: number | null
   newLine: number | null
 }
@@ -2705,6 +3114,85 @@ function parseDiffRows(diffText: string): DiffRow[] {
   return rows
 }
 
+function compactDiffRows(rows: DiffRow[], contextLimit = 6): DiffRow[] {
+  const compacted: DiffRow[] = []
+  let index = 0
+
+  while (index < rows.length) {
+    const hunk = rows[index]
+    if (hunk?.kind !== 'hunk') {
+      compacted.push(hunk)
+      index += 1
+      continue
+    }
+
+    const hunkRows: DiffRow[] = [hunk]
+    index += 1
+    while (index < rows.length && rows[index]?.kind !== 'hunk') {
+      hunkRows.push(rows[index])
+      index += 1
+    }
+
+    compacted.push(...compactHunkRows(hunkRows, contextLimit))
+  }
+
+  return compacted
+}
+
+function compactHunkRows(rows: DiffRow[], contextLimit: number): DiffRow[] {
+  const body = rows.slice(1)
+  const changedIndexes = body
+    .map((row, index) => (row.kind === 'added' || row.kind === 'removed' ? index : -1))
+    .filter((index) => index >= 0)
+
+  if (changedIndexes.length === 0) return rows
+
+  const keepIndexes = new Set<number>()
+  for (const changedIndex of changedIndexes) {
+    const start = Math.max(0, changedIndex - contextLimit)
+    const end = Math.min(body.length - 1, changedIndex + contextLimit)
+    for (let index = start; index <= end; index += 1) {
+      keepIndexes.add(index)
+    }
+  }
+
+  const compacted: DiffRow[] = [rows[0]]
+  let omittedCount = 0
+  for (let index = 0; index < body.length; index += 1) {
+    const row = body[index]
+    if (keepIndexes.has(index)) {
+      if (omittedCount > 0) {
+        compacted.push(omittedDiffRow(omittedCount))
+        omittedCount = 0
+      }
+      compacted.push(row)
+    } else {
+      omittedCount += 1
+    }
+  }
+
+  if (omittedCount > 0) {
+    compacted.push(omittedDiffRow(omittedCount))
+  }
+
+  return compacted
+}
+
+function omittedDiffRow(count: number): DiffRow {
+  return {
+    raw: `... ${count} unchanged ${count === 1 ? 'line' : 'lines'}`,
+    text: `... ${count} unchanged ${count === 1 ? 'line' : 'lines'}`,
+    kind: 'omitted',
+    oldLine: null,
+    newLine: null
+  }
+}
+
+function diffGutterLabel(row: DiffRow): string {
+  if (row.kind === 'context' || row.kind === 'omitted' || row.kind === 'hunk') return ' '
+  return row.raw[0] ?? ' '
+}
+
 function diffLineKind(line: string): 'added' | 'removed' | 'hunk' | 'context' {
   if (line.startsWith('@@')) return 'hunk'
   if (line.startsWith('+')) return 'added'
@@ -2728,22 +3216,80 @@ function fallbackDiff(change: CodeChange): string {
 function languageFromPath(filePath: string): string {
   const extension = filePath.split('.').pop()?.toLowerCase()
   const languageMap: Record<string, string> = {
+    c: 'c',
+    cc: 'cpp',
+    cpp: 'cpp',
     css: 'css',
+    cxx: 'cpp',
+    dart: 'dart',
+    dockerfile: 'dockerfile',
+    go: 'go',
+    h: 'c',
+    hpp: 'cpp',
     html: 'xml',
+    ini: 'ini',
+    java: 'java',
     js: 'javascript',
     jsx: 'javascript',
     json: 'json',
+    kt: 'kotlin',
+    kts: 'kotlin',
+    less: 'less',
+    lua: 'lua',
+    md: 'markdown',
     mjs: 'javascript',
+    php: 'php',
+    py: 'python',
+    rb: 'ruby',
+    rs: 'rust',
+    scss: 'scss',
     sh: 'bash',
+    sql: 'sql',
+    swift: 'swift',
     ts: 'typescript',
     tsx: 'tsx',
-    xml: 'xml'
+    xml: 'xml',
+    yaml: 'yaml',
+    yml: 'yaml'
   }
   return extension ? languageMap[extension] || '' : ''
 }
 
 function normalizeLanguage(language: string): string {
-  return language === 'ts' ? 'typescript' : language
+  const normalized = language.toLowerCase()
+  const aliases: Record<string, string> = {
+    cs: 'csharp',
+    docker: 'dockerfile',
+    htm: 'xml',
+    html: 'xml',
+    js: 'javascript',
+    jsx: 'javascript',
+    kt: 'kotlin',
+    md: 'markdown',
+    py: 'python',
+    rb: 'ruby',
+    rs: 'rust',
+    ts: 'typescript',
+    yml: 'yaml'
+  }
+  return aliases[normalized] ?? normalized
+}
+
+function displayLanguage(language: string): string {
+  const labels: Record<string, string> = {
+    bash: 'shell',
+    csharp: 'c#',
+    cpp: 'c++',
+    dockerfile: 'dockerfile',
+    javascript: 'javascript',
+    markdown: 'markdown',
+    plaintext: 'text',
+    tsx: 'typescript',
+    typescript: 'typescript',
+    xml: 'html',
+    yaml: 'yaml'
+  }
+  return labels[language] ?? language
 }
 
 function escapeHtml(value: string): string {

@@ -48,6 +48,7 @@ const api: VibeBoardApi = {
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke('project:create', input),
   relocateProject: (projectId: string) => ipcRenderer.invoke('project:relocate', projectId),
   openProjectFolder: (projectId: string) => ipcRenderer.invoke('project:openFolder', projectId),
+  openExternalUrl: (url: string) => ipcRenderer.invoke('shell:openExternal', url),
   createTab: (input: CreateTabInput) => ipcRenderer.invoke('tab:create', input),
   renameTab: (input: RenameInput) => ipcRenderer.invoke('tab:rename', input),
   updateTabMeta: (input: UpdateTabMetaInput) => ipcRenderer.invoke('tab:updateMeta', input),

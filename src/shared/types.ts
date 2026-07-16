@@ -222,6 +222,7 @@ export interface VibeBoardApi {
   createProject: (input: CreateProjectInput) => Promise<Project | null>
   relocateProject: (projectId: string) => Promise<Project | null>
   openProjectFolder: (projectId: string) => Promise<void>
+  openExternalUrl: (url: string) => Promise<void>
   createTab: (input: CreateTabInput) => Promise<BoardTab>
   renameTab: (input: RenameInput) => Promise<void>
   updateTabMeta: (input: UpdateTabMetaInput) => Promise<void>
