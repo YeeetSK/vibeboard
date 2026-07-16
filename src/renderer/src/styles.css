@@ -928,6 +928,7 @@ button {
 .sidebar-collapsed .sidebar-project-button span,
 .sidebar-collapsed .global-search-launcher span,
 .sidebar-collapsed .global-search-launcher kbd,
+.sidebar-collapsed .notification-launcher span,
 .sidebar-collapsed .update-panel,
 .sidebar-collapsed .panel {
   display: none;
@@ -935,7 +936,8 @@ button {
 
 .sidebar-collapsed .sidebar-toggle,
 .sidebar-collapsed .sidebar-project-button,
-.sidebar-collapsed .global-search-launcher {
+.sidebar-collapsed .global-search-launcher,
+.sidebar-collapsed .notification-launcher {
   width: 38px;
   height: 38px;
   min-height: 38px;
@@ -945,12 +947,14 @@ button {
 
 .sidebar-collapsed .sidebar-toggle svg,
 .sidebar-collapsed .sidebar-project-button svg,
-.sidebar-collapsed .global-search-launcher svg {
+.sidebar-collapsed .global-search-launcher svg,
+.sidebar-collapsed .notification-launcher svg {
   width: 18px;
   height: 18px;
 }
 
-.sidebar-collapsed .global-search-launcher {
+.sidebar-collapsed .global-search-launcher,
+.sidebar-collapsed .notification-launcher {
   display: grid;
   grid-template-columns: 1fr;
   place-items: center;
@@ -1005,6 +1009,107 @@ button {
   font-family: inherit;
   font-size: 11px;
   font-weight: 700;
+}
+
+.notification-settings-modal {
+  width: min(540px, 92vw);
+  overflow: hidden;
+}
+
+.notification-settings-body {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px 16px;
+}
+
+.settings-section {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: #191919;
+}
+
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text);
+}
+
+.settings-toggle-row > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-toggle-row strong {
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.settings-section input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+}
+
+.settings-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.settings-fields label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings-input {
+  width: 100%;
+  height: 32px;
+  border-color: var(--line-soft);
+  background: #141414;
+}
+
+.settings-input:disabled,
+.notification-event-grid input:disabled + span {
+  opacity: 0.45;
+}
+
+.notification-event-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.notification-event-grid label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.notification-actions {
+  align-items: center;
+  gap: 10px;
+  min-height: 64px;
+  padding: 14px 18px 18px;
+  border-top: 1px solid var(--line-soft);
+  background: #171717;
+}
+
+.settings-feedback {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .command-search-backdrop {
@@ -1752,26 +1857,35 @@ button {
 }
 
 .task-card.status-processing {
-  border-color: rgba(255, 122, 26, 0.5);
+  border-color: rgba(255, 122, 26, 0.28);
   box-shadow: 0 0 12px rgba(255, 122, 26, 0.12);
 }
 
 .task-card.status-processing::after {
   position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 0;
-  width: 62px;
-  height: 18px;
-  border-radius: 999px;
-  background: radial-gradient(circle, rgba(255, 186, 92, 0.88) 0%, rgba(255, 122, 26, 0.42) 42%, transparent 74%);
+  inset: -2px;
+  z-index: -1;
+  border-radius: 9px;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--processing-angle),
+    transparent 0deg,
+    transparent 245deg,
+    rgba(255, 184, 92, 0.98) 292deg,
+    var(--accent) 326deg,
+    transparent 360deg
+  );
   content: "";
-  filter: blur(5px);
-  offset-path: inset(1px round 7px);
-  offset-rotate: 0deg;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
   pointer-events: none;
-  transform: translate(-50%, -50%);
-  animation: processing-travel 1.15s linear infinite;
+  animation: processing-border-spin 1.15s linear infinite;
 }
 
 .task-card.status-attention {
@@ -1790,12 +1904,18 @@ button {
   opacity: 0.78;
 }
 
-@keyframes processing-travel {
+@property --processing-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes processing-border-spin {
   from {
-    offset-distance: 0%;
+    --processing-angle: 0deg;
   }
   to {
-    offset-distance: 100%;
+    --processing-angle: 360deg;
   }
 }
 
@@ -2229,18 +2349,6 @@ button:focus-visible {
   overflow: hidden;
 }
 
-.prompt-panel p {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  margin: 0;
-  color: var(--text);
-  line-height: 1.45;
-  max-height: 4.35em;
-  overflow-wrap: anywhere;
-  overflow: hidden;
-}
-
 .thread-empty-state {
   color: var(--muted);
   font-size: 14px;
@@ -2295,6 +2403,27 @@ button:focus-visible {
 
 .role-user .agent-step-label {
   color: var(--text);
+}
+
+.user-message-bubble {
+  width: fit-content;
+  max-width: min(78ch, 100%);
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: #222222;
+  color: var(--text);
+}
+
+.prompt-panel .user-message-bubble {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.role-user .message-markdown {
+  max-width: none;
 }
 
 .role-system {
@@ -2372,18 +2501,17 @@ button:focus-visible {
 }
 
 .markdown-table-wrap {
-  width: fit-content;
-  max-width: 100%;
+  width: 100%;
   margin: 12px 0;
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #191919;
 }
 
 .message-markdown table {
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   background: #191919;
 }
@@ -2394,6 +2522,9 @@ button:focus-visible {
   border: 1px solid var(--line-soft);
   text-align: left;
   vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .message-markdown th {

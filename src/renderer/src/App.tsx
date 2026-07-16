@@ -54,6 +54,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   AlertTriangle,
+  Bell,
   Check,
   CheckCircle2,
   Code2,
@@ -68,14 +69,17 @@ import {
   History,
   LayoutDashboard,
   MessageSquare,
+  Monitor,
   PanelLeftClose,
   PanelLeftOpen,
+  Pencil,
   Plus,
   Pin,
   RadioTower,
   RotateCcw,
   Search,
   Send,
+  Smartphone,
   Trash2,
   Undo2,
   X
@@ -94,6 +98,8 @@ import type {
   Task,
   TaskDetail,
   UpdateInfo,
+  NotificationEventSettings,
+  NotificationSettings,
 } from '../../shared/types'
 
 hljs.registerLanguage('bash', bash)
@@ -182,6 +188,25 @@ const emptyUpdateInfo: UpdateInfo = {
   releaseNotes: null
 }
 
+const emptyNotificationSettings: NotificationSettings = {
+  desktopEnabled: false,
+  desktopEvents: {
+    taskCompleted: true,
+    taskFailed: true,
+    allTasksFinished: false
+  },
+  ntfy: {
+    enabled: false,
+    serverUrl: 'https://ntfy.sh',
+    topic: '',
+    events: {
+      taskCompleted: true,
+      taskFailed: true,
+      allTasksFinished: false
+    }
+  }
+}
+
 interface PendingReleaseNotes {
   version: string
   notes: string | null
@@ -264,11 +289,15 @@ export function App(): ReactElement {
   const [deleteTabId, setDeleteTabId] = useState<string | null>(null)
   const [deleteLaneId, setDeleteLaneId] = useState<string | null>(null)
   const [deleteTaskId, setDeleteTaskId] = useState<string | null>(null)
+  const [renameTaskId, setRenameTaskId] = useState<string | null>(null)
   const [quitRequest, setQuitRequest] = useState<QuitRequest | null>(null)
   const [globalSearchQuery, setGlobalSearchQuery] = useState('')
   const [globalSearchResults, setGlobalSearchResults] = useState<SearchResult[]>([])
   const [isGlobalSearchOpen, setGlobalSearchOpen] = useState(false)
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo>(emptyUpdateInfo)
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(emptyNotificationSettings)
+  const [isNotificationSettingsOpen, setNotificationSettingsOpen] = useState(false)
+  const [notificationFeedback, setNotificationFeedback] = useState('')
   const [releaseNotesModal, setReleaseNotesModal] = useState<PendingReleaseNotes | null>(null)
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<TaskDetail>(emptyTaskDetail)
   const [isLoadingOlderConversations, setLoadingOlderConversations] = useState(false)
@@ -345,6 +374,7 @@ export function App(): ReactElement {
       setUpdateInfo(info)
     })
     window.vibeboard.getUpdateInfo().then(setUpdateInfo)
+    window.vibeboard.getNotificationSettings().then(setNotificationSettings)
     return () => {
       stopStateListener()
       stopQuitListener()
@@ -664,6 +694,16 @@ export function App(): ReactElement {
     })
   }
 
+  const renameTask = async (id: string, title: string): Promise<void> => {
+    const task = state.tasks.find((item) => item.id === id)
+    if (!title.trim() || task?.status === 'processing') return
+    await runAction(`task:rename:${id}`, async () => {
+      await window.vibeboard.renameTask({ id, name: title })
+      setRenameTaskId(null)
+      await refresh()
+    })
+  }
+
   const createTask = async (input: NewTaskInput): Promise<void> => {
     if (!activeTab || !newTaskLaneId) return
     await runAction(`task:create:${newTaskLaneId}`, async () => {
@@ -756,6 +796,23 @@ export function App(): ReactElement {
     })
   }
 
+  const saveNotificationSettings = async (settings: NotificationSettings): Promise<void> => {
+    await runAction('notifications:save', async () => {
+      const nextSettings = await window.vibeboard.updateNotificationSettings(settings)
+      setNotificationSettings(nextSettings)
+      setNotificationFeedback('Saved')
+    })
+  }
+
+  const testNotificationSettings = async (settings: NotificationSettings): Promise<void> => {
+    await runAction('notifications:test', async () => {
+      const nextSettings = await window.vibeboard.updateNotificationSettings(settings)
+      setNotificationSettings(nextSettings)
+      await window.vibeboard.sendTestNotification()
+      setNotificationFeedback('Test sent')
+    })
+  }
+
   useEffect(() => {
     const switchToTab = async (tabId: string): Promise<void> => {
       await window.vibeboard.setActiveTab(tabId)
@@ -806,6 +863,11 @@ export function App(): ReactElement {
           setNewTaskLaneId(null)
           return
         }
+        if (renameTaskId) {
+          event.preventDefault()
+          setRenameTaskId(null)
+          return
+        }
         if (selectedTaskId) {
           event.preventDefault()
           setSelectedTaskId(null)
@@ -846,7 +908,7 @@ export function App(): ReactElement {
 
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [activeTab, deleteTabId, deleteTaskId, isGlobalSearchOpen, newTaskLaneId, quitRequest, selectedTaskId, state.tabs])
+  }, [activeTab, deleteTabId, deleteTaskId, isGlobalSearchOpen, newTaskLaneId, quitRequest, renameTaskId, selectedTaskId, state.tabs])
 
   const onDragStart = (event: DragStartEvent): void => {
     setActiveDragTaskId(String(event.active.id))
@@ -947,6 +1009,12 @@ export function App(): ReactElement {
           </button>
 
           <GlobalSearchLauncher onOpen={() => setGlobalSearchOpen(true)} />
+          <NotificationLauncher
+            onOpen={() => {
+              setNotificationFeedback('')
+              setNotificationSettingsOpen(true)
+            }}
+          />
 
           <section className="panel board-snapshot">
             <div className="panel-title">
@@ -1053,6 +1121,7 @@ export function App(): ReactElement {
                       onDeleteLane={setDeleteLaneId}
                       onDeleteTask={setDeleteTaskId}
                       onFinishTask={finishTask}
+                      onRenameTask={setRenameTaskId}
                       canDelete={activeLanes.length > 1}
                       onRenameLane={renameLane}
                     />
@@ -1097,6 +1166,14 @@ export function App(): ReactElement {
           onLoadOlderConversations={loadOlderSelectedTaskConversations}
           onSendMessage={sendTaskMessage}
           onClose={() => setSelectedTaskId(null)}
+        />
+      )}
+
+      {renameTaskId && (
+        <RenameTaskModal
+          task={state.tasks.find((task) => task.id === renameTaskId) ?? null}
+          onClose={() => setRenameTaskId(null)}
+          onSubmit={(title) => renameTask(renameTaskId, title)}
         />
       )}
 
@@ -1147,6 +1224,17 @@ export function App(): ReactElement {
             setGlobalSearchQuery('')
           }}
           onOpenResult={openSearchResult}
+        />
+      )}
+
+      {isNotificationSettingsOpen && (
+        <NotificationSettingsModal
+          settings={notificationSettings}
+          feedback={notificationFeedback}
+          isSaving={isActionPending('notifications:save') || isActionPending('notifications:test')}
+          onClose={() => setNotificationSettingsOpen(false)}
+          onSave={saveNotificationSettings}
+          onTest={testNotificationSettings}
         />
       )}
 
@@ -1271,6 +1359,226 @@ function GlobalSearchLauncher({ onOpen }: { onOpen: () => void }): ReactElement 
       <span>Search</span>
       <kbd>{navigator.userAgent.includes('Mac') ? '⌘K' : 'Ctrl K'}</kbd>
     </button>
+  )
+}
+
+function NotificationLauncher({ onOpen }: { onOpen: () => void }): ReactElement {
+  return (
+    <button className="global-search-launcher notification-launcher" type="button" onClick={onOpen} title="Notifications">
+      <Bell size={16} />
+      <span>Notifications</span>
+    </button>
+  )
+}
+
+function NotificationSettingsModal({
+  settings,
+  feedback,
+  isSaving,
+  onClose,
+  onSave,
+  onTest
+}: {
+  settings: NotificationSettings
+  feedback: string
+  isSaving: boolean
+  onClose: () => void
+  onSave: (settings: NotificationSettings) => Promise<void>
+  onTest: (settings: NotificationSettings) => Promise<void>
+}): ReactElement {
+  const [draft, setDraft] = useState(settings)
+
+  useEffect(() => {
+    setDraft(settings)
+  }, [settings])
+
+  const setDesktopEvent = (key: keyof NotificationEventSettings, value: boolean): void => {
+    setDraft((current) => ({
+      ...current,
+      desktopEvents: {
+        ...current.desktopEvents,
+        [key]: value
+      }
+    }))
+  }
+
+  const setNtfyEvent = (key: keyof NotificationEventSettings, value: boolean): void => {
+    setDraft((current) => ({
+      ...current,
+      ntfy: {
+        ...current.ntfy,
+        events: {
+          ...current.ntfy.events,
+          [key]: value
+        }
+      }
+    }))
+  }
+
+  const save = (): void => {
+    void onSave(draft)
+  }
+
+  const test = (): void => {
+    void onTest(draft)
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={closeOnBackdropMouseDown(onClose)}>
+      <section
+        className="modal-panel compact notification-settings-modal"
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
+        onKeyDownCapture={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            onClose()
+          }
+          if (event.key === 'Enter' && (event.target as HTMLElement).tagName !== 'TEXTAREA') {
+            event.preventDefault()
+            save()
+          }
+        }}
+      >
+        <header className="modal-head">
+          <div>
+            <h2>Notifications</h2>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} title="Close">
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="notification-settings-body">
+          <section className="settings-section">
+            <label className="settings-toggle-row">
+              <span>
+                <Monitor size={15} />
+                <strong>Desktop</strong>
+              </span>
+              <input
+                type="checkbox"
+                checked={draft.desktopEnabled}
+                onChange={(event) => setDraft((current) => ({ ...current, desktopEnabled: event.target.checked }))}
+              />
+            </label>
+            <NotificationEventChecks
+              events={draft.desktopEvents}
+              disabled={!draft.desktopEnabled}
+              onChange={setDesktopEvent}
+            />
+          </section>
+
+          <section className="settings-section">
+            <label className="settings-toggle-row">
+              <span>
+                <Smartphone size={15} />
+                <strong>ntfy.sh</strong>
+              </span>
+              <input
+                type="checkbox"
+                checked={draft.ntfy.enabled}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    ntfy: { ...current.ntfy, enabled: event.target.checked }
+                  }))
+                }
+              />
+            </label>
+            <div className="settings-fields">
+              <label>
+                <span>Server</span>
+                <input
+                  className="settings-input"
+                  value={draft.ntfy.serverUrl}
+                  disabled={!draft.ntfy.enabled}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      ntfy: { ...current.ntfy, serverUrl: event.target.value }
+                    }))
+                  }
+                  placeholder="https://ntfy.sh"
+                />
+              </label>
+              <label>
+                <span>Topic</span>
+                <input
+                  className="settings-input"
+                  value={draft.ntfy.topic}
+                  disabled={!draft.ntfy.enabled}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      ntfy: { ...current.ntfy, topic: event.target.value }
+                    }))
+                  }
+                  placeholder="your-topic"
+                />
+              </label>
+            </div>
+            <NotificationEventChecks events={draft.ntfy.events} disabled={!draft.ntfy.enabled} onChange={setNtfyEvent} />
+          </section>
+        </div>
+
+        <footer className="modal-actions notification-actions">
+          <span className="settings-feedback">{feedback}</span>
+          <button className="secondary-action" type="button" onClick={test} disabled={isSaving}>
+            Test
+          </button>
+          <button className="primary-action" type="button" onClick={save} disabled={isSaving}>
+            Save
+            <span className="key-hint key-hint-icon" aria-label="Enter">
+              <CornerDownLeft size={14} />
+            </span>
+          </button>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
+function NotificationEventChecks({
+  events,
+  disabled,
+  onChange
+}: {
+  events: NotificationEventSettings
+  disabled: boolean
+  onChange: (key: keyof NotificationEventSettings, value: boolean) => void
+}): ReactElement {
+  return (
+    <div className="notification-event-grid">
+      <label>
+        <input
+          type="checkbox"
+          checked={events.taskCompleted}
+          disabled={disabled}
+          onChange={(event) => onChange('taskCompleted', event.target.checked)}
+        />
+        <span>Task completed</span>
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={events.taskFailed}
+          disabled={disabled}
+          onChange={(event) => onChange('taskFailed', event.target.checked)}
+        />
+        <span>Task failed</span>
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={events.allTasksFinished}
+          disabled={disabled}
+          onChange={(event) => onChange('allTasksFinished', event.target.checked)}
+        />
+        <span>All tasks finished</span>
+      </label>
+    </div>
   )
 }
 
@@ -2199,6 +2507,7 @@ function LaneColumn({
   onDeleteLane,
   onDeleteTask,
   onFinishTask,
+  onRenameTask,
   canDelete,
   onRenameLane
 }: {
@@ -2211,6 +2520,7 @@ function LaneColumn({
   onDeleteLane: (id: string) => void
   onDeleteTask: (id: string) => void
   onFinishTask: (id: string) => void
+  onRenameTask: (id: string) => void
   canDelete: boolean
   onRenameLane: (id: string, name: string) => void
 }): ReactElement {
@@ -2251,6 +2561,7 @@ function LaneColumn({
                 onOpen={() => onOpenTask(task)}
                 onDelete={() => onDeleteTask(task.id)}
                 onFinish={() => onFinishTask(task.id)}
+                onRename={() => onRenameTask(task.id)}
               />
             )
 
@@ -2323,12 +2634,14 @@ function TaskCard({
   task,
   onOpen,
   onDelete,
-  onFinish
+  onFinish,
+  onRename
 }: {
   task: Task
   onOpen: () => void
   onDelete: () => void
   onFinish: () => void
+  onRename: () => void
 }): ReactElement {
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const cardRef = useRef<HTMLElement | null>(null)
@@ -2401,6 +2714,18 @@ function TaskCard({
           </button>
           {isMenuOpen && (
             <div className="task-action-menu" role="menu" onPointerDown={(event) => event.stopPropagation()}>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setIsMenuOpen(false)
+                  onRename()
+                }}
+              >
+                <Pencil size={15} />
+                <span>Rename task</span>
+              </button>
               {canFinish && (
                 <button
                   type="button"
@@ -2541,6 +2866,92 @@ function TaskFormModal({
           <button className="primary-action" type="submit">
             <Plus size={18} />
             <span>Create</span>
+            <span className="key-hint key-hint-icon" aria-label="Enter">
+              <CornerDownLeft size={14} />
+            </span>
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function RenameTaskModal({
+  task,
+  onClose,
+  onSubmit
+}: {
+  task: Task | null
+  onClose: () => void
+  onSubmit: (title: string) => void
+}): ReactElement {
+  const [title, setTitle] = useState(task?.title ?? '')
+  const formRef = useRef<HTMLFormElement | null>(null)
+  const titleRef = useRef<HTMLTextAreaElement | null>(null)
+
+  useEffect(() => {
+    setTitle(task?.title ?? '')
+  }, [task?.title])
+
+  useEffect(() => {
+    const titleInput = titleRef.current
+    if (!titleInput) return
+    titleInput.style.height = '0px'
+    titleInput.style.height = `${Math.min(titleInput.scrollHeight, 112)}px`
+  }, [title])
+
+  useEffect(() => {
+    const titleInput = titleRef.current
+    titleInput?.focus()
+    titleInput?.select()
+  }, [])
+
+  return (
+    <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
+      <form
+        ref={formRef}
+        className="task-form modal-panel compact"
+        onSubmit={(event) => {
+          event.preventDefault()
+          onSubmit(title)
+        }}
+        onKeyDownCapture={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            onClose()
+          }
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            formRef.current?.requestSubmit()
+          }
+        }}
+      >
+        <div className="modal-head">
+          <h2>Rename task</h2>
+          <button className="icon-button" type="button" onClick={onClose} title="Close">
+            <X size={18} />
+          </button>
+        </div>
+
+        <label>
+          <span>Title</span>
+          <textarea
+            ref={titleRef}
+            className="task-title-input"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            rows={1}
+          />
+        </label>
+
+        <div className="modal-actions">
+          <button className="secondary-action" type="button" onClick={onClose}>
+            Cancel
+            <span className="key-hint">Esc</span>
+          </button>
+          <button className="primary-action" type="submit" disabled={!title.trim()}>
+            <Pencil size={16} />
+            <span>Save</span>
             <span className="key-hint key-hint-icon" aria-label="Enter">
               <CornerDownLeft size={14} />
             </span>
@@ -2717,7 +3128,7 @@ function AgentThread({
     conversations
       .filter(
         (entry) =>
-          entry.id !== userEntries[0]?.id &&
+          entry.id !== activePromptEntry?.id &&
           !isNoisyConversationEntry(entry) &&
           (showSystemEntries || entry.role !== 'system')
       )
@@ -2813,8 +3224,9 @@ function AgentThread({
         <section className="prompt-panel agent-step role-user">
           <MessageSquare size={16} />
           <div>
-            <strong className="agent-step-label">Prompt</strong>
-            <p>{prompt}</p>
+            <div className="user-message-bubble">
+              <MessageMarkdown content={prompt} />
+            </div>
           </div>
         </section>
       )}
@@ -2852,7 +3264,13 @@ function AgentThread({
                 <strong className="agent-step-label">
                   {entry.role === 'user' ? 'You' : entry.role === 'assistant' ? 'Agent' : 'System'}
                 </strong>
-                <MessageMarkdown content={entry.content} />
+                {entry.role === 'user' ? (
+                  <div className="user-message-bubble">
+                    <MessageMarkdown content={entry.content} />
+                  </div>
+                ) : (
+                  <MessageMarkdown content={entry.content} />
+                )}
               </div>
             </div>
           ))
