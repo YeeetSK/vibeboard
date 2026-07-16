@@ -55,6 +55,7 @@ const api: VibeBoardApi = {
   getNotificationSettings: () => ipcRenderer.invoke('notifications:get'),
   updateNotificationSettings: (settings: NotificationSettings) => ipcRenderer.invoke('notifications:update', settings),
   sendTestNotification: () => ipcRenderer.invoke('notifications:test'),
+  reportUserActivity: () => ipcRenderer.send('app:userActivity'),
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke('project:create', input),
   relocateProject: (projectId: string) => ipcRenderer.invoke('project:relocate', projectId),
   openProjectFolder: (projectId: string) => ipcRenderer.invoke('project:openFolder', projectId),

@@ -251,6 +251,7 @@ export interface VibeBoardApi {
   getNotificationSettings: () => Promise<NotificationSettings>
   updateNotificationSettings: (settings: NotificationSettings) => Promise<NotificationSettings>
   sendTestNotification: () => Promise<void>
+  reportUserActivity: () => void
   createProject: (input: CreateProjectInput) => Promise<Project | null>
   relocateProject: (projectId: string) => Promise<Project | null>
   openProjectFolder: (projectId: string) => Promise<void>

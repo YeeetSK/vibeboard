@@ -39,6 +39,7 @@ let isQuitConfirmed = false
 let isQuitPromptOpen = false
 let quitPromptFallbackTimer: NodeJS.Timeout | null = null
 let pendingMacFallbackAppPath: string | null = null
+let lastRendererActivityAt = Date.now()
 let updateInfo: UpdateInfo = {
   status: 'idle',
   mode: getUpdateMode(),
@@ -63,6 +64,7 @@ interface NotificationPayload {
 
 const appUserModelId = 'com.yeeetsk.vibeboard'
 const notificationTitle = 'VibeBoard 🌊'
+const notificationInactivityMs = 2 * 60 * 1000
 
 const formatNotificationBody = (payload: NotificationPayload): string =>
   payload.body ? `${payload.title}: ${payload.body}` : payload.title
@@ -180,13 +182,19 @@ const registerIpc = (): void => {
     store.updateNotificationSettings(settings)
   )
   ipcMain.handle('notifications:test', () =>
-    sendConfiguredNotification({
-      event: 'taskCompleted',
-      title: 'VibeBoard notification test',
-      body: 'Notifications are configured.',
-      priority: 'default'
-    })
+    sendConfiguredNotification(
+      {
+        event: 'taskCompleted',
+        title: 'VibeBoard notification test',
+        body: 'Notifications are configured.',
+        priority: 'default'
+      },
+      { throwOnError: true, bypassActivityGate: true }
+    )
   )
+  ipcMain.on('app:userActivity', () => {
+    lastRendererActivityAt = Date.now()
+  })
   ipcMain.on('app:quitPromptShown', () => {
     clearQuitPromptFallback()
   })
@@ -819,15 +827,21 @@ const sendNtfyNotification = async (
   payload: NotificationPayload
 ): Promise<void> => {
   const topic = ntfy.topic.trim()
-  if (!topic) return
+  if (!topic) {
+    throw new Error('ntfy.sh topic is empty')
+  }
 
-  const response = await fetch(`${normalizeNtfyServerUrl(ntfy.serverUrl)}/${encodeURIComponent(topic)}`, {
+  const response = await fetch(normalizeNtfyServerUrl(ntfy.serverUrl), {
     method: 'POST',
-    body: formatNotificationBody(payload),
+    body: JSON.stringify({
+      topic,
+      title: notificationTitle,
+      message: formatNotificationBody(payload),
+      priority: payload.priority === 'high' ? 4 : 3,
+      tags: ['vibeboard']
+    }),
     headers: {
-      Title: notificationTitle,
-      Priority: payload.priority === 'high' ? '4' : '3',
-      Tags: 'vibeboard'
+      'Content-Type': 'application/json'
     }
   })
 
@@ -862,8 +876,23 @@ const sendDesktopNotification = async (payload: NotificationPayload): Promise<vo
   }
 }
 
-const sendConfiguredNotification = async (payload: NotificationPayload): Promise<void> => {
+const isUserActiveInApp = (): boolean =>
+  BrowserWindow.getAllWindows().some((window) => window.isFocused()) &&
+  Date.now() - lastRendererActivityAt < notificationInactivityMs
+
+const sendConfiguredNotification = async (
+  payload: NotificationPayload,
+  options: { throwOnError?: boolean; bypassActivityGate?: boolean } = {}
+): Promise<void> => {
+  if (!options.bypassActivityGate && isUserActiveInApp()) {
+    if (is.dev) {
+      console.info('[VibeBoard notifications] skipped while app is active')
+    }
+    return
+  }
+
   const settings = store.getNotificationSettings()
+  const errors: string[] = []
 
   if (settings.desktopEnabled && settings.desktopEvents[payload.event]) {
     try {
@@ -873,12 +902,18 @@ const sendConfiguredNotification = async (payload: NotificationPayload): Promise
         try {
           await sendMacOsNotification(payload)
         } catch (fallbackError) {
+          errors.push(
+            `Desktop: ${fallbackError instanceof Error ? fallbackError.message : 'notification failed'}`
+          )
           if (is.dev) {
             console.error('[VibeBoard desktop notifications]', fallbackError)
           }
         }
-      } else if (is.dev) {
-        console.error('[VibeBoard desktop notifications]', error)
+      } else {
+        errors.push(`Desktop: ${error instanceof Error ? error.message : 'notification failed'}`)
+        if (is.dev) {
+          console.error('[VibeBoard desktop notifications]', error)
+        }
       }
     }
   }
@@ -887,10 +922,15 @@ const sendConfiguredNotification = async (payload: NotificationPayload): Promise
     try {
       await sendNtfyNotification(settings.ntfy, payload)
     } catch (error) {
+      errors.push(`ntfy.sh: ${error instanceof Error ? error.message : 'notification failed'}`)
       if (is.dev) {
         console.error('[VibeBoard notifications]', error)
       }
     }
+  }
+
+  if (options.throwOnError && errors.length > 0) {
+    throw new Error(errors.join(' / '))
   }
 }
 

@@ -2138,6 +2138,7 @@ textarea {
 .modal-panel {
   width: min(1180px, 96vw);
   max-height: 90vh;
+  min-height: 0;
   border: 1px solid #3a3a3a;
   border-radius: 9px;
   background: var(--surface);
@@ -2338,8 +2339,9 @@ button:focus-visible {
 
 .agent-thread {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 12px;
+  height: 100%;
   min-height: 0;
   overflow: hidden;
 }
@@ -2349,12 +2351,16 @@ button:focus-visible {
 }
 
 .prompt-panel {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   padding: 0;
   overflow: hidden;
+  background: var(--surface);
 }
 
 .prompt-panel-pinned {
-  padding-left: 32px;
+  padding: 0 0 8px 32px;
 }
 
 .thread-empty-state {
@@ -2373,6 +2379,7 @@ button:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  height: 100%;
   min-height: 0;
   overflow-y: auto;
   padding-right: 4px;

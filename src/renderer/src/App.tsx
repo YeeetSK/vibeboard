@@ -387,6 +387,26 @@ export function App(): ReactElement {
   }, [])
 
   useEffect(() => {
+    let lastReportedAt = 0
+    const reportActivity = (): void => {
+      const now = Date.now()
+      if (now - lastReportedAt < 15_000) return
+      lastReportedAt = now
+      window.vibeboard.reportUserActivity()
+    }
+    const activityEvents = ['pointermove', 'pointerdown', 'keydown', 'wheel', 'touchstart', 'focus']
+    reportActivity()
+    for (const eventName of activityEvents) {
+      window.addEventListener(eventName, reportActivity, { passive: true })
+    }
+    return () => {
+      for (const eventName of activityEvents) {
+        window.removeEventListener(eventName, reportActivity)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
     if (!updateInfo.currentVersion || updateInfo.currentVersion === '0.0.0') return
 
     const pending = readPendingReleaseNotes()
@@ -836,8 +856,12 @@ export function App(): ReactElement {
     await runAction('notifications:test', async () => {
       const nextSettings = await window.vibeboard.updateNotificationSettings(settings)
       setNotificationSettings(nextSettings)
-      await window.vibeboard.sendTestNotification()
-      setNotificationFeedback('Test sent')
+      try {
+        await window.vibeboard.sendTestNotification()
+        setNotificationFeedback('Test sent')
+      } catch (error) {
+        setNotificationFeedback(error instanceof Error ? error.message : 'Test failed')
+      }
     })
   }
 
@@ -3166,6 +3190,7 @@ function AgentThread({
 }): ReactElement {
   const [draft, setDraft] = useState(() => readTaskComposerDraft(task.id))
   const [activePromptId, setActivePromptId] = useState<string | null>(null)
+  const [shouldShowPinnedPrompt, setShouldShowPinnedPrompt] = useState(false)
   const streamRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const userMessageRefs = useRef(new Map<string, HTMLDivElement>())
@@ -3193,6 +3218,7 @@ function AgentThread({
 
   useEffect(() => {
     setActivePromptId(latestUserEntry?.id ?? null)
+    setShouldShowPinnedPrompt(false)
   }, [latestUserEntry?.id, task.id])
 
   useEffect(() => {
@@ -3219,9 +3245,11 @@ function AgentThread({
       if (olderSnapshot) {
         olderScrollSnapshotRef.current = null
         stream.scrollTop = stream.scrollHeight - olderSnapshot.height + olderSnapshot.top
+        syncActivePromptFromScroll()
         return
       }
       stream.scrollTop = stream.scrollHeight
+      syncActivePromptFromScroll()
     })
 
     return () => window.cancelAnimationFrame(frameId)
@@ -3256,6 +3284,13 @@ function AgentThread({
       }
     }
     if (!hasMountedUserMessage) return
+    const currentElement = userMessageRefs.current.get(currentEntry.id)
+    if (currentElement) {
+      const top = currentElement.offsetTop - stream.scrollTop
+      const bottom = top + currentElement.offsetHeight
+      const isVisible = bottom > 0 && top < stream.clientHeight
+      setShouldShowPinnedPrompt(!isVisible)
+    }
     setActivePromptId((currentId) => (currentId === currentEntry.id ? currentId : currentEntry.id))
   }
 
@@ -3274,15 +3309,14 @@ function AgentThread({
 
   return (
     <div className="agent-thread">
-      {prompt && (
-        <section className="prompt-panel prompt-panel-pinned role-user">
-          <div className="user-message-bubble">
-            <MessageMarkdown content={prompt} />
-          </div>
-        </section>
-      )}
-
       <div className="agent-stream" ref={streamRef} onScroll={handleStreamScroll}>
+        {prompt && shouldShowPinnedPrompt && (
+          <section className="prompt-panel prompt-panel-pinned role-user">
+            <div className="user-message-bubble">
+              <MessageMarkdown content={prompt} />
+            </div>
+          </section>
+        )}
         {isLoadingOlderConversations && <div className="thread-empty-state">Loading earlier messages</div>}
         {!prompt && threadEntries.length === 0 ? (
           <div className="thread-empty-state">
