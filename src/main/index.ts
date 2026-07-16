@@ -28,6 +28,7 @@ import type {
 let store: VibeBoardStore
 const cursorAdapter = new PlaceholderCursorAdapter()
 const runningTasks = new Set<string>()
+const projectRunQueues = new Map<string, Promise<void>>()
 const windows = new Set<BrowserWindow>()
 const execFileAsync = promisify(execFile)
 let isQuitConfirmed = false
@@ -57,6 +58,7 @@ const createWindow = (): void => {
     icon: path.join(app.getAppPath(), 'build', 'icon.png'),
     show: false,
     titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 12, y: 14 },
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -76,6 +78,10 @@ const createWindow = (): void => {
   })
   mainWindow.on('closed', () => {
     windows.delete(mainWindow)
+  })
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    void openExternalUrl(url)
+    return { action: 'deny' }
   })
   windows.add(mainWindow)
 
@@ -100,6 +106,7 @@ const registerIpc = (): void => {
       throw new Error(error)
     }
   })
+  ipcMain.handle('shell:openExternal', (_event, url: string) => openExternalUrl(url))
   ipcMain.handle('project:relocate', (_event, projectId: string) => store.relocateProject(projectId))
   ipcMain.handle('tab:create', (_event, input: CreateTabInput) => store.createTab(input))
   ipcMain.handle('tab:rename', (_event, input: RenameInput) => store.renameTab(input))
@@ -381,6 +388,16 @@ const installUpdate = (): void => {
   autoUpdater.quitAndInstall(false, true)
 }
 
+const openExternalUrl = async (url: string): Promise<void> => {
+  try {
+    const parsedUrl = new URL(url)
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) return
+    await shell.openExternal(parsedUrl.toString())
+  } catch {
+    // Ignore malformed links from generated agent output.
+  }
+}
+
 const readUpdaterReleaseNotes = (info: { releaseNotes?: unknown }): string | null => {
   const notes = info.releaseNotes
   if (typeof notes === 'string') return notes.trim() || null
@@ -423,18 +440,45 @@ const startCursorTask = (taskId: string): { started: boolean; message: string } 
     return { started: false, message: 'Task is already running.' }
   }
 
+  const context = store.getTaskRunContext(taskId)
+  const projectQueueKey = context?.project?.path ?? null
+  const previousProjectRun = projectQueueKey ? projectRunQueues.get(projectQueueKey) : null
+
   runningTasks.add(taskId)
-  runCursorTask({
-    taskId,
-    store,
-    onStateChanged: broadcastStateChanged
-  }).finally(() => {
+
+  if (previousProjectRun) {
+    store.updateTaskStatus({ taskId, status: 'processing' })
+    store.appendConversation(taskId, 'system', 'Queued behind another running task for this project.')
+  }
+
+  const run = async (): Promise<void> => {
+    if (previousProjectRun) {
+      await previousProjectRun.catch(() => undefined)
+    }
+
+    await runCursorTask({
+      taskId,
+      store,
+      onStateChanged: broadcastStateChanged
+    })
+  }
+
+  const runPromise = run().finally(() => {
     runningTasks.delete(taskId)
+    if (projectQueueKey && projectRunQueues.get(projectQueueKey) === runPromise) {
+      projectRunQueues.delete(projectQueueKey)
+    }
     broadcastStateChanged()
   })
 
+  if (projectQueueKey) {
+    projectRunQueues.set(projectQueueKey, runPromise)
+  }
+
   broadcastStateChanged()
-  return { started: true, message: 'Cursor agent started.' }
+  return previousProjectRun
+    ? { started: true, message: 'Cursor agent queued for this project.' }
+    : { started: true, message: 'Cursor agent started.' }
 }
 
 const openCursorInstallTerminal = async (): Promise<void> => {

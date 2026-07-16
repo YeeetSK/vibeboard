@@ -28,9 +28,9 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
     return
   }
   const projectPath = context.project.path
+  const isRevertRun = context.prompt.includes('Revert the code changes made for this specific task only.')
 
   store.updateTaskStatus({ taskId, status: 'processing' })
-  store.replaceCodeChanges(taskId, [])
   store.appendConversation(taskId, 'system', 'Starting Cursor CLI agent in the project folder.')
   onStateChanged()
   const baselineDiff = await collectGitDiffText(projectPath)
@@ -107,7 +107,9 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
       if (code === 0) {
         const nextDiff = await collectGitDiffText(projectPath)
         const changes = nextDiff === baselineDiff ? [] : parseGitDiff(nextDiff, baselineDiff)
-        store.replaceCodeChanges(taskId, changes)
+        if (isRevertRun || changes.length > 0) {
+          store.replaceCodeChanges(taskId, changes)
+        }
         store.updateTaskStatus({ taskId, status: 'done_unread' })
       } else {
         store.updateTaskStatus({ taskId, status: 'attention' })
@@ -144,9 +146,9 @@ async function buildFocusedPrompt(projectPath: string, prompt: string, previousP
     `- Use ${projectMemoryFileName} for durable project context before re-discovering basics.`,
     `- Update ${projectMemoryFileName} only when you learn stable project facts, setup steps, conventions, or standing user preferences.`,
     `- Keep ${projectMemoryFileName} concise and never store secrets, tokens, credentials, or temporary task logs.`,
-    `- Your final user-facing answer must start with ${actualMessageMarker} on its own line.`,
-    `- VibeBoard hides output that does not include ${actualMessageMarker}.`,
-    `- Put only the final answer after ${actualMessageMarker}. Do not put tool logs, stream metadata, progress narration, prompt text, or internal reasoning after it.`,
+    `- When you are ready to give the final user-facing answer, write ${actualMessageMarker} exactly once on its own line as the first line of that final answer.`,
+    `- Never mention ${actualMessageMarker} again after that first marker line.`,
+    `- Put only the final answer after that first marker line. Do not put tool logs, stream metadata, progress narration, prompt text, or internal reasoning after it.`,
     '',
     projectMemory
       ? `VibeBoard project memory from ${projectMemoryFileName}:\n${projectMemory}`
@@ -432,9 +434,10 @@ function normalizeCursorText(text: string): string {
 }
 
 function extractActualMessage(text: string): string | null {
-  const markerIndex = text.lastIndexOf(actualMessageMarker)
-  if (markerIndex < 0) return null
-  return text.slice(markerIndex + actualMessageMarker.length)
+  const markerMatch = text.match(new RegExp(`(?:^|\\r?\\n)\\s*${actualMessageMarker}\\s*(?:\\r?\\n|$)`))
+  if (!markerMatch || markerMatch.index === undefined) return null
+  const markerEnd = markerMatch.index + markerMatch[0].length
+  return text.slice(markerEnd)
 }
 
 function extractFallbackAnswer(fragments: string[]): string {
@@ -521,7 +524,7 @@ function joinFragment(previous: string, next: string): string {
 
 function collectGitDiffText(cwd: string): Promise<string> {
   return new Promise((resolve) => {
-    const child = spawn('git', ['diff', '--no-ext-diff', '--unified=80', '--', '.'], { cwd })
+    const child = spawn('git', ['diff', '--no-ext-diff', '--unified=6', '--', '.'], { cwd })
     let output = ''
 
     child.stdout.on('data', (chunk: Buffer) => {
@@ -588,16 +591,41 @@ function diffChunkMap(diff: string): Map<string, string> {
 function languageFromPath(filePath: string): string {
   const extension = filePath.split('.').pop()?.toLowerCase()
   const languageMap: Record<string, string> = {
+    c: 'c',
+    cc: 'cpp',
+    cpp: 'cpp',
     css: 'css',
+    cxx: 'cpp',
+    dart: 'dart',
+    dockerfile: 'dockerfile',
+    go: 'go',
+    h: 'c',
     html: 'xml',
+    hpp: 'cpp',
+    ini: 'ini',
+    java: 'java',
     js: 'javascript',
     jsx: 'javascript',
     json: 'json',
+    kt: 'kotlin',
+    kts: 'kotlin',
+    less: 'less',
+    lua: 'lua',
+    md: 'markdown',
     mjs: 'javascript',
+    php: 'php',
+    py: 'python',
+    rb: 'ruby',
+    rs: 'rust',
+    scss: 'scss',
     sh: 'bash',
+    sql: 'sql',
+    swift: 'swift',
     ts: 'typescript',
     tsx: 'tsx',
-    xml: 'xml'
+    xml: 'xml',
+    yaml: 'yaml',
+    yml: 'yaml'
   }
   return extension ? languageMap[extension] || '' : ''
 }
