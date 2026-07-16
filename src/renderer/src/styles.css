@@ -3208,43 +3208,28 @@ button:focus-visible {
 
 .tutorial-board-demo {
   position: fixed;
-  top: 176px;
-  right: 28px;
-  left: 28px;
-  height: 150px;
+  z-index: 2501;
   pointer-events: none;
-  --tutorial-lane-gap: 14px;
-  --tutorial-lane-width: calc((100% - (var(--tutorial-lane-gap) * 3)) / 4);
+  overflow: hidden;
 }
 
-.tutorial-board-card {
-  position: absolute;
-  width: calc(var(--tutorial-lane-width) - 16px);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.38);
-  contain: none;
+.tutorial-lane-grid {
+  height: 100%;
+  width: 100%;
+  padding: 0;
 }
 
-.tutorial-board-card.card-one {
-  top: 0;
-  left: 8px;
+.tutorial-board-demo .lane {
+  box-shadow: none;
 }
 
-.tutorial-board-card.card-two {
-  top: 66px;
-  left: 8px;
+.tutorial-board-demo .task-card {
+  pointer-events: none;
 }
 
-.tutorial-board-card.card-three {
-  top: 0;
-  left: calc(var(--tutorial-lane-width) + var(--tutorial-lane-gap) + 8px);
-}
-
-.tutorial-board-card.card-four {
-  top: 0;
-  left: calc(((var(--tutorial-lane-width) + var(--tutorial-lane-gap)) * 2) + 8px);
-}
-
-.tutorial-board-card .task-open {
+.tutorial-board-demo .task-card-actions,
+.tutorial-board-demo .lane-delete-button {
+  display: none;
   pointer-events: none;
 }
 

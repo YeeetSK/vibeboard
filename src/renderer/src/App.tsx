@@ -257,7 +257,7 @@ const tutorialSteps = [
     title: 'Tasks move through lanes',
     body: 'Cards can be dragged between lanes and ordered inside each lane. Their borders show running, attention, and done states.',
     spotlight: 'board',
-    target: 'board',
+    target: 'board-lanes',
     card: 'center'
   },
   {
@@ -1317,6 +1317,7 @@ export function App(): ReactElement {
                 onDragEnd={onDragEnd}
               >
                 <div
+                  data-tour="board-lanes"
                   className={activeDragTaskId ? 'lane-grid dragging-card' : 'lane-grid'}
                   style={{ '--lane-count': Math.min(activeLanes.length, 4) } as React.CSSProperties}
                 >
@@ -1630,38 +1631,7 @@ function TutorialOverlay({
       />
 
       {currentStep.id === 'board' && (
-        <div className="tutorial-board-demo" aria-hidden="true">
-          <article className="tutorial-board-card task-card status-idle card-one">
-            <div className="task-open">
-              <div className="task-title-row">
-                <h3>Plan release notes</h3>
-              </div>
-            </div>
-          </article>
-          <article className="tutorial-board-card task-card status-processing card-two">
-            <div className="task-open">
-              <div className="task-title-row">
-                <h3>Fix failing tests</h3>
-              </div>
-            </div>
-          </article>
-          <article className="tutorial-board-card task-card status-done_unread card-three">
-            <div className="task-open">
-              <div className="task-title-row">
-                <h3>Review generated diff</h3>
-                <TaskStatusChip status="done_unread" />
-              </div>
-            </div>
-          </article>
-          <article className="tutorial-board-card task-card status-attention card-four">
-            <div className="task-open">
-              <div className="task-title-row">
-                <h3>Clarify deploy target</h3>
-                <TaskStatusChip status="attention" />
-              </div>
-            </div>
-          </article>
-        </div>
+        <TutorialBoardDemo spotlightRect={spotlightRect} />
       )}
 
       {currentStep.id === 'demo' && (
@@ -1775,6 +1745,93 @@ function TutorialOverlay({
           </button>
         </div>
       </section>
+    </div>
+  )
+}
+
+const tutorialDemoTabId = 'tutorial-tab'
+const tutorialDemoProjectId = 'tutorial-project'
+const tutorialDemoCreatedAt = '2026-07-17T00:00:00.000Z'
+
+const tutorialDemoLanes: Lane[] = [
+  { id: 'tutorial-lane-backlog', tabId: tutorialDemoTabId, name: 'Backlog', position: 0 },
+  { id: 'tutorial-lane-active', tabId: tutorialDemoTabId, name: 'Active', position: 1 },
+  { id: 'tutorial-lane-review', tabId: tutorialDemoTabId, name: 'Review', position: 2 },
+  { id: 'tutorial-lane-done', tabId: tutorialDemoTabId, name: 'Done', position: 3 }
+]
+
+const createTutorialTask = (
+  id: string,
+  laneId: string,
+  title: string,
+  status: Task['status'],
+  position: number
+): Task => ({
+  id,
+  tabId: tutorialDemoTabId,
+  laneId,
+  projectId: tutorialDemoProjectId,
+  title,
+  summary: '',
+  status,
+  runModeOverride: null,
+  branchName: null,
+  worktreePath: null,
+  position,
+  createdAt: tutorialDemoCreatedAt,
+  updatedAt: tutorialDemoCreatedAt
+})
+
+const tutorialDemoTasks: Task[] = [
+  createTutorialTask('tutorial-task-release', 'tutorial-lane-backlog', 'Plan release notes', 'idle', 0),
+  createTutorialTask('tutorial-task-tests', 'tutorial-lane-active', 'Fix failing tests', 'processing', 0),
+  createTutorialTask('tutorial-task-deploy', 'tutorial-lane-review', 'Clarify deploy target', 'attention', 0),
+  createTutorialTask('tutorial-task-diff', 'tutorial-lane-done', 'Review generated diff', 'done_unread', 0)
+]
+
+function TutorialBoardDemo({ spotlightRect }: { spotlightRect: DOMRect | null }): ReactElement | null {
+  if (!spotlightRect) return null
+
+  const tasksByLane = new Map<string, Task[]>()
+  for (const lane of tutorialDemoLanes) {
+    tasksByLane.set(
+      lane.id,
+      tutorialDemoTasks.filter((task) => task.laneId === lane.id)
+    )
+  }
+
+  return (
+    <div
+      className="tutorial-board-demo"
+      style={{
+        top: spotlightRect.top,
+        left: spotlightRect.left,
+        width: spotlightRect.width,
+        height: spotlightRect.height
+      }}
+      aria-hidden="true"
+    >
+      <DndContext>
+        <div className="lane-grid tutorial-lane-grid" style={{ '--lane-count': 4 } as React.CSSProperties}>
+          {tutorialDemoLanes.map((lane) => (
+            <LaneColumn
+              key={lane.id}
+              lane={lane}
+              tasks={tasksByLane.get(lane.id) ?? []}
+              activeDragTaskId={null}
+              dropPreviewPosition={null}
+              onOpenTask={() => undefined}
+              onAddTask={() => undefined}
+              onDeleteLane={() => undefined}
+              onDeleteTask={() => undefined}
+              onFinishTask={() => undefined}
+              onRenameTask={() => undefined}
+              canDelete={false}
+              onRenameLane={() => undefined}
+            />
+          ))}
+        </div>
+      </DndContext>
     </div>
   )
 }
