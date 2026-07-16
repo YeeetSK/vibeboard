@@ -1260,6 +1260,89 @@ button {
   transition: width 160ms ease;
 }
 
+.update-banner {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: auto minmax(220px, 340px) auto;
+  align-items: center;
+  gap: 12px;
+  width: min(680px, calc(100vw - 36px));
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #202124;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+}
+
+.update-banner.ready {
+  border-color: rgba(47, 207, 117, 0.42);
+}
+
+.update-banner.error {
+  border-color: rgba(255, 95, 87, 0.42);
+}
+
+.update-banner-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.update-banner-title svg {
+  color: var(--muted);
+}
+
+.update-banner.ready .update-banner-title svg {
+  color: var(--green);
+}
+
+.update-banner.error .update-banner-title svg {
+  color: var(--red);
+}
+
+.update-banner-body {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.update-banner-body span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-banner .primary-action {
+  height: 34px;
+  padding: 0 11px;
+}
+
+.release-notes-modal {
+  width: min(720px, 92vw);
+}
+
+.release-notes-body {
+  max-height: min(520px, 58vh);
+  overflow: auto;
+  padding: 0 20px 20px;
+}
+
+.release-notes-body .message-markdown {
+  max-width: none;
+}
+
 .empty-panel {
   border: 1px solid var(--line-soft);
   border-radius: 8px;

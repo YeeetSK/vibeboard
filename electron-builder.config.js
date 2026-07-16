@@ -108,6 +108,10 @@ module.exports = {
       {
         target: 'dmg',
         arch: ['x64', 'arm64']
+      },
+      {
+        target: 'zip',
+        arch: ['x64', 'arm64']
       }
     ],
     category: 'public.app-category.developer-tools'

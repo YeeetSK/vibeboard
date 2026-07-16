@@ -29,6 +29,8 @@ jobs:
             artifact-path: |
               release/*.dmg
               release/*.dmg.blockmap
+              release/*.zip
+              release/*.zip.blockmap
               release/latest-mac.yml
 
     steps:
@@ -92,7 +94,7 @@ jobs:
           | macOS Apple Silicon | `VibeBoard-*-arm64.dmg` |
           | macOS Intel | `VibeBoard-*-x64.dmg` |
 
-          Files ending in `.blockmap`, `latest.yml`, or `latest-mac.yml` are for automatic updates. Do not install those manually.
+          Files ending in `.zip`, `.blockmap`, `latest.yml`, or `latest-mac.yml` are for automatic updates. Do not install those manually.
           EOF
 
       - name: Download installers

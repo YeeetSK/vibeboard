@@ -39,11 +39,12 @@ let updateInfo: UpdateInfo = {
   latestVersion: null,
   message: 'Ready to check for updates.',
   progress: null,
-  releaseUrl: null
+  releaseUrl: null,
+  releaseNotes: null
 }
 
 autoUpdater.autoDownload = false
-autoUpdater.autoInstallOnAppQuit = false
+autoUpdater.autoInstallOnAppQuit = true
 
 const createWindow = (): void => {
   const mainWindow = new BrowserWindow({
@@ -154,7 +155,8 @@ const registerUpdaterEvents = (): void => {
       latestVersion: null,
       message: 'Checking for updates.',
       progress: null,
-      releaseUrl: null
+      releaseUrl: null,
+      releaseNotes: null
     })
   })
 
@@ -164,7 +166,8 @@ const registerUpdaterEvents = (): void => {
       latestVersion: info.version,
       message: `Version ${info.version} is available.`,
       progress: null,
-      releaseUrl: `https://github.com/YeeetSK/vibeboard/releases/tag/v${info.version}`
+      releaseUrl: `https://github.com/YeeetSK/vibeboard/releases/tag/v${info.version}`,
+      releaseNotes: readUpdaterReleaseNotes(info)
     })
   })
 
@@ -174,7 +177,8 @@ const registerUpdaterEvents = (): void => {
       latestVersion: info.version ?? app.getVersion(),
       message: 'VibeBoard is up to date.',
       progress: null,
-      releaseUrl: null
+      releaseUrl: null,
+      releaseNotes: null
     })
   })
 
@@ -184,7 +188,8 @@ const registerUpdaterEvents = (): void => {
       latestVersion: updateInfo.latestVersion,
       message: 'Downloading update.',
       progress: Math.round(progress.percent),
-      releaseUrl: updateInfo.releaseUrl
+      releaseUrl: updateInfo.releaseUrl,
+      releaseNotes: updateInfo.releaseNotes
     })
   })
 
@@ -194,7 +199,8 @@ const registerUpdaterEvents = (): void => {
       latestVersion: info.version,
       message: `Version ${info.version} is ready to install.`,
       progress: 100,
-      releaseUrl: updateInfo.releaseUrl
+      releaseUrl: updateInfo.releaseUrl,
+      releaseNotes: readUpdaterReleaseNotes(info) ?? updateInfo.releaseNotes
     })
   })
 
@@ -204,7 +210,8 @@ const registerUpdaterEvents = (): void => {
       latestVersion: updateInfo.latestVersion,
       message: error.message,
       progress: null,
-      releaseUrl: updateInfo.releaseUrl
+      releaseUrl: updateInfo.releaseUrl,
+      releaseNotes: updateInfo.releaseNotes
     })
   })
 }
@@ -231,7 +238,8 @@ const checkForUpdates = async (): Promise<UpdateInfo> => {
       status: 'checking',
       message: 'Checking for updates.',
       progress: null,
-      releaseUrl: null
+      releaseUrl: null,
+      releaseNotes: null
     })
     await autoUpdater.checkForUpdates()
   } catch (error) {
@@ -239,7 +247,8 @@ const checkForUpdates = async (): Promise<UpdateInfo> => {
       status: 'error',
       message: error instanceof Error ? error.message : 'Update check failed.',
       progress: null,
-      releaseUrl: updateInfo.releaseUrl
+      releaseUrl: updateInfo.releaseUrl,
+      releaseNotes: updateInfo.releaseNotes
     })
   }
 
@@ -253,7 +262,8 @@ const checkGithubReleaseForDev = async (): Promise<UpdateInfo> => {
       latestVersion: null,
       message: 'Checking GitHub releases.',
       progress: null,
-      releaseUrl: null
+      releaseUrl: null,
+      releaseNotes: null
     })
 
     const response = await fetch('https://api.github.com/repos/YeeetSK/vibeboard/releases/latest', {
@@ -269,7 +279,8 @@ const checkGithubReleaseForDev = async (): Promise<UpdateInfo> => {
           latestVersion: null,
           message: 'GitHub release metadata is not public yet.',
           progress: null,
-          releaseUrl: null
+          releaseUrl: null,
+          releaseNotes: null
         })
       }
       throw new Error(`GitHub returned ${response.status}`)
@@ -278,6 +289,7 @@ const checkGithubReleaseForDev = async (): Promise<UpdateInfo> => {
     const release = (await response.json()) as {
       tag_name?: string
       html_url?: string
+      body?: string
       prerelease?: boolean
     }
     const latestVersion = normalizeVersion(release.tag_name ?? '')
@@ -291,7 +303,8 @@ const checkGithubReleaseForDev = async (): Promise<UpdateInfo> => {
         latestVersion,
         message: `Version ${latestVersion} is available.`,
         progress: null,
-        releaseUrl: release.html_url ?? `https://github.com/YeeetSK/vibeboard/releases/tag/v${latestVersion}`
+        releaseUrl: release.html_url ?? `https://github.com/YeeetSK/vibeboard/releases/tag/v${latestVersion}`,
+        releaseNotes: release.body?.trim() || null
       })
     }
 
@@ -300,7 +313,8 @@ const checkGithubReleaseForDev = async (): Promise<UpdateInfo> => {
       latestVersion,
       message: 'VibeBoard is up to date.',
       progress: null,
-      releaseUrl: null
+      releaseUrl: null,
+      releaseNotes: null
     })
   } catch (error) {
     return setUpdateInfo({
@@ -308,7 +322,8 @@ const checkGithubReleaseForDev = async (): Promise<UpdateInfo> => {
       latestVersion: null,
       message: error instanceof Error ? error.message : 'Update check failed.',
       progress: null,
-      releaseUrl: null
+      releaseUrl: null,
+      releaseNotes: null
     })
   }
 }
@@ -320,6 +335,14 @@ const downloadUpdate = async (): Promise<UpdateInfo> => {
     if (updateInfo.releaseUrl) {
       await shell.openExternal(updateInfo.releaseUrl)
     }
+    setUpdateInfo({
+      status: 'available',
+      latestVersion: updateInfo.latestVersion,
+      message: 'Development builds cannot self-update. Install the release build from GitHub to test automatic updates.',
+      progress: null,
+      releaseUrl: updateInfo.releaseUrl,
+      releaseNotes: updateInfo.releaseNotes
+    })
     return updateInfo
   }
 
@@ -328,7 +351,8 @@ const downloadUpdate = async (): Promise<UpdateInfo> => {
       status: 'downloading',
       message: 'Downloading update.',
       progress: 0,
-      releaseUrl: updateInfo.releaseUrl
+      releaseUrl: updateInfo.releaseUrl,
+      releaseNotes: updateInfo.releaseNotes
     })
     await autoUpdater.downloadUpdate()
   } catch (error) {
@@ -336,7 +360,8 @@ const downloadUpdate = async (): Promise<UpdateInfo> => {
       status: 'error',
       message: error instanceof Error ? error.message : 'Update download failed.',
       progress: null,
-      releaseUrl: updateInfo.releaseUrl
+      releaseUrl: updateInfo.releaseUrl,
+      releaseNotes: updateInfo.releaseNotes
     })
   }
 
@@ -345,8 +370,35 @@ const downloadUpdate = async (): Promise<UpdateInfo> => {
 
 const installUpdate = (): void => {
   if (updateInfo.status !== 'downloaded') return
+  setUpdateInfo({
+    status: 'installing',
+    message: 'Restarting to finish update.',
+    progress: 100,
+    releaseUrl: updateInfo.releaseUrl,
+    releaseNotes: updateInfo.releaseNotes
+  })
   isQuitConfirmed = true
   autoUpdater.quitAndInstall(false, true)
+}
+
+const readUpdaterReleaseNotes = (info: { releaseNotes?: unknown }): string | null => {
+  const notes = info.releaseNotes
+  if (typeof notes === 'string') return notes.trim() || null
+  if (Array.isArray(notes)) {
+    return notes
+      .map((entry) => {
+        if (typeof entry === 'string') return entry
+        if (entry && typeof entry === 'object' && 'note' in entry) {
+          const note = (entry as { note?: unknown }).note
+          return typeof note === 'string' ? note : ''
+        }
+        return ''
+      })
+      .filter(Boolean)
+      .join('\n\n')
+      .trim() || null
+  }
+  return null
 }
 
 const normalizeVersion = (version: string): string => version.trim().replace(/^v/i, '')

@@ -195,6 +195,7 @@ export type UpdateStatus =
   | 'not_available'
   | 'downloading'
   | 'downloaded'
+  | 'installing'
   | 'error'
 
 export interface UpdateInfo {
@@ -204,6 +205,7 @@ export interface UpdateInfo {
   message: string
   progress: number | null
   releaseUrl: string | null
+  releaseNotes: string | null
 }
 
 export interface VibeBoardApi {

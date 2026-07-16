@@ -133,8 +133,18 @@ const emptyUpdateInfo: UpdateInfo = {
   latestVersion: null,
   message: 'Ready to check for updates.',
   progress: null,
-  releaseUrl: null
+  releaseUrl: null,
+  releaseNotes: null
 }
+
+interface PendingReleaseNotes {
+  version: string
+  notes: string | null
+  releaseUrl: string | null
+}
+
+const pendingReleaseNotesStorageKey = 'vibeboard.pendingReleaseNotes'
+const seenReleaseNotesStorageKey = 'vibeboard.seenReleaseNotesVersion'
 
 export function App(): ReactElement {
   const [state, setState] = useState<AppState>(emptyState)
@@ -154,6 +164,7 @@ export function App(): ReactElement {
   const [globalSearchResults, setGlobalSearchResults] = useState<SearchResult[]>([])
   const [isGlobalSearchOpen, setGlobalSearchOpen] = useState(false)
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo>(emptyUpdateInfo)
+  const [releaseNotesModal, setReleaseNotesModal] = useState<PendingReleaseNotes | null>(null)
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<TaskDetail>(emptyTaskDetail)
   const [isLoadingOlderConversations, setLoadingOlderConversations] = useState(false)
 
@@ -220,6 +231,23 @@ export function App(): ReactElement {
       stopUpdateListener()
     }
   }, [])
+
+  useEffect(() => {
+    if (!updateInfo.currentVersion || updateInfo.currentVersion === '0.0.0') return
+
+    const pending = readPendingReleaseNotes()
+    if (!pending || pending.version !== updateInfo.currentVersion) return
+    if (localStorage.getItem(seenReleaseNotesStorageKey) === pending.version) return
+
+    setReleaseNotesModal(pending)
+    localStorage.setItem(seenReleaseNotesStorageKey, pending.version)
+    localStorage.removeItem(pendingReleaseNotesStorageKey)
+  }, [updateInfo.currentVersion])
+
+  useEffect(() => {
+    if (updateInfo.status !== 'downloaded' || !updateInfo.latestVersion) return
+    writePendingReleaseNotes(updateInfo)
+  }, [updateInfo])
 
   useEffect(() => {
     if (cursorSetupPhase !== 'failed') return
@@ -517,10 +545,23 @@ export function App(): ReactElement {
   }
 
   const downloadUpdate = async (): Promise<void> => {
+    setUpdateInfo((current) => ({
+      ...current,
+      status: 'downloading',
+      message: import.meta.env.DEV ? 'Opening release page for this development build.' : 'Starting download.',
+      progress: current.progress ?? 0
+    }))
     setUpdateInfo(await window.vibeboard.downloadUpdate())
   }
 
   const installUpdate = async (): Promise<void> => {
+    writePendingReleaseNotes(updateInfo)
+    setUpdateInfo((current) => ({
+      ...current,
+      status: 'installing',
+      message: 'Restarting to finish update.',
+      progress: 100
+    }))
     await window.vibeboard.installUpdate()
   }
 
@@ -737,11 +778,6 @@ export function App(): ReactElement {
             )}
           </section>
 
-          <UpdatePanel
-            info={updateInfo}
-            onDownload={downloadUpdate}
-            onInstall={installUpdate}
-          />
         </aside>
 
         <section className="board-area">
@@ -895,6 +931,19 @@ export function App(): ReactElement {
             setGlobalSearchQuery('')
           }}
           onOpenResult={openSearchResult}
+        />
+      )}
+
+      <UpdateBanner
+        info={updateInfo}
+        onDownload={downloadUpdate}
+        onInstall={installUpdate}
+      />
+
+      {releaseNotesModal && (
+        <ReleaseNotesModal
+          release={releaseNotesModal}
+          onClose={() => setReleaseNotesModal(null)}
         />
       )}
     </div>
@@ -1153,7 +1202,7 @@ function CursorConnection({
   )
 }
 
-function UpdatePanel({
+function UpdateBanner({
   info,
   onDownload,
   onInstall
@@ -1162,13 +1211,18 @@ function UpdatePanel({
   onDownload: () => void
   onInstall: () => void
 }): ReactElement {
-  const isVisible = info.status === 'available' || info.status === 'downloading' || info.status === 'downloaded'
+  const isVisible =
+    info.status === 'available' ||
+    info.status === 'downloading' ||
+    info.status === 'downloaded' ||
+    info.status === 'installing' ||
+    (info.status === 'error' && Boolean(info.latestVersion || info.releaseUrl))
   if (!isVisible) return <></>
 
-  const isBusy = info.status === 'checking' || info.status === 'downloading'
+  const isBusy = info.status === 'checking' || info.status === 'downloading' || info.status === 'installing'
   const canDownload = info.status === 'available'
   const canInstall = info.status === 'downloaded'
-  const buttonLabel = canInstall ? 'Restart' : canDownload ? 'Update' : 'Downloading'
+  const buttonLabel = canInstall ? 'Restart' : canDownload ? 'Update' : info.status === 'installing' ? 'Restarting' : 'Downloading'
   const buttonAction = canInstall ? onInstall : onDownload
   const tone =
     info.status === 'available' || info.status === 'downloaded'
@@ -1178,27 +1232,104 @@ function UpdatePanel({
         : 'idle'
 
   return (
-    <section className={`panel update-panel ${tone}`}>
-      <div className="panel-title">
+    <section className={`update-banner ${tone}`} aria-live="polite">
+      <div className="update-banner-title">
         <Download size={16} />
-        <span>Updates</span>
+        <span>{info.latestVersion ? `VibeBoard v${info.latestVersion}` : 'VibeBoard update'}</span>
       </div>
-      <div className="update-card">
-        <div className="update-copy">
-          <strong>{info.latestVersion ? `v${info.latestVersion}` : `v${info.currentVersion}`}</strong>
-          <span>{info.message}</span>
-        </div>
-        {info.status === 'downloading' && (
-          <div className="update-progress" aria-label={`Download ${info.progress ?? 0}%`}>
+      <div className="update-banner-body">
+        <span>{info.message}</span>
+        {(info.status === 'downloading' || info.status === 'installing') && (
+          <div className="update-progress" aria-label={`Update ${info.progress ?? 0}%`}>
             <span style={{ width: `${info.progress ?? 0}%` }} />
           </div>
         )}
-        <button className="primary-action setup-button" type="button" onClick={buttonAction} disabled={isBusy}>
+      </div>
+      {(canDownload || canInstall || isBusy) && (
+        <button className="primary-action" type="button" onClick={buttonAction} disabled={isBusy}>
           {canInstall ? <Check size={15} /> : <Download size={15} />}
           <span>{buttonLabel}</span>
         </button>
-      </div>
+      )}
     </section>
+  )
+}
+
+function ReleaseNotesModal({
+  release,
+  onClose
+}: {
+  release: PendingReleaseNotes
+  onClose: () => void
+}): ReactElement {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={closeOnBackdropMouseDown(onClose)}>
+      <section
+        className="modal-panel compact release-notes-modal"
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
+        onKeyDownCapture={(event) => {
+          if (event.key === 'Escape' || event.key === 'Enter') {
+            event.preventDefault()
+            onClose()
+          }
+        }}
+      >
+        <header className="modal-head">
+          <div>
+            <h2>Updated to v{release.version}</h2>
+            <p>Release notes</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} title="Close">
+            <X size={18} />
+          </button>
+        </header>
+        <div className="release-notes-body">
+          <MessageMarkdown content={release.notes?.trim() || 'No release notes were provided for this version.'} />
+        </div>
+        <footer className="modal-actions">
+          {release.releaseUrl && (
+            <button className="secondary-action" type="button" onClick={() => window.open(release.releaseUrl ?? undefined, '_blank')}>
+              <ExternalLink size={15} />
+              <span>GitHub</span>
+            </button>
+          )}
+          <button className="primary-action" type="button" onClick={onClose} autoFocus>
+            Done
+            <span className="key-hint">Enter</span>
+          </button>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
+function readPendingReleaseNotes(): PendingReleaseNotes | null {
+  try {
+    const raw = localStorage.getItem(pendingReleaseNotesStorageKey)
+    if (!raw) return null
+    const value = JSON.parse(raw) as Partial<PendingReleaseNotes>
+    if (!value.version) return null
+    return {
+      version: value.version,
+      notes: value.notes ?? null,
+      releaseUrl: value.releaseUrl ?? null
+    }
+  } catch {
+    return null
+  }
+}
+
+function writePendingReleaseNotes(info: UpdateInfo): void {
+  if (!info.latestVersion) return
+  localStorage.setItem(
+    pendingReleaseNotesStorageKey,
+    JSON.stringify({
+      version: info.latestVersion,
+      notes: info.releaseNotes,
+      releaseUrl: info.releaseUrl
+    } satisfies PendingReleaseNotes)
   )
 }
 
