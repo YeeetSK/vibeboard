@@ -23,6 +23,7 @@ import {
   verticalListSortingStrategy
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import confetti from 'canvas-confetti'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
 import c from 'highlight.js/lib/languages/c'
@@ -57,6 +58,7 @@ import {
   Bell,
   Check,
   CheckCircle2,
+  ChevronDown,
   Code2,
   CornerDownLeft,
   Download,
@@ -65,6 +67,7 @@ import {
   FolderPlus,
   FolderOpen,
   GitCommitHorizontal,
+  GitBranch,
   GitPullRequestDraft,
   History,
   LayoutDashboard,
@@ -94,6 +97,7 @@ import type {
   Lane,
   Project,
   QuitRequest,
+  RunMode,
   SearchResult,
   Task,
   TaskDetail,
@@ -152,6 +156,7 @@ const platformClass = navigator.userAgent.includes('Mac')
   : navigator.userAgent.includes('Windows')
     ? 'platform-windows'
     : 'platform-linux'
+const isDevMode = window.location.protocol === 'http:' || window.location.protocol === 'https:'
 const taskCollisionDetection: CollisionDetection = (args) => {
   const pointerCollisions = pointerWithin(args)
   if (pointerCollisions.length > 0) return pointerCollisions
@@ -216,6 +221,62 @@ interface PendingReleaseNotes {
 const pendingReleaseNotesStorageKey = 'vibeboard.pendingReleaseNotes'
 const seenReleaseNotesStorageKey = 'vibeboard.seenReleaseNotesVersion'
 const taskComposerDraftStoragePrefix = 'vibeboard.taskComposerDraft.'
+const onboardingStorageKey = 'vibeboard.onboarding.v1'
+
+const runModeLabels: Record<RunMode, string> = {
+  shared: 'Shared',
+  branch: 'Branch',
+  worktree: 'Worktree'
+}
+
+const runModeDescriptions: Record<RunMode, string> = {
+  shared: 'One project folder',
+  branch: 'Git branch per task',
+  worktree: 'Git worktree per task'
+}
+
+const tutorialSteps = [
+  {
+    id: 'sidebar',
+    title: 'Projects and search live here',
+    body: 'Add project folders, open global search, and configure notifications from the sidebar.',
+    spotlight: 'sidebar',
+    target: 'sidebar',
+    card: 'right'
+  },
+  {
+    id: 'tabs',
+    title: 'One tab is one project',
+    body: 'Tabs keep project boards separate. Closed projects stay in recent history so you can reopen them.',
+    spotlight: 'tabs',
+    target: 'tabs',
+    card: 'below'
+  },
+  {
+    id: 'board',
+    title: 'Tasks move through lanes',
+    body: 'Cards can be dragged between lanes and ordered inside each lane. Their borders show running, attention, and done states.',
+    spotlight: 'board',
+    target: 'board',
+    card: 'center'
+  },
+  {
+    id: 'worktree',
+    title: 'Worktree is the default run mode',
+    body: 'Each task gets its own Git worktree so parallel agents do not fight over the same files.',
+    spotlight: 'actions',
+    target: 'board-actions',
+    card: 'left'
+  },
+  {
+    id: 'demo',
+    title: 'Task details split chat and code',
+    body: 'The task popup keeps the conversation on the left and captured file changes on the right.',
+    spotlight: 'modal',
+    target: 'tutorial-demo',
+    card: 'bottom'
+  }
+]
 const commitTaskPrompt = [
   'Commit the current working tree changes for this task.',
   'Inspect git status and git diff first.',
@@ -234,6 +295,32 @@ const draftPrPrompt = [
   'Return the PR URL when it is created.',
   'If a draft PR cannot be created, explain the exact blocker.'
 ].join('\n')
+const promptTemplates = [
+  {
+    label: 'PR',
+    prompt: [
+      'Review the current task changes and prepare a draft pull request.',
+      'Check git status, summarize the changes, create a focused commit if needed, and draft a clear PR description.',
+      'Do not merge anything.'
+    ].join('\n')
+  },
+  {
+    label: 'Fix tests',
+    prompt: [
+      'Run the relevant tests for this project, inspect any failures, and fix the smallest necessary code path.',
+      'Do not make unrelated refactors.',
+      'Report the commands you ran and what changed.'
+    ].join('\n')
+  },
+  {
+    label: 'Refactor',
+    prompt: [
+      'Refactor this area for clarity while preserving behavior.',
+      'Keep the change scoped, follow existing project patterns, and avoid unrelated formatting churn.',
+      'Run the relevant checks if they exist.'
+    ].join('\n')
+  }
+]
 
 function buildRevertTaskPrompt(changes: CodeChange[]): string {
   const files = [...new Set(changes.map((change) => change.filePath).filter(Boolean))]
@@ -301,6 +388,14 @@ export function App(): ReactElement {
   const [releaseNotesModal, setReleaseNotesModal] = useState<PendingReleaseNotes | null>(null)
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<TaskDetail>(emptyTaskDetail)
   const [isLoadingOlderConversations, setLoadingOlderConversations] = useState(false)
+  const [tutorialStep, setTutorialStep] = useState<number | null>(() => {
+    try {
+      return window.localStorage.getItem(onboardingStorageKey) ? null : 0
+    } catch {
+      return null
+    }
+  })
+  const [isTutorialCompleteOpen, setTutorialCompleteOpen] = useState(false)
   const pendingActionsRef = useRef(new Set<string>())
   const [, setPendingActionVersion] = useState(0)
 
@@ -695,6 +790,53 @@ export function App(): ReactElement {
     })
   }
 
+  const updateActiveProjectRunMode = async (runMode: RunMode): Promise<void> => {
+    if (!activeProject || activeProject.runMode === runMode) return
+    await runAction(`project:runMode:${activeProject.id}`, async () => {
+      await window.vibeboard.updateProjectRunMode({ projectId: activeProject.id, runMode })
+      await refresh()
+    })
+  }
+
+  const persistTutorialComplete = (): void => {
+    try {
+      window.localStorage.setItem(onboardingStorageKey, 'done')
+    } catch {
+      // Tutorial persistence is best-effort.
+    }
+  }
+
+  const skipTutorial = (): void => {
+    persistTutorialComplete()
+    setTutorialStep(null)
+    setTutorialCompleteOpen(false)
+  }
+
+  const finishTutorial = (): void => {
+    persistTutorialComplete()
+    setTutorialStep(null)
+    setTutorialCompleteOpen(true)
+  }
+
+  const replayTutorial = (): void => {
+    try {
+      window.localStorage.removeItem(onboardingStorageKey)
+    } catch {
+      // Tutorial persistence is best-effort.
+    }
+    setTutorialCompleteOpen(false)
+    setTutorialStep(0)
+  }
+
+  const advanceTutorial = (): void => {
+    if (tutorialStep !== null && tutorialStep >= tutorialSteps.length - 1) {
+      finishTutorial()
+      return
+    }
+
+    setTutorialStep((step) => (step === null ? null : step + 1))
+  }
+
   const renameActiveTab = async (name: string): Promise<void> => {
     if (!activeTab || !name.trim()) return
     await runAction(`tab:rename:${activeTab.id}`, async () => {
@@ -794,6 +936,15 @@ export function App(): ReactElement {
         }))
       }
       await window.vibeboard.sendTaskMessage({ taskId, content })
+      await refresh()
+    })
+  }
+
+  const retryTask = async (taskId: string): Promise<void> => {
+    const task = state.tasks.find((item) => item.id === taskId)
+    if (!cursorStatus.available || !task?.projectId || task.status === 'processing') return
+    await runAction(`task:retry:${taskId}`, async () => {
+      await window.vibeboard.runTaskWithCursor(taskId)
       await refresh()
     })
   }
@@ -1033,7 +1184,7 @@ export function App(): ReactElement {
       />
 
       <main className={isSidebarCollapsed ? 'workspace sidebar-collapsed' : 'workspace'}>
-        <aside className="sidebar">
+        <aside className="sidebar" data-tour="sidebar">
           <div className="sidebar-head">
             <div className="brand">
               <LayoutDashboard size={22} />
@@ -1067,6 +1218,7 @@ export function App(): ReactElement {
               setNotificationSettingsOpen(true)
             }}
           />
+          {isDevMode && <DevTutorialLauncher onOpen={replayTutorial} />}
 
           <section className="panel board-snapshot">
             <div className="panel-title">
@@ -1100,7 +1252,7 @@ export function App(): ReactElement {
 
         </aside>
 
-        <section className="board-area">
+        <section className="board-area" data-tour="board">
           {activeTab ? (
             <>
               <header className="board-header">
@@ -1111,7 +1263,14 @@ export function App(): ReactElement {
                     onCommit={renameActiveTab}
                   />
                 </div>
-                <div className="board-header-actions">
+                <div className="board-header-actions" data-tour="board-actions">
+                  {activeProject && (
+                    <RunModeDropdown
+                      runMode={activeProject.runMode}
+                      disabled={isActionPending(`project:runMode:${activeProject.id}`)}
+                      onChange={updateActiveProjectRunMode}
+                    />
+                  )}
                   <button
                     className="icon-text-button"
                     type="button"
@@ -1217,6 +1376,8 @@ export function App(): ReactElement {
           canUseCursor={cursorStatus.available}
           onLoadOlderConversations={loadOlderSelectedTaskConversations}
           onSendMessage={sendTaskMessage}
+          onRetryTask={retryTask}
+          onDeleteTask={setDeleteTaskId}
           onClose={() => setSelectedTaskId(null)}
         />
       )}
@@ -1302,8 +1463,414 @@ export function App(): ReactElement {
           onClose={() => setReleaseNotesModal(null)}
         />
       )}
+
+      {tutorialStep !== null && (
+        <TutorialOverlay
+          step={tutorialStep}
+          onBack={() => setTutorialStep((step) => (step === null ? null : Math.max(0, step - 1)))}
+          onNext={advanceTutorial}
+          onSkip={skipTutorial}
+        />
+      )}
+
+      {isTutorialCompleteOpen && (
+        <TutorialCompleteOverlay onClose={() => setTutorialCompleteOpen(false)} />
+      )}
     </div>
   )
+}
+
+function RunModeDropdown({
+  runMode,
+  disabled,
+  onChange
+}: {
+  runMode: RunMode
+  disabled: boolean
+  onChange: (runMode: RunMode) => void
+}): ReactElement {
+  const [isOpen, setOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!isOpen) return
+
+    const closeOnOutside = (event: PointerEvent): void => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        setOpen(false)
+      }
+    }
+
+    window.addEventListener('pointerdown', closeOnOutside, true)
+    window.addEventListener('keydown', closeOnEscape, true)
+    return () => {
+      window.removeEventListener('pointerdown', closeOnOutside, true)
+      window.removeEventListener('keydown', closeOnEscape, true)
+    }
+  }, [isOpen])
+
+  return (
+    <div className="run-mode-menu" ref={menuRef}>
+      <button
+        className={isOpen ? 'run-mode-trigger open' : 'run-mode-trigger'}
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((value) => !value)}
+        title="Task run isolation"
+      >
+        <GitBranch size={15} />
+        <span>{runModeLabels[runMode]}</span>
+        <ChevronDown size={14} />
+      </button>
+
+      {isOpen && (
+        <div className="run-mode-options" role="menu">
+          {(['worktree', 'branch', 'shared'] as RunMode[]).map((mode) => (
+            <button
+              key={mode}
+              className={mode === runMode ? 'selected' : ''}
+              type="button"
+              role="menuitemradio"
+              aria-checked={mode === runMode}
+              onClick={() => {
+                onChange(mode)
+                setOpen(false)
+              }}
+            >
+              <span className="run-mode-check">{mode === runMode && <Check size={14} />}</span>
+              <span className="run-mode-option-copy">
+                <strong>{runModeLabels[mode]}</strong>
+                <small>{runModeDescriptions[mode]}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TutorialOverlay({
+  step,
+  onBack,
+  onNext,
+  onSkip
+}: {
+  step: number
+  onBack: () => void
+  onNext: () => void
+  onSkip: () => void
+}): ReactElement {
+  const currentStep = tutorialSteps[step] ?? tutorialSteps[0]
+  const isLastStep = step >= tutorialSteps.length - 1
+  const overlayRef = useRef<HTMLDivElement | null>(null)
+  const [spotlightRect, setSpotlightRect] = useState<DOMRect | null>(null)
+
+  useEffect(() => {
+    overlayRef.current?.focus()
+  }, [step])
+
+  useEffect(() => {
+    const updateSpotlightRect = (): void => {
+      const target = document.querySelector<HTMLElement>(`[data-tour="${currentStep.target}"]`)
+      setSpotlightRect(target?.getBoundingClientRect() ?? null)
+    }
+
+    const frameId = window.requestAnimationFrame(updateSpotlightRect)
+    window.addEventListener('resize', updateSpotlightRect)
+    window.addEventListener('scroll', updateSpotlightRect, true)
+
+    const target = document.querySelector<HTMLElement>(`[data-tour="${currentStep.target}"]`)
+    const resizeObserver = target ? new ResizeObserver(updateSpotlightRect) : null
+    if (target && resizeObserver) {
+      resizeObserver.observe(target)
+    }
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      window.removeEventListener('resize', updateSpotlightRect)
+      window.removeEventListener('scroll', updateSpotlightRect, true)
+      resizeObserver?.disconnect()
+    }
+  }, [currentStep.target, step])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onSkip()
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        onNext()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [onNext, onSkip])
+
+  return (
+    <div
+      className="tutorial-overlay"
+      ref={overlayRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label="VibeBoard tour"
+      tabIndex={-1}
+    >
+      <div
+        className="tutorial-spotlight"
+        style={spotlightStyle(spotlightRect, currentStep.spotlight)}
+      />
+
+      {currentStep.id === 'board' && (
+        <div className="tutorial-board-demo" aria-hidden="true">
+          <article className="tutorial-board-card task-card status-idle card-one">
+            <div className="task-open">
+              <div className="task-title-row">
+                <h3>Plan release notes</h3>
+              </div>
+            </div>
+          </article>
+          <article className="tutorial-board-card task-card status-processing card-two">
+            <div className="task-open">
+              <div className="task-title-row">
+                <h3>Fix failing tests</h3>
+              </div>
+            </div>
+          </article>
+          <article className="tutorial-board-card task-card status-done_unread card-three">
+            <div className="task-open">
+              <div className="task-title-row">
+                <h3>Review generated diff</h3>
+                <TaskStatusChip status="done_unread" />
+              </div>
+            </div>
+          </article>
+          <article className="tutorial-board-card task-card status-attention card-four">
+            <div className="task-open">
+              <div className="task-title-row">
+                <h3>Clarify deploy target</h3>
+                <TaskStatusChip status="attention" />
+              </div>
+            </div>
+          </article>
+        </div>
+      )}
+
+      {currentStep.id === 'demo' && (
+        <section className="modal-panel task-detail tutorial-demo" data-tour="tutorial-demo">
+          <div className="modal-head">
+            <div>
+              <h2>Review release notes</h2>
+              <p>vibeboard</p>
+            </div>
+          </div>
+
+          <div className="detail-grid">
+            <section className="detail-column">
+              <div className="agent-thread">
+                <div className="agent-stream tutorial-demo-stream">
+                  <article className="agent-step role-user">
+                    <MessageSquare size={16} />
+                    <div>
+                      <span className="agent-step-label">You</span>
+                      <div className="user-message-bubble">
+                        <p>Summarize the latest changes and check the release notes.</p>
+                      </div>
+                    </div>
+                  </article>
+                  <article className="agent-step role-assistant">
+                    <Code2 size={16} />
+                    <div>
+                      <span className="agent-step-label">Agent</span>
+                      <div className="message-markdown tutorial-demo-agent">
+                        <p>Checking the diff and release workflow</p>
+                      </div>
+                    </div>
+                  </article>
+                </div>
+                <div className="thread-composer tutorial-demo-composer">
+                  <textarea disabled rows={1} placeholder="Message" />
+                  <button className="icon-button" type="button" disabled title="Send">
+                    <Send size={16} />
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <section className="detail-column">
+              <div className="section-title">
+                <Code2 size={16} />
+                <span>Code changes</span>
+              </div>
+              <div className="change-stack">
+                <div className="change-summary">
+                  <span>1 files</span>
+                  <span>1 modified</span>
+                </div>
+                <div className="change-list">
+                  <article className="diff-file tutorial-demo-diff">
+                    <header className="diff-file-header">
+                      <div>
+                        <span className="change-type modified">modified</span>
+                        <strong>CHANGELOG.md</strong>
+                      </div>
+                      <span>markdown</span>
+                    </header>
+                    <div className="diff-table" role="table" aria-label="CHANGELOG.md diff">
+                      <div className="diff-rows">
+                        <div className="diff-line hunk" role="row">
+                          <span className="diff-gutter" />
+                          <span className="diff-number" />
+                          <code>@@ -12,3 +12,4 @@</code>
+                        </div>
+                        <div className="diff-line removed" role="row">
+                          <span className="diff-gutter">-</span>
+                          <span className="diff-number">12</span>
+                          <code>Release notes include updater internals.</code>
+                        </div>
+                        <div className="diff-line added" role="row">
+                          <span className="diff-gutter">+</span>
+                          <span className="diff-number">12</span>
+                          <code>Release notes focus on user-facing changes.</code>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      )}
+
+      <section className={`tutorial-card tutorial-card-${currentStep.card}`}>
+        <span className="tutorial-step-count">
+          {step + 1} / {tutorialSteps.length}
+        </span>
+        <h2>{currentStep.title}</h2>
+        <p>{currentStep.body}</p>
+        <div className="tutorial-actions">
+          <button className="secondary-action compact" type="button" onClick={onSkip}>
+            Skip
+            <span className="key-hint">Esc</span>
+          </button>
+          {step > 0 && (
+            <button className="secondary-action compact" type="button" onClick={onBack}>
+              Back
+            </button>
+          )}
+          <button className="primary-action compact" type="button" onClick={onNext}>
+            {isLastStep ? 'Done' : 'Next'}
+            <span className="key-hint key-hint-icon" aria-label="Enter">
+              <CornerDownLeft size={13} />
+            </span>
+          </button>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function TutorialCompleteOverlay({ onClose }: { onClose: () => void }): ReactElement {
+  const confettiCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  useModalEscape(onClose)
+
+  useEffect(() => {
+    const canvas = confettiCanvasRef.current
+    if (!canvas) return
+
+    const fireConfetti = confetti.create(canvas, {
+      resize: true,
+      useWorker: true
+    })
+    const defaults = {
+      particleCount: 80,
+      spread: 64,
+      startVelocity: 34,
+      ticks: 220,
+      gravity: 0.92,
+      scalar: 0.9,
+      colors: ['#ff7a1a', '#2fcf75', '#f7c56b', '#9b8cff', '#f2f2f2']
+    }
+
+    void fireConfetti({
+      ...defaults,
+      origin: { x: 0.34, y: 0.42 },
+      angle: 58
+    })
+    void fireConfetti({
+      ...defaults,
+      origin: { x: 0.66, y: 0.42 },
+      angle: 122
+    })
+
+    return () => {
+      fireConfetti.reset()
+    }
+  }, [])
+
+  useEffect(() => {
+    const closeOnEnter = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || event.isComposing || event.key !== 'Enter') return
+      event.preventDefault()
+      onClose()
+    }
+
+    window.addEventListener('keydown', closeOnEnter, true)
+    return () => window.removeEventListener('keydown', closeOnEnter, true)
+  }, [onClose])
+
+  return (
+    <div
+      className="modal-backdrop tutorial-complete-backdrop"
+      role="presentation"
+      onMouseDown={closeOnBackdropMouseDown(onClose)}
+    >
+      <canvas className="tutorial-confetti-canvas" ref={confettiCanvasRef} aria-hidden="true" />
+      <section className="tutorial-complete-card" role="dialog" aria-modal="true">
+        <h2>
+          You're ready to start VibeBoard<em>ing</em>
+        </h2>
+        <p>Create a project, add tasks, and let each agent run in its own worktree.</p>
+        <footer className="tutorial-complete-actions">
+          <button className="primary-action" type="button" onClick={onClose}>
+            Start
+            <span className="key-hint key-hint-icon" aria-label="Enter">
+              <CornerDownLeft size={14} />
+            </span>
+          </button>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
+function spotlightStyle(rect: DOMRect | null, type: string): React.CSSProperties {
+  if (!rect) return { display: 'none' }
+
+  const paddingByType: Record<string, number> = {
+    sidebar: 6,
+    tabs: 5,
+    board: 10,
+    actions: 6,
+    modal: 0
+  }
+  const padding = paddingByType[type] ?? 6
+
+  return {
+    top: Math.max(6, rect.top - padding),
+    left: Math.max(6, rect.left - padding),
+    width: Math.min(window.innerWidth - Math.max(6, rect.left - padding) - 6, rect.width + padding * 2),
+    height: Math.min(window.innerHeight - Math.max(6, rect.top - padding) - 6, rect.height + padding * 2)
+  }
 }
 
 function EmptyBoard({
@@ -1419,6 +1986,15 @@ function NotificationLauncher({ onOpen }: { onOpen: () => void }): ReactElement 
     <button className="global-search-launcher notification-launcher" type="button" onClick={onOpen} title="Notifications">
       <Bell size={16} />
       <span>Notifications</span>
+    </button>
+  )
+}
+
+function DevTutorialLauncher({ onOpen }: { onOpen: () => void }): ReactElement {
+  return (
+    <button className="global-search-launcher dev-tutorial-launcher" type="button" onClick={onOpen} title="Replay tutorial">
+      <RotateCcw size={16} />
+      <span>Replay tutorial</span>
     </button>
   )
 }
@@ -1806,7 +2382,9 @@ function UpdateBanner({
       ? 'Show notes'
       : 'Restart'
     : canDownload
-      ? 'Update'
+      ? info.mode === 'manual'
+        ? 'Open release'
+        : 'Update'
       : info.status === 'installing'
         ? info.mode === 'dev'
           ? 'Finishing'
@@ -1836,7 +2414,7 @@ function UpdateBanner({
       </div>
       {(canDownload || canInstall || isBusy) && (
         <button className="primary-action" type="button" onClick={buttonAction} disabled={isBusy}>
-          {canInstall ? <Check size={15} /> : <Download size={15} />}
+          {canInstall ? <Check size={15} /> : info.mode === 'manual' ? <ExternalLink size={15} /> : <Download size={15} />}
           <span>{buttonLabel}</span>
         </button>
       )}
@@ -1877,7 +2455,7 @@ function ReleaseNotesModal({
           </button>
         </header>
         <div className="release-notes-body">
-          <MessageMarkdown content={release.notes?.trim() || 'No release notes were provided for this version.'} />
+          <MessageMarkdown content={normalizeReleaseNotes(release.notes)} />
         </div>
         <footer className="modal-actions">
           {release.releaseUrl && (
@@ -1902,6 +2480,94 @@ function ReleaseNotesModal({
       </section>
     </div>
   )
+}
+
+function normalizeReleaseNotes(notes: string | null | undefined): string {
+  const content = notes?.trim()
+  if (!content) return 'No release notes were provided for this version.'
+  if (!/<\/?[a-z][\s\S]*>/i.test(content)) return content
+  return htmlReleaseNotesToMarkdown(content) || content.replace(/<[^>]+>/g, '').trim()
+}
+
+function htmlReleaseNotesToMarkdown(content: string): string {
+  const parser = new DOMParser()
+  const document = parser.parseFromString(`<main>${content}</main>`, 'text/html')
+  const root = document.querySelector('main')
+  if (!root) return ''
+  return Array.from(root.childNodes)
+    .map((node) => htmlNodeToMarkdown(node).trim())
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+function htmlNodeToMarkdown(node: ChildNode): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.textContent?.replace(/\s+/g, ' ').trim() ?? ''
+  }
+  if (!(node instanceof HTMLElement)) return ''
+
+  const tag = node.tagName.toLowerCase()
+  const text = node.textContent?.replace(/\s+/g, ' ').trim() ?? ''
+  if (!text && tag !== 'br') return ''
+
+  if (tag === 'h1') return `# ${text}`
+  if (tag === 'h2') return `## ${text}`
+  if (tag === 'h3') return `### ${text}`
+  if (tag === 'h4') return `#### ${text}`
+  if (tag === 'p') return inlineHtmlToMarkdown(node)
+  if (tag === 'br') return '\n'
+  if (tag === 'ul' || tag === 'ol') {
+    return Array.from(node.children)
+      .filter((child) => child.tagName.toLowerCase() === 'li')
+      .map((child, index) => `${tag === 'ol' ? `${index + 1}.` : '-'} ${inlineHtmlToMarkdown(child)}`)
+      .join('\n')
+  }
+  if (tag === 'table') return htmlTableToMarkdown(node)
+  if (tag === 'blockquote') return inlineHtmlToMarkdown(node).split('\n').map((line) => `> ${line}`).join('\n')
+  if (tag === 'pre') return `\`\`\`\n${node.textContent?.trim() ?? ''}\n\`\`\``
+  return Array.from(node.childNodes)
+    .map((child) => htmlNodeToMarkdown(child).trim())
+    .filter(Boolean)
+    .join('\n\n') || inlineHtmlToMarkdown(node)
+}
+
+function inlineHtmlToMarkdown(element: Element): string {
+  return Array.from(element.childNodes)
+    .map((node) => {
+      if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? ''
+      if (!(node instanceof HTMLElement)) return ''
+      const tag = node.tagName.toLowerCase()
+      const value = inlineHtmlToMarkdown(node).trim()
+      if (!value) return ''
+      if (tag === 'code') return `\`${value}\``
+      if (tag === 'strong' || tag === 'b') return `**${value}**`
+      if (tag === 'em' || tag === 'i') return `_${value}_`
+      if (tag === 'a') {
+        const href = node.getAttribute('href')
+        return href ? `[${value}](${href})` : value
+      }
+      if (tag === 'br') return '\n'
+      return value
+    })
+    .join('')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function htmlTableToMarkdown(table: Element): string {
+  const rows = Array.from(table.querySelectorAll('tr')).map((row) =>
+    Array.from(row.children).map((cell) => inlineHtmlToMarkdown(cell).replace(/\|/g, '\\|'))
+  )
+  if (rows.length === 0) return ''
+  const width = Math.max(...rows.map((row) => row.length))
+  const normalizedRows = rows.map((row) => [...row, ...Array(Math.max(0, width - row.length)).fill('')])
+  const header = normalizedRows[0]
+  const separator = Array.from({ length: width }, () => '---')
+  const body = normalizedRows.slice(1)
+  return [header, separator, ...body]
+    .map((row) => `| ${row.join(' | ')} |`)
+    .join('\n')
 }
 
 function readPendingReleaseNotes(): PendingReleaseNotes | null {
@@ -2099,6 +2765,7 @@ function TopBar({
     <div className="tabs-bar">
       <div
         className={draggedTabId ? 'tabs dragging-tab' : 'tabs'}
+        data-tour="tabs"
         onDragOver={handleTabsDragOver}
         onDrop={(event) => handleTabDrop(event)}
       >
@@ -2853,8 +3520,9 @@ function TaskDropPreview(): ReactElement {
 function TaskStatusChip({ status }: { status: Task['status'] }): ReactElement | null {
   if (status === 'attention') {
     return (
-      <span className="task-status-chip attention" title="Needs attention">
-        <AlertTriangle size={13} />
+      <span className="task-status-chip attention" title="Needs you">
+        <AlertTriangle size={12} />
+        <span>Needs you</span>
       </span>
     )
   }
@@ -3037,6 +3705,19 @@ function RenameTaskModal({
   )
 }
 
+function TaskRunMeta({ task, project }: { task: Task; project: Project | null }): ReactElement | null {
+  const mode = task.runModeOverride ?? project?.runMode ?? 'shared'
+  if (mode === 'shared' && !task.branchName && !task.worktreePath) return null
+
+  return (
+    <div className="task-run-meta">
+      <span>{mode === 'worktree' ? 'Worktree' : mode === 'branch' ? 'Branch' : 'Shared'}</span>
+      {task.branchName && <code>{task.branchName}</code>}
+      {task.worktreePath && <small>{compactPath(task.worktreePath)}</small>}
+    </div>
+  )
+}
+
 function TaskDetailModal({
   task,
   project,
@@ -3047,6 +3728,8 @@ function TaskDetailModal({
   canUseCursor,
   onLoadOlderConversations,
   onSendMessage,
+  onRetryTask,
+  onDeleteTask,
   onClose
 }: {
   task: Task
@@ -3058,9 +3741,12 @@ function TaskDetailModal({
   canUseCursor: boolean
   onLoadOlderConversations: () => void
   onSendMessage: (taskId: string, content: string) => void
+  onRetryTask: (taskId: string) => void
+  onDeleteTask: (taskId: string) => void
   onClose: () => void
 }): ReactElement {
   const canChat = Boolean(project) && canUseCursor && task.status !== 'processing'
+  const canRetry = canChat && task.status === 'attention'
   const hasCapturedChanges = changes.length > 0
   useModalEscape(onClose)
 
@@ -3079,6 +3765,11 @@ function TaskDetailModal({
     onSendMessage(task.id, buildRevertTaskPrompt(changes))
   }
 
+  const requestRetry = (): void => {
+    if (!canRetry) return
+    onRetryTask(task.id)
+  }
+
   return (
     <div className="modal-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
       <section className="modal-panel task-detail">
@@ -3086,8 +3777,20 @@ function TaskDetailModal({
           <div>
             <h2>{task.title}</h2>
             <p>{project?.name ?? 'No project'}</p>
+            <TaskRunMeta task={task} project={project} />
           </div>
           <div className="modal-head-actions">
+            {canRetry && (
+              <button
+                className="icon-text-button task-retry-action"
+                type="button"
+                onClick={requestRetry}
+                title="Retry with the saved task conversation"
+              >
+                <RotateCcw size={16} />
+                <span>Retry</span>
+              </button>
+            )}
             {hasCapturedChanges && (
               <>
                 <button
@@ -3122,6 +3825,16 @@ function TaskDetailModal({
                 </button>
               </>
             )}
+            <button
+              className="icon-text-button task-git-action danger"
+              type="button"
+              onClick={() => onDeleteTask(task.id)}
+              disabled={task.status === 'processing'}
+              title="Delete task"
+            >
+              <Trash2 size={16} />
+              <span>Delete</span>
+            </button>
             <button className="icon-button" type="button" onClick={onClose} title="Close">
               <X size={18} />
             </button>
@@ -3130,10 +3843,6 @@ function TaskDetailModal({
 
         <div className="detail-grid">
           <section className="detail-column">
-            <div className="section-title">
-              <MessageSquare size={16} />
-              <span>Prompt</span>
-            </div>
             <AgentThread
               key={task.id}
               conversations={conversations}
@@ -3189,17 +3898,9 @@ function AgentThread({
   onSendMessage: (taskId: string, content: string) => void
 }): ReactElement {
   const [draft, setDraft] = useState(() => readTaskComposerDraft(task.id))
-  const [activePromptId, setActivePromptId] = useState<string | null>(null)
-  const [shouldShowPinnedPrompt, setShouldShowPinnedPrompt] = useState(false)
   const streamRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
-  const userMessageRefs = useRef(new Map<string, HTMLDivElement>())
   const olderScrollSnapshotRef = useRef<{ height: number; top: number } | null>(null)
-  const userEntries = conversations.filter((entry) => entry.role === 'user')
-  const latestUserEntry = userEntries.at(-1) ?? null
-  const activePromptEntry =
-    userEntries.find((entry) => entry.id === activePromptId) ?? latestUserEntry ?? userEntries[0] ?? null
-  const prompt = activePromptEntry?.content.trim() ?? ''
   const showSystemEntries = task.status === 'processing' || task.status === 'attention'
   const threadEntries = compactConversationEntries(
     conversations
@@ -3215,11 +3916,6 @@ function AgentThread({
       .filter((entry) => entry.content)
   )
   const scrollKey = `${task.status}:${threadEntries.map((entry) => `${entry.id}:${entry.content.length}`).join('|')}`
-
-  useEffect(() => {
-    setActivePromptId(latestUserEntry?.id ?? null)
-    setShouldShowPinnedPrompt(false)
-  }, [latestUserEntry?.id, task.id])
 
   useEffect(() => {
     setDraft(readTaskComposerDraft(task.id))
@@ -3245,11 +3941,9 @@ function AgentThread({
       if (olderSnapshot) {
         olderScrollSnapshotRef.current = null
         stream.scrollTop = stream.scrollHeight - olderSnapshot.height + olderSnapshot.top
-        syncActivePromptFromScroll()
         return
       }
       stream.scrollTop = stream.scrollHeight
-      syncActivePromptFromScroll()
     })
 
     return () => window.cancelAnimationFrame(frameId)
@@ -3266,37 +3960,8 @@ function AgentThread({
     onLoadOlderConversations()
   }
 
-  const syncActivePromptFromScroll = (): void => {
-    const stream = streamRef.current
-    if (!stream || userEntries.length === 0) return
-
-    const anchorY = stream.scrollTop + 32
-    let currentEntry = latestUserEntry ?? userEntries[0]
-    let hasMountedUserMessage = false
-    for (const entry of userEntries) {
-      const element = userMessageRefs.current.get(entry.id)
-      if (!element) continue
-      hasMountedUserMessage = true
-      if (element.offsetTop <= anchorY) {
-        currentEntry = entry
-      } else {
-        break
-      }
-    }
-    if (!hasMountedUserMessage) return
-    const currentElement = userMessageRefs.current.get(currentEntry.id)
-    if (currentElement) {
-      const top = currentElement.offsetTop - stream.scrollTop
-      const bottom = top + currentElement.offsetHeight
-      const isVisible = bottom > 0 && top < stream.clientHeight
-      setShouldShowPinnedPrompt(!isVisible)
-    }
-    setActivePromptId((currentId) => (currentId === currentEntry.id ? currentId : currentEntry.id))
-  }
-
   const handleStreamScroll = (): void => {
     maybeLoadOlder()
-    syncActivePromptFromScroll()
   }
 
   const send = (): void => {
@@ -3307,18 +3972,19 @@ function AgentThread({
     setDraft('')
   }
 
+  const useTemplate = (template: string): void => {
+    setDraft((current) => {
+      const trimmed = current.trim()
+      return trimmed ? `${trimmed}\n\n${template}` : template
+    })
+    window.requestAnimationFrame(() => composerRef.current?.focus())
+  }
+
   return (
     <div className="agent-thread">
       <div className="agent-stream" ref={streamRef} onScroll={handleStreamScroll}>
-        {prompt && shouldShowPinnedPrompt && (
-          <section className="prompt-panel prompt-panel-pinned role-user">
-            <div className="user-message-bubble">
-              <MessageMarkdown content={prompt} />
-            </div>
-          </section>
-        )}
         {isLoadingOlderConversations && <div className="thread-empty-state">Loading earlier messages</div>}
-        {!prompt && threadEntries.length === 0 ? (
+        {threadEntries.length === 0 ? (
           <div className="thread-empty-state">
             Chat is empty
           </div>
@@ -3334,14 +4000,6 @@ function AgentThread({
           threadEntries.map((entry) => (
             <div
               key={entry.id}
-              ref={(element) => {
-                if (entry.role !== 'user') return
-                if (element) {
-                  userMessageRefs.current.set(entry.id, element)
-                } else {
-                  userMessageRefs.current.delete(entry.id)
-                }
-              }}
               className={`agent-step role-${entry.role}`}
             >
               {entry.role === 'user' ? <MessageSquare size={16} /> : <Code2 size={16} />}
@@ -3361,6 +4019,21 @@ function AgentThread({
           ))
         )}
       </div>
+
+      {canSend && (
+        <div className="prompt-template-row" aria-label="Prompt templates">
+          {promptTemplates.map((template) => (
+            <button
+              key={template.label}
+              className="template-chip"
+              type="button"
+              onClick={() => useTemplate(template.prompt)}
+            >
+              {template.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="thread-composer">
         <textarea
