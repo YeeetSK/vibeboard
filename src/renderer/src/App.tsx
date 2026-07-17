@@ -3878,19 +3878,6 @@ function RenameTaskModal({
   )
 }
 
-function TaskRunMeta({ task, project }: { task: Task; project: Project | null }): ReactElement | null {
-  const mode = task.runModeOverride ?? project?.runMode ?? 'shared'
-  if (mode === 'shared' && !task.branchName && !task.worktreePath) return null
-
-  return (
-    <div className="task-run-meta">
-      <span>{mode === 'worktree' ? 'Worktree' : mode === 'branch' ? 'Branch' : 'Shared'}</span>
-      {task.branchName && <code>{task.branchName}</code>}
-      {task.worktreePath && <small>{compactPath(task.worktreePath)}</small>}
-    </div>
-  )
-}
-
 function formatTaskRunElapsed(startedAt: string, nowMs: number): string {
   const startedMs = Date.parse(startedAt)
   if (!Number.isFinite(startedMs)) return '0s'
@@ -3992,84 +3979,85 @@ function TaskDetailModal({
           <div>
             <h2>{task.title}</h2>
             <p>{project?.name ?? 'No project'}</p>
+          </div>
+          <div className="modal-head-actions-stack">
             {isRunning && runStartedAt && (
               <div className="task-run-status">
                 <span className="task-run-status-label">Running</span>
                 <TaskRunElapsed startedAt={runStartedAt} />
               </div>
             )}
-            <TaskRunMeta task={task} project={project} />
-          </div>
-          <div className="modal-head-actions">
-            {isRunning && (
+            <div className="modal-head-actions">
+              {isRunning && (
+                <button
+                  className="icon-text-button task-stop-action"
+                  type="button"
+                  onClick={() => onStopTask(task.id)}
+                  title="Stop the current task run"
+                >
+                  <Square size={14} />
+                  <span>Stop</span>
+                </button>
+              )}
+              {canRetry && (
+                <button
+                  className="icon-text-button task-retry-action"
+                  type="button"
+                  onClick={requestRetry}
+                  title="Retry with the saved task conversation"
+                >
+                  <RotateCcw size={16} />
+                  <span>Retry</span>
+                </button>
+              )}
+              {hasCapturedChanges && (
+                <>
+                  <button
+                    className="icon-text-button task-git-action"
+                    type="button"
+                    onClick={requestCommit}
+                    disabled={!canChat}
+                    title="Ask agent to commit these changes and push to the default branch on origin"
+                  >
+                    <GitCommitHorizontal size={16} />
+                    <span>Commit</span>
+                  </button>
+                  <button
+                    className="icon-text-button task-git-action"
+                    type="button"
+                    onClick={requestDraftPr}
+                    disabled={!canChat}
+                    title="Ask agent to create a draft pull request"
+                  >
+                    <GitPullRequestDraft size={16} />
+                    <span>Draft PR</span>
+                  </button>
+                  <button
+                    className="icon-text-button task-git-action danger"
+                    type="button"
+                    onClick={requestRevert}
+                    disabled={!canChat}
+                    title="Ask agent to revert this task's captured changes"
+                  >
+                    <Undo2 size={16} />
+                    <span>Revert</span>
+                  </button>
+                </>
+              )}
               <button
-                className="icon-text-button task-stop-action"
+                className="icon-text-button task-git-action danger"
                 type="button"
-                onClick={() => onStopTask(task.id)}
-                title="Stop the current task run"
+                onClick={() => onDeleteTask(task.id)}
+                disabled={task.status === 'processing'}
+                title="Delete task"
               >
-                <Square size={14} />
-                <span>Stop</span>
+                <Trash2 size={16} />
+                <span>Delete</span>
               </button>
-            )}
-            {canRetry && (
-              <button
-                className="icon-text-button task-retry-action"
-                type="button"
-                onClick={requestRetry}
-                title="Retry with the saved task conversation"
-              >
-                <RotateCcw size={16} />
-                <span>Retry</span>
+              <button className="icon-button" type="button" onClick={onClose} title="Close">
+                <X size={18} />
               </button>
-            )}
-            {hasCapturedChanges && (
-              <>
-                <button
-                  className="icon-text-button task-git-action"
-                  type="button"
-                  onClick={requestCommit}
-                  disabled={!canChat}
-                  title="Ask agent to commit these changes and push to the default branch on origin"
-                >
-                  <GitCommitHorizontal size={16} />
-                  <span>Commit</span>
-                </button>
-                <button
-                  className="icon-text-button task-git-action"
-                  type="button"
-                  onClick={requestDraftPr}
-                  disabled={!canChat}
-                  title="Ask agent to create a draft pull request"
-                >
-                  <GitPullRequestDraft size={16} />
-                  <span>Draft PR</span>
-                </button>
-                <button
-                  className="icon-text-button task-git-action danger"
-                  type="button"
-                  onClick={requestRevert}
-                  disabled={!canChat}
-                  title="Ask agent to revert this task's captured changes"
-                >
-                  <Undo2 size={16} />
-                  <span>Revert</span>
-                </button>
-              </>
-            )}
-            <button
-              className="icon-text-button task-git-action danger"
-              type="button"
-              onClick={() => onDeleteTask(task.id)}
-              disabled={task.status === 'processing'}
-              title="Delete task"
-            >
-              <Trash2 size={16} />
-              <span>Delete</span>
-            </button>
-            <button className="icon-button" type="button" onClick={onClose} title="Close">
-              <X size={18} />
-            </button>
+            </div>
           </div>
         </div>
 

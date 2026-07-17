@@ -111,7 +111,6 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
   }
 
   const baselineDiff = await collectGitDiffText(runTarget.cwd)
-  store.appendConversation(taskId, 'system', formatRunTargetMessage(runTarget))
   const optimizedPrompt = await buildFocusedPrompt(
     runTarget.cwd,
     context.prompt,
@@ -119,7 +118,6 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
     context.attachments,
     runTarget
   )
-  store.appendConversation(taskId, 'system', 'Prepared a focused project brief to reduce unnecessary repo exploration.')
   onStateChanged()
 
   const child = spawn(agentCommand, ['--print', '--force', '--trust', '--output-format', 'stream-json', optimizedPrompt], {
@@ -309,16 +307,6 @@ async function prepareTaskRunTarget(task: Task, project: Project, store: VibeBoa
     branchName,
     worktreePath
   }
-}
-
-function formatRunTargetMessage(target: TaskRunTarget): string {
-  if (target.mode === 'branch') {
-    return `Run mode: branch per task (${target.branchName ?? 'task branch'}).`
-  }
-  if (target.mode === 'worktree') {
-    return `Run mode: worktree per task (${target.branchName ?? 'task branch'}). The project folder stays on its own branch and is synced to origin automatically when needed.`
-  }
-  return 'Run mode: shared working tree.'
 }
 
 const liveProgressMinIntervalMs = 2500
