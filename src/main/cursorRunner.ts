@@ -67,6 +67,7 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
     return
   }
   const isRevertRun = context.prompt.includes('Revert the code changes made for this specific task only.')
+  const isCommitToMainRun = /Push the commit to (main|the default branch) on origin/i.test(context.prompt)
 
   store.updateTaskStatus({ taskId, status: 'processing' })
   store.appendConversation(taskId, 'system', 'Starting Cursor CLI agent in the project folder.')
@@ -101,9 +102,17 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
     return
   }
 
+  if (runTarget.mode === 'worktree') {
+    const syncMessage = await syncPrimaryCheckoutToOrigin(context.project.path, { stashIfNeeded: false })
+    if (syncMessage.didSync) {
+      store.appendConversation(taskId, 'system', syncMessage.message)
+      onStateChanged()
+    }
+  }
+
   const baselineDiff = await collectGitDiffText(runTarget.cwd)
   store.appendConversation(taskId, 'system', formatRunTargetMessage(runTarget))
-  const optimizedPrompt = await buildFocusedPrompt(runTarget.cwd, context.prompt, context.previousPrompts)
+  const optimizedPrompt = await buildFocusedPrompt(runTarget.cwd, context.prompt, context.previousPrompts, runTarget)
   store.appendConversation(taskId, 'system', 'Prepared a focused project brief to reduce unnecessary repo exploration.')
   onStateChanged()
 
@@ -214,6 +223,22 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
         if (isRevertRun || changes.length > 0) {
           store.replaceCodeChanges(taskId, changes)
         }
+
+        if (isCommitToMainRun && context.project) {
+          try {
+            const syncMessage = await syncPrimaryCheckoutToOrigin(context.project.path, { stashIfNeeded: true })
+            store.appendConversation(taskId, 'system', syncMessage.message)
+          } catch (error) {
+            store.appendConversation(
+              taskId,
+              'system',
+              error instanceof Error
+                ? `Could not sync the project folder to origin: ${error.message}`
+                : 'Could not sync the project folder to origin.'
+            )
+          }
+        }
+
         store.updateTaskStatus({ taskId, status: 'done_unread' })
       } else {
         store.updateTaskStatus({ taskId, status: 'attention' })
@@ -277,7 +302,7 @@ function formatRunTargetMessage(target: TaskRunTarget): string {
     return `Run mode: branch per task (${target.branchName ?? 'task branch'}).`
   }
   if (target.mode === 'worktree') {
-    return `Run mode: worktree per task (${target.branchName ?? 'task branch'}).`
+    return `Run mode: worktree per task (${target.branchName ?? 'task branch'}). The project folder stays on its own branch and is synced to origin automatically when needed.`
   }
   return 'Run mode: shared working tree.'
 }
@@ -547,13 +572,103 @@ async function ensureWorktree(cwd: string, worktreePath: string, branchName: str
   }
 
   await mkdir(path.dirname(worktreePath), { recursive: true })
+  await runCommand('git', ['fetch', 'origin', '--prune'], cwd)
   const branchExists = await runCommandStrict('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`], cwd)
     .then(() => true)
     .catch(() => false)
-  const args = branchExists
-    ? ['worktree', 'add', worktreePath, branchName]
-    : ['worktree', 'add', '-b', branchName, worktreePath, 'HEAD']
-  await runCommandStrict('git', args, cwd)
+
+  if (branchExists) {
+    await runCommandStrict('git', ['worktree', 'add', worktreePath, branchName], cwd)
+    return
+  }
+
+  const defaultBranch = await resolveDefaultBranch(cwd)
+  const startPoint =
+    defaultBranch &&
+    (await runCommandStrict('git', ['rev-parse', '--verify', `origin/${defaultBranch}`], cwd)
+      .then(() => `origin/${defaultBranch}`)
+      .catch(() => null))
+
+  await runCommandStrict(
+    'git',
+    ['worktree', 'add', '-b', branchName, worktreePath, startPoint ?? 'HEAD'],
+    cwd
+  )
+}
+
+interface SyncPrimaryCheckoutResult {
+  didSync: boolean
+  message: string
+}
+
+/** Fast-forward the project folder (primary checkout) to origin's default branch when safe. */
+async function syncPrimaryCheckoutToOrigin(
+  projectPath: string,
+  options: { stashIfNeeded: boolean }
+): Promise<SyncPrimaryCheckoutResult> {
+  const isGitRepo = await runCommandStrict('git', ['rev-parse', '--is-inside-work-tree'], projectPath)
+    .then((output) => output.trim() === 'true')
+    .catch(() => false)
+  if (!isGitRepo) {
+    return { didSync: false, message: 'Project folder is not a Git repository; skipped sync.' }
+  }
+
+  await runCommand('git', ['fetch', 'origin', '--prune'], projectPath)
+
+  const defaultBranch = await resolveDefaultBranch(projectPath)
+  if (!defaultBranch) {
+    return { didSync: false, message: 'Could not resolve the default branch; skipped project folder sync.' }
+  }
+
+  const currentBranch = (await runCommand('git', ['branch', '--show-current'], projectPath)).trim()
+  if (!currentBranch) {
+    return { didSync: false, message: 'Project folder is in detached HEAD; skipped sync.' }
+  }
+  if (currentBranch !== defaultBranch) {
+    return {
+      didSync: false,
+      message: `Project folder is on \`${currentBranch}\`, not \`${defaultBranch}\`; left untouched.`
+    }
+  }
+
+  const behindCount = Number.parseInt(
+    (await runCommand('git', ['rev-list', '--count', `HEAD..origin/${defaultBranch}`], projectPath)).trim(),
+    10
+  )
+  if (!Number.isFinite(behindCount) || behindCount <= 0) {
+    return { didSync: false, message: `Project folder already matches origin/${defaultBranch}.` }
+  }
+
+  const dirty = (await runCommand('git', ['status', '--porcelain'], projectPath)).trim().length > 0
+  let stashRef: string | null = null
+  if (dirty) {
+    if (!options.stashIfNeeded) {
+      return {
+        didSync: false,
+        message: `Project folder is ${behindCount} commit(s) behind origin/${defaultBranch} but has local changes; left untouched.`
+      }
+    }
+
+    const stashMessage = `vibeboard-autosync-${new Date().toISOString().slice(0, 10)}`
+    await runCommandStrict('git', ['stash', 'push', '-u', '-m', stashMessage], projectPath)
+    stashRef = stashMessage
+  }
+
+  try {
+    await runCommandStrict('git', ['merge', '--ff-only', `origin/${defaultBranch}`], projectPath)
+  } catch (error) {
+    if (stashRef) {
+      await runCommand('git', ['stash', 'pop'], projectPath)
+    }
+    throw error
+  }
+
+  return {
+    didSync: true,
+    message: stashRef
+      ? `Synced project folder to origin/${defaultBranch} (${behindCount} commit(s)). Local WIP stashed as \`${stashRef}\`.`
+      : `Synced project folder to origin/${defaultBranch} (${behindCount} commit(s)).`
+  }
 }
 
 function taskWorktreePath(projectId: string, taskId: string): string {
@@ -620,7 +735,12 @@ async function resolveDefaultBranch(cwd: string): Promise<string | null> {
   return null
 }
 
-async function buildFocusedPrompt(projectPath: string, prompt: string, previousPrompts: string[]): Promise<string> {
+async function buildFocusedPrompt(
+  projectPath: string,
+  prompt: string,
+  previousPrompts: string[],
+  runTarget?: TaskRunTarget
+): Promise<string> {
   const [trackedFiles, changedFiles, manifestSummary, projectMemory] = await Promise.all([
     listTrackedFiles(projectPath),
     listChangedFiles(projectPath),
@@ -628,6 +748,17 @@ async function buildFocusedPrompt(projectPath: string, prompt: string, previousP
     prepareProjectMemory(projectPath)
   ])
   const candidateFiles = rankRelevantFiles(prompt, trackedFiles, changedFiles).slice(0, 40)
+  const worktreeRules =
+    runTarget?.mode === 'worktree'
+      ? [
+          'Git worktree rules:',
+          '- You are inside a task worktree. Edit only this worktree.',
+          '- Do not edit or clean up the project main checkout or other worktrees.',
+          '- The default branch (main/master) is usually checked out in the project folder already, so never run `git checkout main` or `git checkout master` here.',
+          '- To publish commits onto the default branch on origin, push with `git push origin HEAD:main` (or HEAD:master). Prefer that over checking out the default branch.',
+          '- VibeBoard syncs the project folder to origin after Commit-to-main runs; you do not need to update it yourself.'
+        ].join('\n')
+      : ''
 
   return [
     'You are running inside VibeBoard as a background coding agent.',
@@ -645,6 +776,7 @@ async function buildFocusedPrompt(projectPath: string, prompt: string, previousP
     `- Never mention ${actualMessageMarker} again after that first marker line.`,
     `- Put only the final answer after that first marker line. Do not put tool logs, stream metadata, progress narration, prompt text, or internal reasoning after it.`,
     '',
+    worktreeRules,
     projectMemory
       ? `VibeBoard project memory from ${projectMemoryFileName}:\n${projectMemory}`
       : `VibeBoard project memory: ${projectMemoryFileName} is available for durable local notes.`,

@@ -283,7 +283,9 @@ const commitTaskPrompt = [
   'Stage only files that belong to this task.',
   'Choose a concise conventional commit message yourself.',
   'Create the commit locally.',
-  'Push the commit to main on origin.',
+  'Push the commit to the default branch on origin without checking out that branch.',
+  'If main/master is already checked out in another worktree, use `git push origin HEAD:main` (or HEAD:master).',
+  'Do not try to update the project main checkout yourself; VibeBoard syncs it after this run.',
   'If there are no commit-worthy changes, say that clearly.'
 ].join('\n')
 const draftPrPrompt = [
@@ -3911,7 +3913,7 @@ function TaskDetailModal({
                   type="button"
                   onClick={requestCommit}
                   disabled={!canChat}
-                  title="Ask agent to commit these changes and push to main"
+                  title="Ask agent to commit these changes and push to the default branch on origin"
                 >
                   <GitCommitHorizontal size={16} />
                   <span>Commit</span>
