@@ -1076,29 +1076,43 @@ export class VibeBoardStore {
     this.db.prepare('UPDATE tasks SET title = ?, updatedAt = ? WHERE id = ?').run(title, now(), input.id)
   }
 
+  setTaskRunStartedAt(taskId: string, runStartedAt: string | null): void {
+    this.db.prepare('UPDATE tasks SET runStartedAt = ? WHERE id = ?').run(runStartedAt, taskId)
+  }
+
   updateTaskStatus(input: UpdateTaskStatusInput): void {
     const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(input.taskId) as Task | undefined
     if (!task || task.status === input.status) return
     const timestamp = now()
     const targetLane = this.findStatusLane(task.tabId, input.status)
+    const leavingProcessing = task.status === 'processing' && input.status !== 'processing'
+    const runStartedAt = leavingProcessing ? null : (task.runStartedAt ?? null)
 
     const transaction = this.db.transaction(() => {
       if (targetLane && targetLane.id !== task.laneId) {
         const targetPosition = this.nextTaskPosition(targetLane.id)
         this.db
-          .prepare('UPDATE tasks SET laneId = ?, position = ?, status = ?, updatedAt = ? WHERE id = ?')
-          .run(targetLane.id, targetPosition, input.status, timestamp, input.taskId)
+          .prepare(
+            'UPDATE tasks SET laneId = ?, position = ?, status = ?, updatedAt = ?, runStartedAt = ? WHERE id = ?'
+          )
+          .run(targetLane.id, targetPosition, input.status, timestamp, runStartedAt, input.taskId)
         this.reorderLaneTasks(task.laneId, timestamp)
       } else {
         this.db
-          .prepare('UPDATE tasks SET status = ?, updatedAt = ? WHERE id = ?')
-          .run(input.status, timestamp, input.taskId)
+          .prepare('UPDATE tasks SET status = ?, updatedAt = ?, runStartedAt = ? WHERE id = ?')
+          .run(input.status, timestamp, runStartedAt, input.taskId)
       }
     })
 
     transaction()
     this.taskStatusListener?.({
-      task: { ...task, laneId: targetLane?.id ?? task.laneId, status: input.status, updatedAt: timestamp },
+      task: {
+        ...task,
+        laneId: targetLane?.id ?? task.laneId,
+        status: input.status,
+        updatedAt: timestamp,
+        runStartedAt
+      },
       oldStatus: task.status,
       newStatus: input.status
     })
@@ -1233,6 +1247,7 @@ export class VibeBoardStore {
     this.ensureColumn('tasks', 'runModeOverride', 'TEXT')
     this.ensureColumn('tasks', 'branchName', 'TEXT')
     this.ensureColumn('tasks', 'worktreePath', 'TEXT')
+    this.ensureColumn('tasks', 'runStartedAt', 'TEXT')
     this.ensureColumn('code_changes', 'language', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('code_changes', 'diffText', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('conversations', 'attachmentsJson', "TEXT NOT NULL DEFAULT '[]'")

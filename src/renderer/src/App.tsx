@@ -3907,6 +3907,7 @@ function TaskRunElapsed({ startedAt }: { startedAt: string }): ReactElement {
   const [nowMs, setNowMs] = useState(() => Date.now())
 
   useEffect(() => {
+    setNowMs(Date.now())
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [startedAt])
@@ -3952,7 +3953,10 @@ function TaskDetailModal({
   const canChat = Boolean(project) && canUseCursor && task.status !== 'processing'
   const canRetry = canChat && task.status === 'attention'
   const isRunning = task.status === 'processing'
-  const runStartedAt = task.runStartedAt ?? (isRunning ? task.updatedAt : null)
+  const lastUserMessageAt =
+    [...conversations].reverse().find((entry) => entry.role === 'user')?.createdAt ?? null
+  // Prefer the persisted run start; never use updatedAt (it moves with live progress).
+  const runStartedAt = task.runStartedAt ?? (isRunning ? lastUserMessageAt : null)
   const lastPrompt =
     [...conversations].reverse().find((entry) => entry.role === 'user')?.content.trim() ||
     task.summary.trim() ||

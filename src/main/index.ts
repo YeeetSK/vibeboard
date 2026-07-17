@@ -43,7 +43,6 @@ let store: VibeBoardStore
 const cursorAdapter = new PlaceholderCursorAdapter()
 const runningTasks = new Set<string>()
 const runningTaskPromises = new Map<string, Promise<void>>()
-const taskRunStartedAt = new Map<string, string>()
 const cancelledTasks = new Set<string>()
 const projectRunQueues = new Map<string, Promise<void>>()
 const windows = new Set<BrowserWindow>()
@@ -182,16 +181,7 @@ const createWindow = (): void => {
 }
 
 const registerIpc = (): void => {
-  ipcMain.handle('state:get', () => {
-    const state = store.getState()
-    return {
-      ...state,
-      tasks: state.tasks.map((task) => ({
-        ...task,
-        runStartedAt: taskRunStartedAt.get(task.id) ?? null
-      }))
-    }
-  })
+  ipcMain.handle('state:get', () => store.getState())
   ipcMain.handle('task:detail', async (_event, input: GetTaskDetailInput) => {
     const detail = store.getTaskDetail(input)
     const conversations = await Promise.all(
@@ -697,7 +687,7 @@ const startCursorTask = (taskId: string): RunTaskResult => {
 
   cancelledTasks.delete(taskId)
   runningTasks.add(taskId)
-  taskRunStartedAt.set(taskId, new Date().toISOString())
+  store.setTaskRunStartedAt(taskId, new Date().toISOString())
 
   if (isRetry) {
     store.appendConversation(taskId, 'system', 'Retrying with the saved task conversation and focused project context.')
@@ -729,7 +719,6 @@ const startCursorTask = (taskId: string): RunTaskResult => {
   const runPromise = run().finally(() => {
     runningTasks.delete(taskId)
     runningTaskPromises.delete(taskId)
-    taskRunStartedAt.delete(taskId)
     if (projectQueueKey && projectRunQueues.get(projectQueueKey) === runPromise) {
       projectRunQueues.delete(projectQueueKey)
     }
