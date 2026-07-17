@@ -4,6 +4,7 @@ import { autoUpdater } from 'electron-updater'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 import { VibeBoardStore } from './database'
 import { PlaceholderCursorAdapter, cursorInstallCommand } from './cursorAdapter'
@@ -25,6 +26,7 @@ import type {
   NotificationEventKey,
   NotificationSettings,
   Project,
+  QueuedTaskMessage,
   RecordSearchOpenInput,
   ReorderTabsInput,
   RenameInput,
@@ -45,6 +47,7 @@ const runningTasks = new Set<string>()
 const runningTaskPromises = new Map<string, Promise<void>>()
 const cancelledTasks = new Set<string>()
 const projectRunQueues = new Map<string, Promise<void>>()
+const taskMessageQueues = new Map<string, QueuedTaskMessage[]>()
 const windows = new Set<BrowserWindow>()
 const execFileAsync = promisify(execFile)
 let isQuitConfirmed = false
@@ -181,7 +184,16 @@ const createWindow = (): void => {
 }
 
 const registerIpc = (): void => {
-  ipcMain.handle('state:get', () => store.getState())
+  ipcMain.handle('state:get', () => {
+    const state = store.getState()
+    return {
+      ...state,
+      tasks: state.tasks.map((task) => ({
+        ...task,
+        queuedMessages: taskMessageQueues.get(task.id) ?? []
+      }))
+    }
+  })
   ipcMain.handle('task:detail', async (_event, input: GetTaskDetailInput) => {
     const detail = store.getTaskDetail(input)
     const conversations = await Promise.all(
@@ -234,6 +246,7 @@ const registerIpc = (): void => {
   ipcMain.handle('task:delete', async (_event, taskId: string) => {
     await cleanupTasksGitWorkspace(store.listTasksForCleanup({ taskId }))
     const task = store.getState().tasks.find((item) => item.id === taskId)
+    clearTaskMessageQueue(taskId)
     store.deleteTask(taskId)
     const stillExists = store.getState().tasks.some((item) => item.id === taskId)
     if (task && !stillExists) {
@@ -242,6 +255,11 @@ const registerIpc = (): void => {
   })
   ipcMain.handle('task:message', async (_event, input: SendTaskMessageInput) => {
     const attachments = await saveTaskAttachments(input.taskId, input.attachments)
+    if (runningTasks.has(input.taskId)) {
+      enqueueTaskMessage(input.taskId, input.content, attachments)
+      broadcastStateChanged()
+      return { started: true, message: 'Message queued. It will send when the current run finishes.' }
+    }
     store.sendTaskMessage({
       taskId: input.taskId,
       content: input.content,
@@ -652,6 +670,48 @@ const readUpdaterReleaseNotes = (info: { releaseNotes?: unknown }): string | nul
 
 const normalizeVersion = (version: string): string => version.trim().replace(/^v/i, '')
 
+const hasQueuedTaskMessages = (taskId: string): boolean =>
+  (taskMessageQueues.get(taskId)?.length ?? 0) > 0
+
+const hasAnyQueuedTaskMessages = (): boolean => {
+  for (const queue of taskMessageQueues.values()) {
+    if (queue.length > 0) return true
+  }
+  return false
+}
+
+const enqueueTaskMessage = (
+  taskId: string,
+  content: string,
+  attachments: QueuedTaskMessage['attachments']
+): QueuedTaskMessage => {
+  const queued: QueuedTaskMessage = {
+    id: randomUUID(),
+    content: content.trim(),
+    attachments
+  }
+  const queue = taskMessageQueues.get(taskId) ?? []
+  queue.push(queued)
+  taskMessageQueues.set(taskId, queue)
+  return queued
+}
+
+const shiftQueuedTaskMessage = (taskId: string): QueuedTaskMessage | null => {
+  const queue = taskMessageQueues.get(taskId)
+  if (!queue || queue.length === 0) return null
+  const next = queue.shift()!
+  if (queue.length === 0) {
+    taskMessageQueues.delete(taskId)
+  } else {
+    taskMessageQueues.set(taskId, queue)
+  }
+  return next
+}
+
+const clearTaskMessageQueue = (taskId: string): void => {
+  taskMessageQueues.delete(taskId)
+}
+
 const incrementPatchVersion = (version: string): string => {
   const parts = normalizeVersion(version).split('.').map((part) => Number.parseInt(part, 10) || 0)
   while (parts.length < 3) parts.push(0)
@@ -698,6 +758,32 @@ const startCursorTask = (taskId: string): RunTaskResult => {
     store.appendConversation(taskId, 'system', 'Queued behind another running task for this project.')
   }
 
+  const runQueuedFollowUps = async (): Promise<void> => {
+    while (!cancelledTasks.has(taskId) && hasQueuedTaskMessages(taskId)) {
+      const task = store.getState().tasks.find((item) => item.id === taskId)
+      // Setup failures and stops land on attention; keep remaining queue visible but do not auto-run.
+      if (!task || task.status === 'attention') break
+
+      const next = shiftQueuedTaskMessage(taskId)
+      if (!next) break
+
+      store.sendTaskMessage({
+        taskId,
+        content: next.content,
+        attachments: next.attachments
+      })
+      store.appendConversation(taskId, 'system', 'Sending next queued message.')
+      broadcastStateChanged()
+
+      await runCursorTask({
+        taskId,
+        store,
+        onStateChanged: broadcastStateChanged,
+        shouldContinue: () => hasQueuedTaskMessages(taskId)
+      })
+    }
+  }
+
   const run = async (): Promise<void> => {
     if (previousProjectRun) {
       await previousProjectRun.catch(() => undefined)
@@ -705,6 +791,7 @@ const startCursorTask = (taskId: string): RunTaskResult => {
 
     if (cancelledTasks.has(taskId)) {
       cancelledTasks.delete(taskId)
+      clearTaskMessageQueue(taskId)
       store.updateTaskStatus({ taskId, status: 'attention' })
       return
     }
@@ -712,8 +799,11 @@ const startCursorTask = (taskId: string): RunTaskResult => {
     await runCursorTask({
       taskId,
       store,
-      onStateChanged: broadcastStateChanged
+      onStateChanged: broadcastStateChanged,
+      shouldContinue: () => hasQueuedTaskMessages(taskId)
     })
+
+    await runQueuedFollowUps()
   }
 
   const runPromise = run().finally(() => {
@@ -739,6 +829,9 @@ const startCursorTask = (taskId: string): RunTaskResult => {
 
 const stopAndWaitForCursorTask = async (taskId: string): Promise<boolean> => {
   const wasTracked = runningTasks.has(taskId) || runningTaskPromises.has(taskId)
+  if (wasTracked) {
+    clearTaskMessageQueue(taskId)
+  }
   cancelledTasks.add(taskId)
   const stoppedProcess = stopCursorTask(taskId)
   const pending = runningTaskPromises.get(taskId)
@@ -949,8 +1042,9 @@ const handleTaskStatusChange = (event: TaskStatusChangeEvent): void => {
   const runningTaskCount = store.getRunningTaskCount()
   const runningTaskCountBeforeChange = runningTaskCount + (wasRunning && event.newStatus !== 'processing' ? 1 : 0)
   const isDone = event.newStatus === 'done_unread' || event.newStatus === 'done_read'
+  const deferForQueuedMessages = hasQueuedTaskMessages(event.task.id)
 
-  if (!isDone && event.newStatus === 'attention') {
+  if (!deferForQueuedMessages && !isDone && event.newStatus === 'attention') {
     notifications.push({
       event: 'taskFailed',
       title: 'Task needs attention',
@@ -960,7 +1054,12 @@ const handleTaskStatusChange = (event: TaskStatusChangeEvent): void => {
     })
   }
 
-  if (event.oldStatus !== 'done_unread' && event.oldStatus !== 'done_read' && isDone) {
+  if (
+    !deferForQueuedMessages &&
+    event.oldStatus !== 'done_unread' &&
+    event.oldStatus !== 'done_read' &&
+    isDone
+  ) {
     notifications.push({
       event: 'taskCompleted',
       title: 'Task completed',
@@ -970,7 +1069,13 @@ const handleTaskStatusChange = (event: TaskStatusChangeEvent): void => {
     })
   }
 
-  if (wasRunning && event.newStatus !== 'processing' && runningTaskCountBeforeChange > 1 && runningTaskCount === 0) {
+  if (
+    wasRunning &&
+    event.newStatus !== 'processing' &&
+    runningTaskCountBeforeChange > 1 &&
+    runningTaskCount === 0 &&
+    !hasAnyQueuedTaskMessages()
+  ) {
     notifications.push({
       event: 'allTasksFinished',
       title: 'All tasks finished',

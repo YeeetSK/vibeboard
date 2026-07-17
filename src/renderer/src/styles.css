@@ -2627,6 +2627,20 @@ button:focus-visible {
   color: var(--text);
 }
 
+.agent-step.is-queued {
+  opacity: 0.78;
+}
+
+.agent-step.is-queued .agent-step-label {
+  color: var(--muted);
+}
+
+.queued-message-bubble {
+  border-style: dashed;
+  background: #1a1a1a;
+  color: var(--muted);
+}
+
 .prompt-panel .user-message-bubble {
   display: -webkit-box;
   -webkit-box-orient: vertical;

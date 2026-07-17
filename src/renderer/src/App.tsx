@@ -100,6 +100,7 @@ import type {
   CursorStatus,
   Lane,
   Project,
+  QueuedTaskMessage,
   QuitRequest,
   RunMode,
   SearchResult,
@@ -937,7 +938,8 @@ export function App(): ReactElement {
     const trimmed = content.trim()
     if (!trimmed && attachments.length === 0) return
     await runAction(`task:message:${taskId}`, async () => {
-      if (selectedTaskId === taskId) {
+      const isQueuing = task.status === 'processing'
+      if (selectedTaskId === taskId && !isQueuing) {
         const optimisticEntry: ConversationEntry = {
           id: `optimistic-${crypto.randomUUID()}`,
           taskId,
@@ -3957,7 +3959,7 @@ function TaskDetailModal({
   onDeleteTask: (taskId: string) => void
   onClose: () => void
 }): ReactElement {
-  const canChat = Boolean(project) && canUseCursor && task.status !== 'processing'
+  const canChat = Boolean(project) && canUseCursor
   const canRetry = canChat && task.status === 'attention'
   const isRunning = task.status === 'processing'
   const lastUserMessageAt =
@@ -3973,17 +3975,17 @@ function TaskDetailModal({
   useModalEscape(onClose)
 
   const requestCommit = (): void => {
-    if (!canChat || !hasCapturedChanges) return
+    if (!canChat || isRunning || !hasCapturedChanges) return
     onSendMessage(task.id, commitTaskPrompt)
   }
 
   const requestDraftPr = (): void => {
-    if (!canChat || !hasCapturedChanges) return
+    if (!canChat || isRunning || !hasCapturedChanges) return
     onSendMessage(task.id, draftPrPrompt)
   }
 
   const requestRevert = (): void => {
-    if (!canChat || !hasCapturedChanges) return
+    if (!canChat || isRunning || !hasCapturedChanges) return
     onSendMessage(task.id, buildRevertTaskPrompt(changes))
   }
 
@@ -4036,7 +4038,7 @@ function TaskDetailModal({
                     className="icon-text-button task-git-action"
                     type="button"
                     onClick={requestCommit}
-                    disabled={!canChat}
+                    disabled={!canChat || isRunning}
                     title="Ask agent to commit these changes and push to the default branch on origin"
                   >
                     <GitCommitHorizontal size={16} />
@@ -4046,7 +4048,7 @@ function TaskDetailModal({
                     className="icon-text-button task-git-action"
                     type="button"
                     onClick={requestDraftPr}
-                    disabled={!canChat}
+                    disabled={!canChat || isRunning}
                     title="Ask agent to create a draft pull request"
                   >
                     <GitPullRequestDraft size={16} />
@@ -4056,7 +4058,7 @@ function TaskDetailModal({
                     className="icon-text-button task-git-action danger"
                     type="button"
                     onClick={requestRevert}
-                    disabled={!canChat}
+                    disabled={!canChat || isRunning}
                     title="Ask agent to revert this task's captured changes"
                   >
                     <Undo2 size={16} />
@@ -4087,11 +4089,12 @@ function TaskDetailModal({
               key={task.id}
               conversations={conversations}
               task={task}
+              queuedMessages={task.queuedMessages ?? []}
               hasOlderConversations={hasOlderConversations}
               isLoadingOlderConversations={isLoadingOlderConversations}
               canSend={canChat}
               canRetryPrompt={canRetryPrompt}
-              disabledLabel={!canUseCursor ? 'Cursor not connected' : !project ? 'No project selected' : 'Running'}
+              disabledLabel={!canUseCursor ? 'Cursor not connected' : !project ? 'No project selected' : 'Unavailable'}
               onLoadOlderConversations={onLoadOlderConversations}
               onSendMessage={onSendMessage}
               onRetryPrompt={onRetryPrompt}
@@ -4123,6 +4126,7 @@ function TaskDetailModal({
 function AgentThread({
   conversations,
   task,
+  queuedMessages,
   hasOlderConversations,
   isLoadingOlderConversations,
   canSend,
@@ -4134,6 +4138,7 @@ function AgentThread({
 }: {
   conversations: ConversationEntry[]
   task: Task
+  queuedMessages: QueuedTaskMessage[]
   hasOlderConversations: boolean
   isLoadingOlderConversations: boolean
   canSend: boolean
@@ -4153,6 +4158,7 @@ function AgentThread({
     (lastIndex, entry, index) => (entry.role === 'assistant' ? index : lastIndex),
     -1
   )
+  const isRunning = task.status === 'processing'
   const threadEntries = compactConversationEntries(
     conversations
       .filter((entry, index) => {
@@ -4178,8 +4184,15 @@ function AgentThread({
       }))
       .filter((entry) => entry.content || (entry.attachments?.length ?? 0) > 0)
   )
-  const scrollKey = `${task.status}:${threadEntries.map((entry) => `${entry.id}:${entry.content.length}:${entry.attachments?.length ?? 0}`).join('|')}`
+  const scrollKey = `${task.status}:${queuedMessages.length}:${threadEntries.map((entry) => `${entry.id}:${entry.content.length}:${entry.attachments?.length ?? 0}`).join('|')}`
   const canSubmit = canSend && (Boolean(draft.trim()) || pendingAttachments.length > 0)
+  const composerPlaceholder = !canSend
+    ? disabledLabel
+    : isRunning
+      ? queuedMessages.length > 0
+        ? `Queue a follow-up (${queuedMessages.length} waiting)`
+        : 'Queue a follow-up for when this run finishes'
+      : 'Message or paste an image'
 
   useEffect(() => {
     setDraft(readTaskComposerDraft(task.id))
@@ -4288,6 +4301,20 @@ function AgentThread({
             </div>
           ))
         )}
+        {queuedMessages.map((queued, index) => (
+          <div key={queued.id} className="agent-step role-user is-queued">
+            <MessageSquare size={16} />
+            <div>
+              <strong className="agent-step-label">
+                Queued{queuedMessages.length > 1 ? ` · ${index + 1}` : ''}
+              </strong>
+              <div className="user-message-bubble queued-message-bubble">
+                <MessageAttachments attachments={queued.attachments} />
+                {queued.content ? <MessageMarkdown content={queued.content} /> : null}
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
 
       {(canSend || canRetryPrompt) && (
@@ -4368,7 +4395,7 @@ function AgentThread({
           onChange={(event) => setDraft(event.target.value)}
           disabled={!canSend}
           rows={1}
-          placeholder={canSend ? 'Message or paste an image' : disabledLabel}
+          placeholder={composerPlaceholder}
           onPaste={(event) => {
             const files = collectClipboardImageFiles(event.clipboardData)
             if (files.length === 0) return
@@ -4382,7 +4409,13 @@ function AgentThread({
             }
           }}
         />
-        <button className="icon-button" type="button" onClick={send} disabled={!canSubmit} title="Send">
+        <button
+          className="icon-button"
+          type="button"
+          onClick={send}
+          disabled={!canSubmit}
+          title={isRunning ? 'Queue message' : 'Send'}
+        >
           <Send size={16} />
         </button>
       </div>

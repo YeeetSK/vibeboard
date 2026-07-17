@@ -16,6 +16,8 @@ interface RunCursorTaskInput {
   taskId: string
   store: VibeBoardStore
   onStateChanged: () => void
+  /** When true at completion, keep status as processing so a queued follow-up can run. */
+  shouldContinue?: () => boolean
 }
 
 interface TaskRunTarget {
@@ -54,7 +56,12 @@ export function stopAllCursorTasks(): string[] {
   return taskIds
 }
 
-export async function runCursorTask({ taskId, store, onStateChanged }: RunCursorTaskInput): Promise<void> {
+export async function runCursorTask({
+  taskId,
+  store,
+  onStateChanged,
+  shouldContinue
+}: RunCursorTaskInput): Promise<void> {
   const context = store.getTaskRunContext(taskId)
   if (!context) {
     return
@@ -193,7 +200,10 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
         finish()
         return
       }
-      store.updateTaskStatus({ taskId, status: 'attention' })
+      const continueQueue = shouldContinue?.() ?? false
+      if (!continueQueue) {
+        store.updateTaskStatus({ taskId, status: 'attention' })
+      }
       store.appendConversation(
         taskId,
         'system',
@@ -220,6 +230,8 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
         finish()
         return
       }
+
+      const continueQueue = shouldContinue?.() ?? false
 
       if (code === 0) {
         const nextDiff = await collectGitDiffText(runTarget.cwd)
@@ -251,9 +263,13 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
           }
         }
 
-        store.updateTaskStatus({ taskId, status: 'done_unread' })
+        if (!continueQueue) {
+          store.updateTaskStatus({ taskId, status: 'done_unread' })
+        }
       } else {
-        store.updateTaskStatus({ taskId, status: 'attention' })
+        if (!continueQueue) {
+          store.updateTaskStatus({ taskId, status: 'attention' })
+        }
         const failureText = stderrBuffer.trim() || `Cursor CLI agent exited with code ${code ?? 'unknown'}.`
         const recoveryText = assistantMessage
           ? 'Recovered partial agent output above. Retry keeps the saved conversation and focused project context.'

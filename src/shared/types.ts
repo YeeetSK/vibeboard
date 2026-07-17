@@ -29,6 +29,12 @@ export interface Lane {
   position: number
 }
 
+export interface QueuedTaskMessage {
+  id: string
+  content: string
+  attachments: ConversationAttachment[]
+}
+
 export interface Task {
   id: string
   tabId: string
@@ -45,6 +51,8 @@ export interface Task {
   updatedAt: string
   /** ISO timestamp set while a Cursor run is active; null/omitted when idle. */
   runStartedAt?: string | null
+  /** Follow-up messages waiting to run after the current agent finishes. */
+  queuedMessages?: QueuedTaskMessage[]
 }
 
 export interface ConversationAttachment {
