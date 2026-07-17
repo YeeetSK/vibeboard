@@ -82,11 +82,31 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Upload release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          name: VibeBoard ${{ github.ref_name }}
-          body_path: CHANGELOG.md
-          files: release-assets/*
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          assets=(release-assets/*)
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "No release assets found."
+            exit 1
+          fi
+
+          prerelease_flags=()
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            prerelease_flags+=(--prerelease)
+          fi
+
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release edit "${GITHUB_REF_NAME}" \
+              --title "VibeBoard ${GITHUB_REF_NAME}" \
+              --notes-file CHANGELOG.md \
+              "${prerelease_flags[@]}"
+            gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
+              --title "VibeBoard ${GITHUB_REF_NAME}" \
+              --notes-file CHANGELOG.md \
+              "${prerelease_flags[@]}"
+          fi
