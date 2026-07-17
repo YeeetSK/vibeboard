@@ -236,6 +236,7 @@ export async function runCursorTask({
       if (code === 0) {
         const nextDiff = await collectGitDiffText(runTarget.cwd)
         const workingTreeClean = nextDiff.trim() === ''
+        const hadCapturedChanges = store.countCodeChanges(taskId) > 0
         // Commit/push clears the working tree; show only leftover uncommitted work (or nothing).
         // Otherwise keep using the run baseline so no-op runs do not wipe earlier captured diffs.
         const changes =
@@ -246,6 +247,14 @@ export async function runCursorTask({
               : parseGitDiff(nextDiff, baselineDiff)
         if (isRevertRun || isCommitToMainRun || workingTreeClean || changes.length > 0) {
           store.replaceCodeChanges(taskId, changes)
+        }
+
+        if (isCommitToMainRun) {
+          // Only mark when there were real captured changes that are now gone (pushed + clean).
+          // Chat-only / no-diff tasks must not get this marker.
+          store.setTaskPushedToMain(taskId, workingTreeClean && hadCapturedChanges && changes.length === 0)
+        } else if (isRevertRun) {
+          store.setTaskPushedToMain(taskId, false)
         }
 
         if (isCommitToMainRun && context.project) {

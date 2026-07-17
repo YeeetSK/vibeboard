@@ -3661,7 +3661,10 @@ function TaskCard({
       <div className="task-open">
         <div className="task-title-row">
           <h3>{task.title}</h3>
-          <TaskStatusChip status={task.status} />
+          <div className="task-title-badges">
+            {Boolean(task.pushedToMain) && <TaskPushedChip />}
+            <TaskStatusChip status={task.status} />
+          </div>
         </div>
         {task.summary && <p>{task.summary}</p>}
       </div>
@@ -3765,7 +3768,10 @@ function TaskCardPreview({ task, width }: { task: Task; width: number | null }):
       <div className="task-open">
         <div className="task-title-row">
           <h3>{task.title}</h3>
-          <TaskStatusChip status={task.status} />
+          <div className="task-title-badges">
+            {Boolean(task.pushedToMain) && <TaskPushedChip />}
+            <TaskStatusChip status={task.status} />
+          </div>
         </div>
         {task.summary && <p>{task.summary}</p>}
       </div>
@@ -3796,6 +3802,14 @@ function TaskStatusChip({ status }: { status: Task['status'] }): ReactElement | 
   }
 
   return null
+}
+
+function TaskPushedChip(): ReactElement {
+  return (
+    <span className="task-status-chip pushed" title="Committed and pushed to main — no leftover local changes">
+      <GitCommitHorizontal size={12} />
+    </span>
+  )
 }
 
 interface NewTaskInput {

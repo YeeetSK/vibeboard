@@ -767,6 +767,19 @@ export class VibeBoardStore {
     transaction()
   }
 
+  countCodeChanges(taskId: string): number {
+    const row = this.db.prepare('SELECT COUNT(*) as count FROM code_changes WHERE taskId = ?').get(taskId) as {
+      count: number
+    }
+    return row.count
+  }
+
+  setTaskPushedToMain(taskId: string, pushed: boolean): void {
+    this.db
+      .prepare('UPDATE tasks SET pushedToMain = ?, updatedAt = ? WHERE id = ?')
+      .run(pushed ? 1 : 0, now(), taskId)
+  }
+
   replaceCodeChanges(
     taskId: string,
     changes: Array<Pick<CodeChange, 'filePath' | 'summary' | 'changeType' | 'language' | 'diffText'>>
@@ -788,6 +801,10 @@ export class VibeBoardStore {
           now()
         )
       })
+      // Fresh uncommitted work means the task is no longer fully pushed/clean.
+      if (changes.length > 0) {
+        this.db.prepare('UPDATE tasks SET pushedToMain = 0, updatedAt = ? WHERE id = ?').run(now(), taskId)
+      }
     })
 
     transaction()
@@ -1044,6 +1061,7 @@ export class VibeBoardStore {
       runModeOverride: null,
       branchName: null,
       worktreePath: null,
+      pushedToMain: 0,
       position: positionRow.position,
       createdAt: timestamp,
       updatedAt: timestamp
@@ -1052,7 +1070,7 @@ export class VibeBoardStore {
     const transaction = this.db.transaction(() => {
       this.db
         .prepare(
-          'INSERT INTO tasks (id, tabId, laneId, projectId, title, summary, status, runModeOverride, branchName, worktreePath, position, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO tasks (id, tabId, laneId, projectId, title, summary, status, runModeOverride, branchName, worktreePath, pushedToMain, position, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         )
         .run(
           task.id,
@@ -1065,6 +1083,7 @@ export class VibeBoardStore {
           task.runModeOverride,
           task.branchName,
           task.worktreePath,
+          task.pushedToMain,
           task.position,
           task.createdAt,
           task.updatedAt
@@ -1314,6 +1333,7 @@ export class VibeBoardStore {
     this.ensureColumn('tasks', 'branchName', 'TEXT')
     this.ensureColumn('tasks', 'worktreePath', 'TEXT')
     this.ensureColumn('tasks', 'runStartedAt', 'TEXT')
+    this.ensureColumn('tasks', 'pushedToMain', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('code_changes', 'language', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('code_changes', 'diffText', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('conversations', 'attachmentsJson', "TEXT NOT NULL DEFAULT '[]'")

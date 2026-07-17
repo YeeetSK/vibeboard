@@ -46,6 +46,12 @@ export interface Task {
   runModeOverride: RunMode | null
   branchName: string | null
   worktreePath: string | null
+  /**
+   * 1 when this task's code changes were committed and pushed to main/origin
+   * with a clean working tree afterward. 0 otherwise — including chat-only tasks
+   * that never had code changes.
+   */
+  pushedToMain: number
   position: number
   createdAt: string
   updatedAt: string

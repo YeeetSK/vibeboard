@@ -2160,6 +2160,13 @@ button {
   min-width: 0;
 }
 
+.task-title-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
 .task-title-row h3 {
   margin: 0;
   font-size: 13px;
@@ -2186,6 +2193,12 @@ button {
 
 .task-status-chip.done {
   color: var(--green);
+}
+
+.task-status-chip.pushed {
+  color: var(--green);
+  border-color: rgba(47, 207, 117, 0.35);
+  background: rgba(47, 207, 117, 0.1);
 }
 
 .task-status-chip.attention {
