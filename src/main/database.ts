@@ -614,9 +614,31 @@ export class VibeBoardStore {
   }
 
   appendConversation(taskId: string, role: ConversationEntry['role'], content: string): void {
-    this.db
-      .prepare('INSERT INTO conversations (id, taskId, role, content, createdAt) VALUES (?, ?, ?, ?, ?)')
-      .run(id(), taskId, role, content, now())
+    const timestamp = now()
+    const transaction = this.db.transaction(() => {
+      this.db
+        .prepare('INSERT INTO conversations (id, taskId, role, content, createdAt) VALUES (?, ?, ?, ?, ?)')
+        .run(id(), taskId, role, content, timestamp)
+      this.db.prepare('UPDATE tasks SET updatedAt = ? WHERE id = ?').run(timestamp, taskId)
+    })
+    transaction()
+  }
+
+  recoverInterruptedProcessingTasks(): number {
+    const interrupted = this.db
+      .prepare("SELECT id FROM tasks WHERE status = 'processing'")
+      .all() as Array<{ id: string }>
+
+    for (const task of interrupted) {
+      this.updateTaskStatus({ taskId: task.id, status: 'attention' })
+      this.appendConversation(
+        task.id,
+        'system',
+        'This run was interrupted when VibeBoard closed or restarted. Progress so far is saved in this chat — open the task and hit Retry or Retry prompt to continue.'
+      )
+    }
+
+    return interrupted.length
   }
 
   sendTaskMessage(input: SendTaskMessageInput): void {
