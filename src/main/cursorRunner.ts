@@ -225,8 +225,16 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
 
       if (code === 0) {
         const nextDiff = await collectGitDiffText(runTarget.cwd)
-        const changes = nextDiff === baselineDiff ? [] : parseGitDiff(nextDiff, baselineDiff)
-        if (isRevertRun || changes.length > 0) {
+        const workingTreeClean = nextDiff.trim() === ''
+        // Commit/push clears the working tree; show only leftover uncommitted work (or nothing).
+        // Otherwise keep using the run baseline so no-op runs do not wipe earlier captured diffs.
+        const changes =
+          isCommitToMainRun || workingTreeClean
+            ? parseGitDiff(nextDiff)
+            : nextDiff === baselineDiff
+              ? []
+              : parseGitDiff(nextDiff, baselineDiff)
+        if (isRevertRun || isCommitToMainRun || workingTreeClean || changes.length > 0) {
           store.replaceCodeChanges(taskId, changes)
         }
 
