@@ -2256,15 +2256,6 @@ textarea {
   border-bottom: 1px solid var(--line-soft);
 }
 
-.modal-head-actions-stack {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
-  flex: 0 0 auto;
-  min-width: 0;
-}
-
 .modal-head-actions {
   display: inline-flex;
   align-items: center;
@@ -2366,6 +2357,13 @@ textarea {
   font-size: 12px;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.task-detail-meta {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .task-form {

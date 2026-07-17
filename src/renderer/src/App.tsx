@@ -4025,98 +4025,98 @@ function TaskDetailModal({
         <div className="modal-head">
           <div>
             <h2>{task.title}</h2>
-            <p>{project?.name ?? 'No project'}</p>
+            <p className="task-detail-meta">
+              {isRunning && runStartedAt && (
+                <span className="task-run-status">
+                  <span className="task-run-status-label">Running</span>
+                  <TaskRunElapsed startedAt={runStartedAt} />
+                </span>
+              )}
+              <span>{project?.name ?? 'No project'}</span>
+            </p>
           </div>
-          <div className="modal-head-actions-stack">
-            {isRunning && runStartedAt && (
-              <div className="task-run-status">
-                <span className="task-run-status-label">Running</span>
-                <TaskRunElapsed startedAt={runStartedAt} />
-              </div>
-            )}
-            <div className="modal-head-actions">
-              {isRunning && (
-                <button
-                  className="icon-text-button task-stop-action"
-                  type="button"
-                  onClick={() => onStopTask(task.id)}
-                  title="Stop the current task run"
-                >
-                  <Square size={14} />
-                  <span>Stop</span>
-                </button>
-              )}
-              {canRetry && (
-                <button
-                  className="icon-text-button task-retry-action"
-                  type="button"
-                  onClick={requestRetry}
-                  title="Retry with the saved task conversation"
-                >
-                  <RotateCcw size={16} />
-                  <span>Retry</span>
-                </button>
-              )}
-              {hasCapturedChanges && (
-                <>
-                  <button
-                    className="icon-text-button task-git-action"
-                    type="button"
-                    onClick={requestCommit}
-                    disabled={!canChat || isRunning}
-                    title="Ask agent to commit these changes and push to the default branch on origin"
-                  >
-                    <GitCommitHorizontal size={16} />
-                    <span>Commit</span>
-                  </button>
-                  <button
-                    className="icon-text-button task-git-action"
-                    type="button"
-                    onClick={requestDraftPr}
-                    disabled={!canChat || isRunning}
-                    title="Ask agent to create a draft pull request"
-                  >
-                    <GitPullRequestDraft size={16} />
-                    <span>Draft PR</span>
-                  </button>
-                  <button
-                    className="icon-text-button task-git-action danger"
-                    type="button"
-                    onClick={requestRevert}
-                    disabled={!canChat || isRunning}
-                    title="Ask agent to revert this task's captured changes"
-                  >
-                    <Undo2 size={16} />
-                    <span>Revert</span>
-                  </button>
-                </>
-              )}
-              <label
-                className="code-changes-switch"
-                title={showCodeChanges ? 'Hide code changes and enlarge chat' : 'Show code changes'}
-              >
-                <Code2 size={14} />
-                <span>Changes</span>
-                <input
-                  type="checkbox"
-                  checked={showCodeChanges}
-                  onChange={(event) => setCodeChangesVisible(event.target.checked)}
-                />
-              </label>
+          <div className="modal-head-actions">
+            {isRunning && (
               <button
-                className="icon-text-button task-git-action danger"
+                className="icon-text-button task-stop-action"
                 type="button"
-                onClick={() => onDeleteTask(task.id)}
-                disabled={task.status === 'processing'}
-                title="Delete task"
+                onClick={() => onStopTask(task.id)}
+                title="Stop the current task run"
               >
-                <Trash2 size={16} />
-                <span>Delete</span>
+                <Square size={14} />
+                <span>Stop</span>
               </button>
-              <button className="icon-button" type="button" onClick={onClose} title="Close">
-                <X size={18} />
+            )}
+            {canRetry && (
+              <button
+                className="icon-text-button task-retry-action"
+                type="button"
+                onClick={requestRetry}
+                title="Retry with the saved task conversation"
+              >
+                <RotateCcw size={16} />
+                <span>Retry</span>
               </button>
-            </div>
+            )}
+            {hasCapturedChanges && (
+              <>
+                <button
+                  className="icon-text-button task-git-action"
+                  type="button"
+                  onClick={requestCommit}
+                  disabled={!canChat || isRunning}
+                  title="Ask agent to commit these changes and push to the default branch on origin"
+                >
+                  <GitCommitHorizontal size={16} />
+                  <span>Commit</span>
+                </button>
+                <button
+                  className="icon-text-button task-git-action"
+                  type="button"
+                  onClick={requestDraftPr}
+                  disabled={!canChat || isRunning}
+                  title="Ask agent to create a draft pull request"
+                >
+                  <GitPullRequestDraft size={16} />
+                  <span>Draft PR</span>
+                </button>
+                <button
+                  className="icon-text-button task-git-action danger"
+                  type="button"
+                  onClick={requestRevert}
+                  disabled={!canChat || isRunning}
+                  title="Ask agent to revert this task's captured changes"
+                >
+                  <Undo2 size={16} />
+                  <span>Revert</span>
+                </button>
+              </>
+            )}
+            <label
+              className="code-changes-switch"
+              title={showCodeChanges ? 'Hide code changes and enlarge chat' : 'Show code changes'}
+            >
+              <Code2 size={14} />
+              <span>Changes</span>
+              <input
+                type="checkbox"
+                checked={showCodeChanges}
+                onChange={(event) => setCodeChangesVisible(event.target.checked)}
+              />
+            </label>
+            <button
+              className="icon-text-button task-git-action danger"
+              type="button"
+              onClick={() => onDeleteTask(task.id)}
+              disabled={task.status === 'processing'}
+              title="Delete task"
+            >
+              <Trash2 size={16} />
+              <span>Delete</span>
+            </button>
+            <button className="icon-button" type="button" onClick={onClose} title="Close">
+              <X size={18} />
+            </button>
           </div>
         </div>
 
