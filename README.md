@@ -1,66 +1,135 @@
 # VibeBoard
 
-VibeBoard is a dark desktop app for organizing AI coding work across multiple projects. It treats each project as its own board, and each AI agent run as a task card that can move through custom lanes.
+A dark desktop kanban board for organizing AI coding work across multiple projects.
 
-The goal is to make agent work easier to track than a single chat list or IDE sidebar. A project gets a board. A board gets lanes. A task contains the prompt history, agent output, and code changes in one place.
+VibeBoard is built for developers who run AI agents on real codebases and need more structure than a single chat thread or IDE sidebar. Each repository gets its own board. Each agent run becomes a task card you can move through custom lanes, inspect, and follow to completion.
 
-## Current Scope
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)](https://github.com/YeeetSK/vibeboard/releases)
 
-VibeBoard is an Electron MVP focused on local project organization and Cursor Agent integration.
+## Screenshot
 
-- Project-based tabs, where a tab maps to a project folder.
-- Custom board lanes for each project.
-- Task cards with status indicators for idle, running, attention, and done states.
-- Task detail modal with chat on the left and formatted code changes on the right.
-- Local persistence through SQLite.
-- Cursor Agent execution through the installed `agent` CLI.
-- GitHub release builds for Windows and macOS.
-- Auto-update support through GitHub Releases in packaged builds.
+![VibeBoard main board view](https://i.imgur.com/8WixgG8.png)
 
-## Tech Stack
+## Why VibeBoard?
 
-| Area | Choice |
+When you work with AI agents across several repos, context gets scattered fast. Prompts, outputs, and code changes live in different places, and it is hard to see what is running, what needs attention, and what is done.
+
+VibeBoard keeps agent work in one place per project:
+
+- **Boards per project**: tabs map to local folders; each project has its own lanes and tasks.
+- **Task cards with status**: idle, running, needs attention, and done states at a glance.
+- **Full task history**: chat, agent output, and formatted diffs in a single detail view.
+- **Cursor Agent integration**: send work to the installed `agent` CLI in the selected repo.
+- **Local-first**: SQLite persistence on your machine; no cloud account required for core use.
+- **Git-aware runs**: optional branch or worktree modes so agents can work in isolation.
+
+## Features
+
+| Area | What you get |
 | --- | --- |
-| Desktop shell | Electron |
-| Build tooling | Electron Vite |
-| UI | React, TypeScript |
-| Local data | SQLite with `better-sqlite3` |
-| Drag and drop | `dnd-kit` |
-| Icons | `lucide-react` |
-| Packaging | `electron-builder` |
-| Releases | GitHub Actions, `git-cliff`, `softprops/action-gh-release` |
+| Organization | Project tabs, custom lanes, drag-and-drop task cards |
+| Agent runs | Cursor Agent via CLI, run modes (shared / branch / worktree) |
+| Task detail | Split view: conversation on the left, syntax-highlighted changes on the right |
+| Notifications | Desktop alerts when tasks need attention or finish |
+| Updates | Auto-update from GitHub Releases in packaged builds (Windows + macOS) |
+| Design | Restrained dark UI: compact controls, Lucide icons, no decorative noise |
+
+## Download
+
+Pre-built installers are published on [GitHub Releases](https://github.com/YeeetSK/vibeboard/releases):
+
+- **macOS**: `.dmg` (Intel and Apple Silicon)
+- **Windows**: `.exe` installer
+
+You need [Cursor](https://cursor.com) and the Cursor Agent CLI for agent execution. VibeBoard guides you through setup if the CLI is missing or not logged in.
+
+## Quick start
+
+1. Download and install VibeBoard from [Releases](https://github.com/YeeetSK/vibeboard/releases).
+2. Install [Cursor](https://cursor.com) and ensure the `agent` CLI is available (`agent login` if prompted).
+3. In VibeBoard, add a project pointing at a local repository folder.
+4. Create a task, pick a lane, and send your prompt.
+
+The agent runs in that project folder. Progress and changes show up on the task card and in the detail modal.
 
 ## Development
 
-Install dependencies:
+**Requirements:** Node.js, npm, and a machine that can build native modules (`better-sqlite3`).
 
 ```bash
+git clone https://github.com/YeeetSK/vibeboard.git
+cd vibeboard
 npm install
-```
-
-Run the app locally:
-
-```bash
 npm run dev
 ```
 
-This starts Electron through Vite. You do not need GitHub releases or downloaded installers for development.
+`npm run dev` starts Electron through Vite. You do not need release installers for local development.
 
-Test the update UI locally:
+### Useful scripts
 
-```bash
-npm run dev:update
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Run the app in development |
+| `npm run dev:update` | Dev app with mocked updater UI |
+| `npm run reset:data` | Clear local SQLite app data |
+| `npm run typecheck` | TypeScript check |
+| `npm run lint` | ESLint |
+| `npm run build` | Production build |
+| `npm run package:local` | Local packaged app (no publish) |
+| `npm run dist:local` | Local installers without publishing |
+
+## Cursor Agent setup
+
+VibeBoard does not drive the Cursor editor UI. It runs Cursor Agent in the selected project directory through the `agent` command.
+
+1. Install Cursor.
+2. Install or enable the Cursor Agent CLI.
+3. Run `agent login` if authentication is required.
+4. Add the repo as a VibeBoard project.
+5. Send a message from a task.
+
+If the CLI is missing or not authenticated, setup actions appear in the sidebar.
+
+## Tech stack
+
+| Layer | Choice |
+| --- | --- |
+| Desktop | Electron |
+| Build | Electron Vite |
+| UI | React, TypeScript |
+| Data | SQLite (`better-sqlite3`) |
+| Drag and drop | `@dnd-kit` |
+| Packaging | `electron-builder` |
+| Releases | GitHub Actions, `git-cliff` |
+
+## Repository layout
+
+```text
+src/main       Electron main process, database, Cursor runner
+src/preload    Safe renderer ↔ main IPC bridge
+src/renderer   React UI
+src/shared     Shared TypeScript types
+scripts        Local utility scripts
+.github        CI and release workflow
 ```
 
-This runs the same dev app with a mocked update available. The banner, progress bar, restart action, and release notes can be tested without downloading a GitHub release.
+## Releases and auto-update
 
-Reset local app data:
+Tagged versions trigger release builds:
 
 ```bash
-npm run reset:data
+git tag v0.1.15
+git push origin v0.1.15
 ```
 
-Run checks:
+Packaged apps check GitHub Releases for updates. On macOS, unsigned or ad-hoc signed builds open the release page in the browser instead of installing in-app; fully automatic macOS updates need a properly signed release.
+
+Use `npm run dev:update` to exercise the updater UI without a release build.
+
+## Contributing
+
+Contributions are welcome. Please keep changes focused and run checks before opening a PR:
 
 ```bash
 npm run typecheck
@@ -68,83 +137,15 @@ npm run lint
 npm run build
 ```
 
-Run a local packaged build:
-
-```bash
-npm run package:local
-```
-
-Create local installers without publishing:
-
-```bash
-npm run dist:local
-```
-
-## Cursor Agent
-
-VibeBoard does not control the Cursor editor UI. It runs Cursor Agent in the selected project folder through the `agent` command.
-
-Expected setup:
-
-1. Install Cursor.
-2. Install or enable Cursor Agent CLI.
-3. Run `agent login` if Cursor asks for authentication.
-4. Create a VibeBoard project pointing at the local repository folder.
-5. Send a task message from VibeBoard.
-
-If the agent command is missing or not authenticated, VibeBoard shows setup actions in the sidebar.
-
-## Releases
-
-Releases are created from version tags:
-
-```bash
-git tag v0.1.4
-git push origin v0.1.4
-```
-
-The release workflow builds:
-
-- Windows installer: `.exe`
-- macOS installer: `.dmg`
-- updater metadata: `latest.yml`, `latest-mac.yml`, blockmaps
-
-Release notes are generated from conventional commits with `git-cliff`.
-
-## Auto Updates
-
-Packaged builds check GitHub Releases for newer versions. When an update is available, VibeBoard shows an update control in the sidebar. The app does not show manual update controls when no update exists.
-
-During development, `npm run dev:update` uses a local mocked update flow so the updater UI can be tested without installing a release build.
-
-On macOS, unsigned or ad-hoc signed builds open the GitHub release page instead of attempting an in-app install. Fully automatic macOS updates require a properly signed release. Windows packaged builds use the normal in-app updater path.
-
-## Design Rules
-
-VibeBoard follows a restrained dark desktop design.
-
-- Dark mode only.
-- No decorative gradients.
-- No emoji.
-- Icons come from `lucide-react`.
-- Copy should be functional, not instructional filler.
-- Controls should be compact, predictable, and consistent.
-
-## Repository Layout
-
-```text
-src/main       Electron main process, database, Cursor runner
-src/preload    Safe renderer API bridge
-src/renderer   React UI
-src/shared     Shared TypeScript types
-scripts        Local utility scripts
-.github        Release workflow
-```
-
-## Notes for Contributors
+Guidelines:
 
 - Keep Electron main, preload, and renderer boundaries explicit.
-- Prefer typed IPC inputs and outputs through `src/shared/types.ts`.
-- Do not bypass the preload bridge from the renderer.
-- Keep app data local unless a feature explicitly requires a remote service.
-- Validate changes with typecheck, lint, and production build before tagging.
+- Use typed IPC through `src/shared/types.ts`.
+- Do not call Node or filesystem APIs directly from the renderer.
+- Prefer local data unless a feature explicitly needs a remote service.
+
+Use the issue and PR templates under `.github/` when reporting bugs or proposing features.
+
+## License
+
+MIT. See `package.json`.
