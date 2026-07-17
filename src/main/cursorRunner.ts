@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { CodeChange, Project, RunMode, Task } from '../shared/types'
@@ -21,6 +21,35 @@ interface TaskRunTarget {
   mode: RunMode
   branchName: string | null
   worktreePath: string | null
+}
+
+interface ActiveCursorRun {
+  child: ChildProcess
+  abort: () => void
+  flushProgress: () => void
+}
+
+const activeCursorRuns = new Map<string, ActiveCursorRun>()
+
+export function stopCursorTask(taskId: string): boolean {
+  const active = activeCursorRuns.get(taskId)
+  if (!active) return false
+  active.abort()
+  return true
+}
+
+export function flushAllCursorProgress(): void {
+  for (const active of activeCursorRuns.values()) {
+    active.flushProgress()
+  }
+}
+
+export function stopAllCursorTasks(): string[] {
+  const taskIds = [...activeCursorRuns.keys()]
+  for (const taskId of taskIds) {
+    stopCursorTask(taskId)
+  }
+  return taskIds
 }
 
 export async function runCursorTask({ taskId, store, onStateChanged }: RunCursorTaskInput): Promise<void> {
@@ -84,7 +113,37 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
 
   let stdoutBuffer = ''
   let stderrBuffer = ''
+  let aborted = false
   const stdoutLines: string[] = []
+  const progressPublisher = createLiveProgressPublisher({
+    taskId,
+    store,
+    onStateChanged
+  })
+  store.appendConversation(taskId, 'system', 'Agent is running. Live progress updates will appear here.')
+  onStateChanged()
+
+  const abort = (): void => {
+    if (aborted) return
+    aborted = true
+    progressPublisher.flush()
+    progressPublisher.stop()
+    if (!child.killed) {
+      child.kill('SIGTERM')
+      setTimeout(() => {
+        if (!child.killed) {
+          child.kill('SIGKILL')
+        }
+      }, 800)
+    }
+  }
+  activeCursorRuns.set(taskId, {
+    child,
+    abort,
+    flushProgress: () => {
+      progressPublisher.flush()
+    }
+  })
 
   child.stdout.on('data', (chunk: Buffer) => {
     stdoutBuffer += chunk.toString()
@@ -93,6 +152,7 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
 
     for (const line of lines) {
       stdoutLines.push(line)
+      progressPublisher.handleLine(line)
     }
   })
 
@@ -105,11 +165,19 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
     const finish = (): void => {
       if (!finished) {
         finished = true
+        activeCursorRuns.delete(taskId)
+        progressPublisher.stop()
         resolve()
       }
     }
 
     child.on('error', (error) => {
+      if (aborted) {
+        store.updateTaskStatus({ taskId, status: 'attention' })
+        onStateChanged()
+        finish()
+        return
+      }
       store.updateTaskStatus({ taskId, status: 'attention' })
       store.appendConversation(
         taskId,
@@ -123,11 +191,19 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
     child.on('close', async (code) => {
       if (stdoutBuffer.trim()) {
         stdoutLines.push(stdoutBuffer)
+        progressPublisher.handleLine(stdoutBuffer)
       }
 
       const assistantMessage = summarizeCursorRun(stdoutLines)
       if (assistantMessage) {
         store.appendConversation(taskId, 'assistant', assistantMessage)
+      }
+
+      if (aborted) {
+        store.updateTaskStatus({ taskId, status: 'attention' })
+        onStateChanged()
+        finish()
+        return
       }
 
       if (code === 0) {
@@ -202,6 +278,240 @@ function formatRunTargetMessage(target: TaskRunTarget): string {
     return `Run mode: worktree per task (${target.branchName ?? 'task branch'}).`
   }
   return 'Run mode: shared working tree.'
+}
+
+const liveProgressMinIntervalMs = 2500
+const liveProgressHeartbeatMs = 20_000
+const liveProgressMaxLength = 280
+
+function createLiveProgressPublisher(input: {
+  taskId: string
+  store: VibeBoardStore
+  onStateChanged: () => void
+}): { handleLine: (line: string) => void; flush: () => void; stop: () => void } {
+  let lastPublishedAt = 0
+  let lastPublishedText = ''
+  let pendingText: string | null = null
+  let flushTimer: NodeJS.Timeout | null = null
+  let heartbeatTimer: NodeJS.Timeout | null = null
+  let stopped = false
+
+  const clearFlushTimer = (): void => {
+    if (!flushTimer) return
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+
+  const clearHeartbeatTimer = (): void => {
+    if (!heartbeatTimer) return
+    clearTimeout(heartbeatTimer)
+    heartbeatTimer = null
+  }
+
+  const publish = (text: string): void => {
+    if (stopped) return
+    const normalized = text.trim()
+    if (!normalized || normalized === lastPublishedText) return
+
+    input.store.appendConversation(input.taskId, 'system', normalized)
+    input.onStateChanged()
+    lastPublishedAt = Date.now()
+    lastPublishedText = normalized
+    pendingText = null
+    scheduleHeartbeat()
+  }
+
+  const flushPending = (): void => {
+    flushTimer = null
+    if (!pendingText) return
+    publish(pendingText)
+  }
+
+  const queue = (text: string): void => {
+    if (stopped) return
+    const normalized = text.trim()
+    if (!normalized || normalized === lastPublishedText) return
+
+    const waitMs = Math.max(0, liveProgressMinIntervalMs - (Date.now() - lastPublishedAt))
+    if (waitMs === 0) {
+      clearFlushTimer()
+      publish(normalized)
+      return
+    }
+
+    pendingText = normalized
+    if (flushTimer) return
+    flushTimer = setTimeout(flushPending, waitMs)
+  }
+
+  const scheduleHeartbeat = (): void => {
+    clearHeartbeatTimer()
+    if (stopped) return
+    heartbeatTimer = setTimeout(() => {
+      heartbeatTimer = null
+      if (stopped) return
+      queue('Still working… agent is active with no new chat update yet.')
+      scheduleHeartbeat()
+    }, liveProgressHeartbeatMs)
+  }
+
+  scheduleHeartbeat()
+
+  return {
+    handleLine: (line: string) => {
+      const update = extractLiveProgressUpdate(line)
+      if (!update) return
+      queue(update)
+    },
+    flush: () => {
+      if (stopped) return
+      clearFlushTimer()
+      if (!pendingText) return
+      publish(pendingText)
+    },
+    stop: () => {
+      stopped = true
+      clearFlushTimer()
+      clearHeartbeatTimer()
+      pendingText = null
+    }
+  }
+}
+
+function extractLiveProgressUpdate(line: string): string | null {
+  const trimmed = line.trim()
+  if (!trimmed) return null
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown
+    const toolUpdate = formatToolProgress(parsed)
+    if (toolUpdate) return clampLiveProgress(toolUpdate)
+
+    const text = normalizeCursorText(findReadableText(parsed))
+    if (!shouldDisplayLiveProgressText(text)) return null
+    return clampLiveProgress(text)
+  } catch {
+    const text = normalizeCursorText(trimmed)
+    if (!shouldDisplayLiveProgressText(text)) return null
+    return clampLiveProgress(text)
+  }
+}
+
+function shouldDisplayLiveProgressText(text: string): boolean {
+  if (!shouldDisplayCursorText(text)) return false
+  if (text.includes(actualMessageMarker)) return false
+  if (/^VibeBoard project memory/i.test(text)) return false
+  if (/^Focused file candidates:/i.test(text)) return false
+  if (/^User task:/i.test(text)) return false
+  if (text.length < 8) return false
+  return true
+}
+
+function clampLiveProgress(text: string): string {
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= liveProgressMaxLength) return normalized
+  return `${normalized.slice(0, liveProgressMaxLength - 1).trim()}…`
+}
+
+function formatToolProgress(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  const type = String(record.type ?? record.event ?? '').toLowerCase()
+  const subtype = String(record.subtype ?? record.status ?? '').toLowerCase()
+
+  const toolName = findToolName(record)
+  if (!toolName) {
+    if (type.includes('tool') || subtype.includes('tool')) {
+      const target = findToolTarget(record)
+      if (target) return `Using tools on \`${target}\``
+    }
+    return null
+  }
+
+  const verb = toolProgressVerb(toolName, subtype)
+  const target = findToolTarget(record)
+  return target ? `${verb} \`${target}\`` : `${verb}…`
+}
+
+function findToolName(value: unknown, depth = 0): string | null {
+  if (!value || typeof value !== 'object' || depth > 5) return null
+  const record = value as Record<string, unknown>
+
+  for (const key of ['name', 'tool', 'toolName', 'tool_name']) {
+    const candidate = record[key]
+    if (typeof candidate === 'string' && candidate.trim() && !/^(tool_call|function|tool)$/i.test(candidate)) {
+      return candidate.trim()
+    }
+  }
+
+  for (const [key, nested] of Object.entries(record)) {
+    if (/tool/i.test(key) && nested && typeof nested === 'object') {
+      const nestedName = findToolName(nested, depth + 1)
+      if (nestedName) return nestedName
+
+      for (const nestedKey of Object.keys(nested as Record<string, unknown>)) {
+        if (/ToolCall$|tool_call$/i.test(nestedKey) || /^(Read|Write|Edit|Grep|Shell|Glob|Search|Delete|Bash)/i.test(nestedKey)) {
+          return nestedKey.replace(/ToolCall$/i, '').replace(/_tool_call$/i, '')
+        }
+      }
+    }
+  }
+
+  return null
+}
+
+function findToolTarget(value: unknown, depth = 0): string | null {
+  if (!value || typeof value !== 'object' || depth > 6) return null
+  const record = value as Record<string, unknown>
+
+  for (const key of [
+    'path',
+    'filePath',
+    'file_path',
+    'target_file',
+    'targetFile',
+    'filename',
+    'glob',
+    'glob_pattern',
+    'pattern',
+    'command',
+    'query',
+    'search_term',
+    'url'
+  ]) {
+    const candidate = record[key]
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return shortenToolTarget(candidate.trim())
+    }
+  }
+
+  for (const nested of Object.values(record)) {
+    const target = findToolTarget(nested, depth + 1)
+    if (target) return target
+  }
+
+  return null
+}
+
+function shortenToolTarget(target: string): string {
+  const singleLine = target.replace(/\s+/g, ' ').trim()
+  if (singleLine.length <= 96) return singleLine
+  return `${singleLine.slice(0, 93).trim()}…`
+}
+
+function toolProgressVerb(toolName: string, subtype: string): string {
+  const normalized = toolName.replace(/ToolCall$/i, '').replace(/_/g, ' ').trim()
+  const lower = normalized.toLowerCase()
+  const done = /complet|end|success|result|finished/.test(subtype)
+
+  if (/read|open|cat/.test(lower)) return done ? 'Read' : 'Reading'
+  if (/write|edit|apply|patch|strreplace|search_replace/.test(lower)) return done ? 'Edited' : 'Editing'
+  if (/delete|remove/.test(lower)) return done ? 'Deleted' : 'Deleting'
+  if (/grep|search|rg|find/.test(lower)) return done ? 'Searched' : 'Searching'
+  if (/glob|list/.test(lower)) return done ? 'Listed files' : 'Listing files'
+  if (/shell|bash|terminal|command|exec/.test(lower)) return done ? 'Ran command' : 'Running command'
+  if (/fetch|web|http/.test(lower)) return done ? 'Fetched' : 'Fetching'
+  return done ? `Used ${normalized}` : `Using ${normalized}`
 }
 
 async function assertGitWorkTree(cwd: string): Promise<void> {

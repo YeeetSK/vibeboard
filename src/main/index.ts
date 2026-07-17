@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { VibeBoardStore } from './database'
 import { PlaceholderCursorAdapter, cursorInstallCommand } from './cursorAdapter'
-import { runCursorTask } from './cursorRunner'
+import { runCursorTask, stopCursorTask, stopAllCursorTasks, flushAllCursorProgress } from './cursorRunner'
 import type {
   CreateLaneInput,
   CreateProjectInput,
@@ -20,6 +20,7 @@ import type {
   RecordSearchOpenInput,
   ReorderTabsInput,
   RenameInput,
+  RunTaskResult,
   SearchWorkspaceInput,
   SendTaskMessageInput,
   UpdateInfo,
@@ -32,11 +33,14 @@ import type { TaskStatusChangeEvent } from './database'
 let store: VibeBoardStore
 const cursorAdapter = new PlaceholderCursorAdapter()
 const runningTasks = new Set<string>()
+const runningTaskPromises = new Map<string, Promise<void>>()
+const cancelledTasks = new Set<string>()
 const projectRunQueues = new Map<string, Promise<void>>()
 const windows = new Set<BrowserWindow>()
 const execFileAsync = promisify(execFile)
 let isQuitConfirmed = false
 let isQuitPromptOpen = false
+let isShuttingDownAgents = false
 let quitPromptFallbackTimer: NodeJS.Timeout | null = null
 let lastRendererActivityAt = Date.now()
 let updateInfo: UpdateInfo = {
@@ -192,6 +196,7 @@ const registerIpc = (): void => {
     return startCursorTask(input.taskId)
   })
   ipcMain.handle('task:runCursor', (_event, taskId: string) => startCursorTask(taskId))
+  ipcMain.handle('task:retryPrompt', (_event, taskId: string) => retryTaskPrompt(taskId))
   ipcMain.handle('task:status', (_event, input: UpdateTaskStatusInput) => store.updateTaskStatus(input))
   ipcMain.handle('task:read', (_event, taskId: string) => store.markTaskRead(taskId))
   ipcMain.handle('cursor:status', () => cursorAdapter.status())
@@ -223,10 +228,11 @@ const registerIpc = (): void => {
   ipcMain.on('app:quitPromptShown', () => {
     clearQuitPromptFallback()
   })
-  ipcMain.handle('app:confirmQuit', () => {
+  ipcMain.handle('app:confirmQuit', async () => {
     clearQuitPromptFallback()
     isQuitConfirmed = true
     isQuitPromptOpen = false
+    await shutdownCursorAgentsForQuit()
     app.quit()
   })
   ipcMain.handle('app:cancelQuit', () => {
@@ -540,8 +546,9 @@ const installUpdate = (): UpdateInfo => {
     releaseNotes: updateInfo.releaseNotes
   })
   isQuitConfirmed = true
-
-  autoUpdater.quitAndInstall(false, true)
+  void shutdownCursorAgentsForQuit().finally(() => {
+    autoUpdater.quitAndInstall(false, true)
+  })
   return updateInfo
 }
 
@@ -599,7 +606,7 @@ const compareVersions = (a: string, b: string): number => {
   return 0
 }
 
-const startCursorTask = (taskId: string): { started: boolean; message: string } => {
+const startCursorTask = (taskId: string): RunTaskResult => {
   if (runningTasks.has(taskId)) {
     return { started: false, message: 'Task is already running.' }
   }
@@ -610,6 +617,7 @@ const startCursorTask = (taskId: string): { started: boolean; message: string } 
   const previousProjectRun = projectQueueKey ? projectRunQueues.get(projectQueueKey) : null
   const isRetry = context?.task.status === 'attention'
 
+  cancelledTasks.delete(taskId)
   runningTasks.add(taskId)
 
   if (isRetry) {
@@ -626,6 +634,12 @@ const startCursorTask = (taskId: string): { started: boolean; message: string } 
       await previousProjectRun.catch(() => undefined)
     }
 
+    if (cancelledTasks.has(taskId)) {
+      cancelledTasks.delete(taskId)
+      store.updateTaskStatus({ taskId, status: 'attention' })
+      return
+    }
+
     await runCursorTask({
       taskId,
       store,
@@ -635,11 +649,14 @@ const startCursorTask = (taskId: string): { started: boolean; message: string } 
 
   const runPromise = run().finally(() => {
     runningTasks.delete(taskId)
+    runningTaskPromises.delete(taskId)
     if (projectQueueKey && projectRunQueues.get(projectQueueKey) === runPromise) {
       projectRunQueues.delete(projectQueueKey)
     }
     broadcastStateChanged()
   })
+
+  runningTaskPromises.set(taskId, runPromise)
 
   if (projectQueueKey) {
     projectRunQueues.set(projectQueueKey, runPromise)
@@ -649,6 +666,46 @@ const startCursorTask = (taskId: string): { started: boolean; message: string } 
   return previousProjectRun
     ? { started: true, message: 'Cursor agent queued for this project.' }
     : { started: true, message: 'Cursor agent started.' }
+}
+
+const stopAndWaitForCursorTask = async (taskId: string): Promise<boolean> => {
+  const wasTracked = runningTasks.has(taskId) || runningTaskPromises.has(taskId)
+  cancelledTasks.add(taskId)
+  const stoppedProcess = stopCursorTask(taskId)
+  const pending = runningTaskPromises.get(taskId)
+  if (pending) {
+    await pending.catch(() => undefined)
+  }
+  cancelledTasks.delete(taskId)
+  return wasTracked || stoppedProcess
+}
+
+const retryTaskPrompt = async (taskId: string): Promise<RunTaskResult> => {
+  const context = store.getTaskRunContext(taskId)
+  if (!context) {
+    return { started: false, message: 'Task not found.' }
+  }
+  if (!context.project) {
+    return { started: false, message: 'Select a project before retrying this prompt.' }
+  }
+
+  const prompt = context.prompt.trim()
+  if (!prompt) {
+    return { started: false, message: 'No prompt available to retry.' }
+  }
+
+  const wasStopped = await stopAndWaitForCursorTask(taskId)
+  store.updateTaskStatus({ taskId, status: 'idle' })
+  store.appendConversation(
+    taskId,
+    'system',
+    wasStopped
+      ? 'Stopped the previous run and retrying the last prompt.'
+      : 'Retrying the last prompt.'
+  )
+  store.sendTaskMessage({ taskId, content: prompt })
+  broadcastStateChanged()
+  return startCursorTask(taskId)
 }
 
 const openCursorInstallTerminal = async (): Promise<void> => {
@@ -888,12 +945,44 @@ const quitWithoutPrompt = (): void => {
   clearQuitPromptFallback()
   isQuitConfirmed = true
   isQuitPromptOpen = false
-  app.quit()
+  void shutdownCursorAgentsForQuit().finally(() => {
+    app.quit()
+  })
+}
+
+const shutdownCursorAgentsForQuit = async (): Promise<void> => {
+  if (isShuttingDownAgents) return
+  isShuttingDownAgents = true
+
+  // Persist any buffered live progress before marking interruption.
+  flushAllCursorProgress()
+
+  // Flip processing → attention (red border) while status is still processing.
+  const interruptedCount = store.recoverInterruptedProcessingTasks()
+  if (interruptedCount > 0) {
+    broadcastStateChanged()
+  }
+
+  stopAllCursorTasks()
+
+  const pending = [...runningTaskPromises.values()]
+  if (pending.length === 0) return
+
+  await Promise.race([
+    Promise.allSettled(pending),
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, 2000)
+    })
+  ])
 }
 
 app.whenReady().then(() => {
   electronApp.setAppUserModelId(appUserModelId)
   store = new VibeBoardStore()
+  const recoveredCount = store.recoverInterruptedProcessingTasks()
+  if (recoveredCount > 0) {
+    console.info('[VibeBoard] Recovered interrupted processing tasks:', recoveredCount)
+  }
   store.setTaskStatusListener(handleTaskStatusChange)
   registerIpc()
   registerUpdaterEvents()

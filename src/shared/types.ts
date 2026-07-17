@@ -284,6 +284,7 @@ export interface VibeBoardApi {
   deleteTask: (taskId: string) => Promise<void>
   sendTaskMessage: (input: SendTaskMessageInput) => Promise<RunTaskResult>
   runTaskWithCursor: (taskId: string) => Promise<RunTaskResult>
+  retryTaskPrompt: (taskId: string) => Promise<RunTaskResult>
   updateTaskStatus: (input: UpdateTaskStatusInput) => Promise<void>
   markTaskRead: (taskId: string) => Promise<void>
   getCursorAdapterStatus: () => Promise<CursorStatus>

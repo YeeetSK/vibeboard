@@ -949,6 +949,49 @@ export function App(): ReactElement {
     })
   }
 
+  const retryTaskPrompt = async (taskId: string): Promise<void> => {
+    const task = state.tasks.find((item) => item.id === taskId)
+    if (!cursorStatus.available || !task?.projectId) return
+
+    const detailConversations =
+      selectedTaskId === taskId ? selectedTaskDetail.conversations : []
+    const lastUserPrompt =
+      [...detailConversations].reverse().find((entry) => entry.role === 'user')?.content.trim() ||
+      task.summary.trim() ||
+      task.title.trim()
+
+    await runAction(`task:retryPrompt:${taskId}`, async () => {
+      if (selectedTaskId === taskId && lastUserPrompt) {
+        const timestamp = new Date().toISOString()
+        const optimisticEntries: ConversationEntry[] = [
+          {
+            id: `optimistic-${crypto.randomUUID()}`,
+            taskId,
+            role: 'system',
+            content:
+              task.status === 'processing'
+                ? 'Stopped the previous run and retrying the last prompt.'
+                : 'Retrying the last prompt.',
+            createdAt: timestamp
+          },
+          {
+            id: `optimistic-${crypto.randomUUID()}`,
+            taskId,
+            role: 'user',
+            content: lastUserPrompt,
+            createdAt: timestamp
+          }
+        ]
+        setSelectedTaskDetail((current) => ({
+          ...current,
+          conversations: mergeConversationEntries(current.conversations, optimisticEntries)
+        }))
+      }
+      await window.vibeboard.retryTaskPrompt(taskId)
+      await refresh()
+    })
+  }
+
   const cancelQuit = async (): Promise<void> => {
     await runAction('quit:cancel', async () => {
       setQuitRequest(null)
@@ -1378,6 +1421,7 @@ export function App(): ReactElement {
           onLoadOlderConversations={loadOlderSelectedTaskConversations}
           onSendMessage={sendTaskMessage}
           onRetryTask={retryTask}
+          onRetryPrompt={retryTaskPrompt}
           onDeleteTask={setDeleteTaskId}
           onClose={() => setSelectedTaskId(null)}
         />
@@ -3786,6 +3830,7 @@ function TaskDetailModal({
   onLoadOlderConversations,
   onSendMessage,
   onRetryTask,
+  onRetryPrompt,
   onDeleteTask,
   onClose
 }: {
@@ -3799,11 +3844,17 @@ function TaskDetailModal({
   onLoadOlderConversations: () => void
   onSendMessage: (taskId: string, content: string) => void
   onRetryTask: (taskId: string) => void
+  onRetryPrompt: (taskId: string) => void
   onDeleteTask: (taskId: string) => void
   onClose: () => void
 }): ReactElement {
   const canChat = Boolean(project) && canUseCursor && task.status !== 'processing'
   const canRetry = canChat && task.status === 'attention'
+  const lastPrompt =
+    [...conversations].reverse().find((entry) => entry.role === 'user')?.content.trim() ||
+    task.summary.trim() ||
+    task.title.trim()
+  const canRetryPrompt = Boolean(project) && canUseCursor && Boolean(lastPrompt)
   const hasCapturedChanges = changes.length > 0
   useModalEscape(onClose)
 
@@ -3907,9 +3958,11 @@ function TaskDetailModal({
               hasOlderConversations={hasOlderConversations}
               isLoadingOlderConversations={isLoadingOlderConversations}
               canSend={canChat}
+              canRetryPrompt={canRetryPrompt}
               disabledLabel={!canUseCursor ? 'Cursor not connected' : !project ? 'No project selected' : 'Running'}
               onLoadOlderConversations={onLoadOlderConversations}
               onSendMessage={onSendMessage}
+              onRetryPrompt={onRetryPrompt}
             />
           </section>
 
@@ -3941,18 +3994,22 @@ function AgentThread({
   hasOlderConversations,
   isLoadingOlderConversations,
   canSend,
+  canRetryPrompt,
   disabledLabel,
   onLoadOlderConversations,
-  onSendMessage
+  onSendMessage,
+  onRetryPrompt
 }: {
   conversations: ConversationEntry[]
   task: Task
   hasOlderConversations: boolean
   isLoadingOlderConversations: boolean
   canSend: boolean
+  canRetryPrompt: boolean
   disabledLabel: string
   onLoadOlderConversations: () => void
   onSendMessage: (taskId: string, content: string) => void
+  onRetryPrompt: (taskId: string) => void
 }): ReactElement {
   const [draft, setDraft] = useState(() => readTaskComposerDraft(task.id))
   const streamRef = useRef<HTMLDivElement | null>(null)
@@ -3968,7 +4025,12 @@ function AgentThread({
       )
       .map((entry) => ({
         ...entry,
-        content: entry.role === 'user' ? entry.content.trim() : cleanConversationContent(entry.content)
+        content:
+          entry.role === 'user'
+            ? entry.content.trim()
+            : entry.role === 'system'
+              ? cleanSystemConversationContent(entry.content)
+              : cleanConversationContent(entry.content)
       }))
       .filter((entry) => entry.content)
   )
@@ -4077,18 +4139,33 @@ function AgentThread({
         )}
       </div>
 
-      {canSend && (
+      {(canSend || canRetryPrompt) && (
         <div className="prompt-template-row" aria-label="Prompt templates">
-          {promptTemplates.map((template) => (
+          {canRetryPrompt && (
             <button
-              key={template.label}
-              className="template-chip"
+              className="template-chip template-chip-retry"
               type="button"
-              onClick={() => useTemplate(template.prompt)}
+              onClick={() => onRetryPrompt(task.id)}
+              title={
+                task.status === 'processing'
+                  ? 'Stop the current run and re-send the last prompt'
+                  : 'Re-send the last prompt'
+              }
             >
-              {template.label}
+              Retry prompt
             </button>
-          ))}
+          )}
+          {canSend &&
+            promptTemplates.map((template) => (
+              <button
+                key={template.label}
+                className="template-chip"
+                type="button"
+                onClick={() => useTemplate(template.prompt)}
+              >
+                {template.label}
+              </button>
+            ))}
         </div>
       )}
 
@@ -4184,6 +4261,15 @@ function cleanConversationContent(content: string): string {
     .trim()
 }
 
+function cleanSystemConversationContent(content: string): string {
+  return content
+    .split(/\r?\n/)
+    .map((line) => cleanConversationLine(line))
+    .filter(Boolean)
+    .join('\n')
+    .trim()
+}
+
 function cleanConversationLine(line: string): string {
   return line
     .trim()
@@ -4249,7 +4335,8 @@ function compactConversationEntries(entries: ConversationEntry[]): ConversationE
 
   for (const entry of entries) {
     const previous = compacted.at(-1)
-    if (previous && previous.role === entry.role) {
+    // Keep system progress updates as separate chat rows so live status stays readable.
+    if (previous && previous.role === 'assistant' && entry.role === 'assistant') {
       previous.content = joinConversationParts(previous.content, entry.content)
       continue
     }
