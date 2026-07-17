@@ -1,4 +1,5 @@
 import { ReactElement, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { DragEvent as ReactDragEvent } from 'react'
 import {
   CollisionDetection,
@@ -3552,7 +3553,7 @@ function TaskCard({
   onRename: () => void
 }): ReactElement {
   const [isMenuOpen, setIsMenuOpen] = useState(false)
-  const cardRef = useRef<HTMLElement | null>(null)
+  const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null)
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id
   })
@@ -3563,34 +3564,27 @@ function TaskCard({
   const canMutate = task.status !== 'processing'
   const canFinish = canMutate && task.status !== 'done_unread' && task.status !== 'done_read'
 
+  const closeMenu = (): void => {
+    setIsMenuOpen(false)
+    setMenuPosition(null)
+  }
+
   useEffect(() => {
     if (!isMenuOpen) return
 
-    const closeOnOutsideClick = (event: PointerEvent): void => {
-      const target = event.target
-      if (!(target instanceof Node)) return
-      if (cardRef.current?.contains(target)) return
-      setIsMenuOpen(false)
-    }
-
     const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setIsMenuOpen(false)
+      if (event.key === 'Escape') closeMenu()
     }
 
-    window.addEventListener('pointerdown', closeOnOutsideClick, true)
     window.addEventListener('keydown', closeOnEscape, true)
     return () => {
-      window.removeEventListener('pointerdown', closeOnOutsideClick, true)
       window.removeEventListener('keydown', closeOnEscape, true)
     }
   }, [isMenuOpen])
 
   return (
     <article
-      ref={(element) => {
-        setNodeRef(element)
-        cardRef.current = element
-      }}
+      ref={setNodeRef}
       style={style}
       className={`task-card status-${task.status} ${isDragging ? 'dragging' : ''} ${isMenuOpen ? 'menu-open' : ''}`}
       onClick={onOpen}
@@ -3614,20 +3608,46 @@ function TaskCard({
             aria-expanded={isMenuOpen}
             onClick={(event) => {
               event.stopPropagation()
-              setIsMenuOpen((value) => !value)
+              if (isMenuOpen) {
+                closeMenu()
+                return
+              }
+              const rect = event.currentTarget.getBoundingClientRect()
+              setMenuPosition({
+                top: rect.bottom + 4,
+                left: Math.max(8, rect.right - 146)
+              })
+              setIsMenuOpen(true)
             }}
             onPointerDown={(event) => event.stopPropagation()}
           >
             <Ellipsis size={15} />
           </button>
-          {isMenuOpen && (
-            <div className="task-action-menu" role="menu" onPointerDown={(event) => event.stopPropagation()}>
+        </div>
+      )}
+      {isMenuOpen &&
+        menuPosition &&
+        createPortal(
+          <div className="task-action-overlay" role="presentation">
+            <button
+              className="task-action-menu-backdrop"
+              type="button"
+              aria-label="Close task menu"
+              onClick={closeMenu}
+              onPointerDown={(event) => event.stopPropagation()}
+            />
+            <div
+              className="task-action-menu"
+              role="menu"
+              style={{ top: menuPosition.top, left: menuPosition.left }}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
               <button
                 type="button"
                 role="menuitem"
                 onClick={(event) => {
                   event.stopPropagation()
-                  setIsMenuOpen(false)
+                  closeMenu()
                   onRename()
                 }}
               >
@@ -3640,7 +3660,7 @@ function TaskCard({
                   role="menuitem"
                   onClick={(event) => {
                     event.stopPropagation()
-                    setIsMenuOpen(false)
+                    closeMenu()
                     onFinish()
                   }}
                 >
@@ -3654,7 +3674,7 @@ function TaskCard({
                 role="menuitem"
                 onClick={(event) => {
                   event.stopPropagation()
-                  setIsMenuOpen(false)
+                  closeMenu()
                   onDelete()
                 }}
               >
@@ -3662,9 +3682,9 @@ function TaskCard({
                 <span>Delete task</span>
               </button>
             </div>
-          )}
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
     </article>
   )
 }

@@ -1928,14 +1928,12 @@ button {
 
 .task-card {
   position: relative;
-  isolation: isolate;
   display: block;
   min-height: 36px;
   padding: 7px 8px;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: var(--surface);
-  contain: layout;
   cursor: grab;
   touch-action: none;
   user-select: none;
@@ -1969,7 +1967,6 @@ button {
 
 .task-card.drag-preview {
   box-shadow: 0 16px 34px rgba(0, 0, 0, 0.42);
-  contain: none;
   cursor: grabbing;
   pointer-events: none;
 }
@@ -2126,10 +2123,24 @@ button {
   color: var(--red);
 }
 
+.task-action-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+
+.task-action-menu-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  cursor: default;
+}
+
 .task-action-menu {
   position: absolute;
-  top: 28px;
-  right: 0;
   display: grid;
   min-width: 146px;
   padding: 4px;
@@ -2137,7 +2148,6 @@ button {
   border-radius: 7px;
   background: #222222;
   box-shadow: 0 14px 28px rgba(0, 0, 0, 0.42);
-  z-index: 12;
 }
 
 .task-action-menu button {
