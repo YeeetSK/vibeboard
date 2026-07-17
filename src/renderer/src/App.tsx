@@ -4203,6 +4203,7 @@ function AgentThread({
       .filter((entry, index) => {
         if (isNoisyConversationEntry(entry)) return false
         if (entry.role !== 'system') return true
+        if (isUselessSystemStatusFragment(entry.content)) return false
         // Live status prints are only useful while the agent is still running.
         if (task.status === 'processing') return true
         // After the AI returns a message, drop preceding system status updates.
@@ -4326,7 +4327,13 @@ function AgentThread({
               {entry.role === 'user' ? <MessageSquare size={16} /> : <Code2 size={16} />}
               <div>
                 <strong className="agent-step-label">
-                  {entry.role === 'user' ? 'You' : entry.role === 'assistant' ? 'Agent' : 'System'}
+                  {entry.role === 'user'
+                    ? 'You'
+                    : entry.role === 'assistant'
+                      ? 'Agent'
+                      : isThinkingSystemStatus(entry.content)
+                        ? 'Thinking'
+                        : 'System'}
                 </strong>
                 {entry.role === 'user' ? (
                   <div className="user-message-bubble">
@@ -4637,6 +4644,43 @@ function isNoisyConversationEntry(entry: ConversationEntry): boolean {
   return false
 }
 
+function isOperationalSystemMessage(content: string): boolean {
+  const text = content.trim()
+  return (
+    /^(Agent is running|Still working|Starting Cursor|Select a project|Cursor (CLI|Agent)|This run was interrupted|Project folder|Could not|Retry keeps|This run mode|Git repository)/i.test(
+      text
+    ) ||
+    /^(Using |Reading |Read |Editing |Edited |Deleted |Deleting |Searched |Searching |Listed files|Listing files|Ran command|Running command|Fetched |Fetching |Used )/i.test(
+      text
+    ) ||
+    /\b(not installed|not signed in|skipped sync|matches origin|left untouched|Commit-to-main|fast-forward)/i.test(text)
+  )
+}
+
+/** Drop streamed mid-thought scraps like "actual source of the" that used to spam System rows. */
+function isUselessSystemStatusFragment(content: string): boolean {
+  const text = content.trim()
+  if (!text) return true
+  if (isOperationalSystemMessage(text)) return false
+
+  // Incomplete stream deltas often start mid-sentence.
+  if (/^[a-z]/.test(text)) return true
+
+  // Short clauses without a finished sentence or tool target are not useful status.
+  if (text.length < 60 && !/[.!?…]$/.test(text) && !/`/.test(text)) return true
+
+  // Tiny finished scraps that are clearly not operational status.
+  if (text.length < 40 && !isOperationalSystemMessage(text)) return true
+
+  return false
+}
+
+function isThinkingSystemStatus(content: string): boolean {
+  const text = content.trim()
+  if (!text || isOperationalSystemMessage(text)) return false
+  return !isUselessSystemStatusFragment(text)
+}
+
 function cleanConversationContent(content: string): string {
   return stripLeadingActualMessageMarker(content)
     .split(/\r?\n/)
@@ -4765,6 +4809,17 @@ function compactConversationEntries(entries: ConversationEntry[]): ConversationE
       if (previous.attachments.length === 0) {
         delete previous.attachments
       }
+      continue
+    }
+    // Collapse successive thinking updates into the latest complete thought.
+    if (
+      previous &&
+      previous.role === 'system' &&
+      entry.role === 'system' &&
+      isThinkingSystemStatus(previous.content) &&
+      isThinkingSystemStatus(entry.content)
+    ) {
+      previous.content = entry.content
       continue
     }
     compacted.push({ ...entry, attachments: entry.attachments ? [...entry.attachments] : undefined })

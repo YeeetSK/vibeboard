@@ -142,7 +142,7 @@ export async function runCursorTask({
     store,
     onStateChanged
   })
-  store.appendConversation(taskId, 'system', 'Agent is running. Live progress updates will appear here.')
+  store.appendConversation(taskId, 'system', 'Agent is running. Tool activity and thinking will appear here.')
   onStateChanged()
 
   const abort = (): void => {
@@ -328,6 +328,7 @@ async function prepareTaskRunTarget(task: Task, project: Project, store: VibeBoa
 const liveProgressMinIntervalMs = 2500
 const liveProgressHeartbeatMs = 20_000
 const liveProgressMaxLength = 280
+const liveThinkingMinPublishLength = 48
 
 function createLiveProgressPublisher(input: {
   taskId: string
@@ -337,6 +338,7 @@ function createLiveProgressPublisher(input: {
   let lastPublishedAt = 0
   let lastPublishedText = ''
   let pendingText: string | null = null
+  let thinkingBuffer = ''
   let flushTimer: NodeJS.Timeout | null = null
   let heartbeatTimer: NodeJS.Timeout | null = null
   let stopped = false
@@ -404,41 +406,65 @@ function createLiveProgressPublisher(input: {
 
   return {
     handleLine: (line: string) => {
-      const update = extractLiveProgressUpdate(line)
-      if (!update) return
-      queue(update)
+      const toolUpdate = extractLiveToolProgress(line)
+      if (toolUpdate) {
+        thinkingBuffer = ''
+        queue(toolUpdate)
+        return
+      }
+
+      const thinkingChunk = extractLiveThinkingChunk(line)
+      if (!thinkingChunk) return
+
+      thinkingBuffer = mergeThinkingBuffer(thinkingBuffer, thinkingChunk)
+      const preview = formatThinkingProgress(thinkingBuffer)
+      if (!preview) return
+      queue(preview)
     },
     flush: () => {
       if (stopped) return
       clearFlushTimer()
-      if (!pendingText) return
-      publish(pendingText)
+      if (pendingText) {
+        publish(pendingText)
+        return
+      }
+      const preview = formatThinkingProgress(thinkingBuffer)
+      if (preview) publish(preview)
     },
     stop: () => {
       stopped = true
       clearFlushTimer()
       clearHeartbeatTimer()
       pendingText = null
+      thinkingBuffer = ''
     }
   }
 }
 
-function extractLiveProgressUpdate(line: string): string | null {
+function extractLiveToolProgress(line: string): string | null {
   const trimmed = line.trim()
   if (!trimmed) return null
 
   try {
-    const parsed = JSON.parse(trimmed) as unknown
-    const toolUpdate = formatToolProgress(parsed)
-    if (toolUpdate) return clampLiveProgress(toolUpdate)
+    const toolUpdate = formatToolProgress(JSON.parse(trimmed) as unknown)
+    return toolUpdate ? clampLiveProgress(toolUpdate) : null
+  } catch {
+    return null
+  }
+}
 
-    const text = normalizeCursorText(findReadableText(parsed))
+function extractLiveThinkingChunk(line: string): string | null {
+  const trimmed = line.trim()
+  if (!trimmed) return null
+
+  try {
+    const text = normalizeCursorText(findReadableText(JSON.parse(trimmed) as unknown))
     if (!shouldDisplayLiveProgressText(text)) return null
-    return clampLiveProgress(text)
+    return text
   } catch {
     const text = normalizeCursorText(trimmed)
     if (!shouldDisplayLiveProgressText(text)) return null
-    return clampLiveProgress(text)
+    return text
   }
 }
 
@@ -450,6 +476,34 @@ function shouldDisplayLiveProgressText(text: string): boolean {
   if (/^User task:/i.test(text)) return false
   if (text.length < 8) return false
   return true
+}
+
+function mergeThinkingBuffer(previous: string, next: string): string {
+  const left = previous.replace(/\s+/g, ' ').trim()
+  const right = next.replace(/\s+/g, ' ').trim()
+  if (!left) return right
+  if (!right) return left
+  if (right.startsWith(left) || right.includes(left)) return right
+  if (left.endsWith(right) || left.includes(right)) return left
+  if (/^[,.;:!?)]/.test(right)) return `${left}${right}`
+  return `${left} ${right}`
+}
+
+/** Only publish complete thoughts — never raw stream deltas like "actual source of the". */
+function formatThinkingProgress(buffer: string): string | null {
+  const normalized = buffer.replace(/\s+/g, ' ').trim()
+  if (normalized.length < liveThinkingMinPublishLength) return null
+
+  const sentences = normalized.match(/[^.!?…]+[.!?…]+(?:\s+|$)/g)
+  if (!sentences?.length) return null
+
+  const preview = sentences
+    .slice(-2)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (preview.length < liveThinkingMinPublishLength) return null
+  return clampLiveProgress(preview)
 }
 
 function clampLiveProgress(text: string): string {
