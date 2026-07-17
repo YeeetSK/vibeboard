@@ -2838,7 +2838,7 @@ button:focus-visible {
 
 .thread-composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 36px;
+  grid-template-columns: 36px minmax(0, 1fr) 36px;
   align-items: end;
   gap: 8px;
   padding-top: 10px;
@@ -2864,6 +2864,79 @@ button:focus-visible {
   width: 36px;
   height: 36px;
   margin-bottom: 0;
+}
+
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.composer-attachment {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #1b1b1b;
+}
+
+.composer-attachment img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.composer-attachment-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  cursor: pointer;
+  padding: 0;
+}
+
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.message-attachment {
+  width: 120px;
+  max-width: 100%;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #141414;
+}
+
+.message-attachment img {
+  width: 100%;
+  height: auto;
+  display: block;
+  vertical-align: middle;
+}
+
+.message-attachment-missing {
+  display: grid;
+  place-items: center;
+  min-height: 64px;
+  padding: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
 }
 
 .message {

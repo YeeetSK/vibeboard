@@ -47,11 +47,20 @@ export interface Task {
   runStartedAt?: string | null
 }
 
+export interface ConversationAttachment {
+  id: string
+  name: string
+  mimeType: string
+  filePath: string
+  dataUrl?: string
+}
+
 export interface ConversationEntry {
   id: string
   taskId: string
   role: 'user' | 'assistant' | 'system'
   content: string
+  attachments?: ConversationAttachment[]
   createdAt: string
 }
 
@@ -141,9 +150,16 @@ export interface UpdateProjectRunModeInput {
   runMode: RunMode
 }
 
+export interface TaskMessageAttachmentInput {
+  name: string
+  mimeType: string
+  dataBase64: string
+}
+
 export interface SendTaskMessageInput {
   taskId: string
   content: string
+  attachments?: TaskMessageAttachmentInput[]
 }
 
 export interface SearchWorkspaceInput {

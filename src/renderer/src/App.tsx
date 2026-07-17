@@ -75,6 +75,7 @@ import {
   Monitor,
   PanelLeftClose,
   PanelLeftOpen,
+  Paperclip,
   Pencil,
   Plus,
   Pin,
@@ -92,6 +93,7 @@ import type {
   AppState,
   BoardTab,
   CodeChange,
+  ConversationAttachment,
   ConversationEntry,
   CursorSetupPhase,
   CursorStatus,
@@ -102,6 +104,7 @@ import type {
   SearchResult,
   Task,
   TaskDetail,
+  TaskMessageAttachmentInput,
   UpdateInfo,
   NotificationEventSettings,
   NotificationSettings,
@@ -921,16 +924,29 @@ export function App(): ReactElement {
     }
   }
 
-  const sendTaskMessage = async (taskId: string, content: string): Promise<void> => {
+  const sendTaskMessage = async (
+    taskId: string,
+    content: string,
+    attachments: TaskMessageAttachmentInput[] = []
+  ): Promise<void> => {
     const task = state.tasks.find((item) => item.id === taskId)
     if (!cursorStatus.available || !task?.projectId) return
+    const trimmed = content.trim()
+    if (!trimmed && attachments.length === 0) return
     await runAction(`task:message:${taskId}`, async () => {
       if (selectedTaskId === taskId) {
         const optimisticEntry: ConversationEntry = {
           id: `optimistic-${crypto.randomUUID()}`,
           taskId,
           role: 'user',
-          content,
+          content: trimmed,
+          attachments: attachments.map((attachment, index) => ({
+            id: `optimistic-attachment-${index}`,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            filePath: '',
+            dataUrl: `data:${attachment.mimeType};base64,${attachment.dataBase64}`
+          })),
           createdAt: new Date().toISOString()
         }
         setSelectedTaskDetail((current) => ({
@@ -938,7 +954,7 @@ export function App(): ReactElement {
           conversations: mergeConversationEntries(current.conversations, [optimisticEntry])
         }))
       }
-      await window.vibeboard.sendTaskMessage({ taskId, content })
+      await window.vibeboard.sendTaskMessage({ taskId, content: trimmed, attachments })
       await refresh()
     })
   }
@@ -3888,7 +3904,7 @@ function TaskDetailModal({
   isLoadingOlderConversations: boolean
   canUseCursor: boolean
   onLoadOlderConversations: () => void
-  onSendMessage: (taskId: string, content: string) => void
+  onSendMessage: (taskId: string, content: string, attachments?: TaskMessageAttachmentInput[]) => void
   onRetryTask: (taskId: string) => void
   onRetryPrompt: (taskId: string) => void
   onStopTask: (taskId: string) => void
@@ -4074,12 +4090,14 @@ function AgentThread({
   canRetryPrompt: boolean
   disabledLabel: string
   onLoadOlderConversations: () => void
-  onSendMessage: (taskId: string, content: string) => void
+  onSendMessage: (taskId: string, content: string, attachments?: TaskMessageAttachmentInput[]) => void
   onRetryPrompt: (taskId: string) => void
 }): ReactElement {
   const [draft, setDraft] = useState(() => readTaskComposerDraft(task.id))
+  const [pendingAttachments, setPendingAttachments] = useState<PendingComposerAttachment[]>([])
   const streamRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const olderScrollSnapshotRef = useRef<{ height: number; top: number } | null>(null)
   const showSystemEntries = task.status === 'processing' || task.status === 'attention'
   const threadEntries = compactConversationEntries(
@@ -4098,12 +4116,14 @@ function AgentThread({
               ? cleanSystemConversationContent(entry.content)
               : cleanConversationContent(entry.content)
       }))
-      .filter((entry) => entry.content)
+      .filter((entry) => entry.content || (entry.attachments?.length ?? 0) > 0)
   )
-  const scrollKey = `${task.status}:${threadEntries.map((entry) => `${entry.id}:${entry.content.length}`).join('|')}`
+  const scrollKey = `${task.status}:${threadEntries.map((entry) => `${entry.id}:${entry.content.length}:${entry.attachments?.length ?? 0}`).join('|')}`
+  const canSubmit = canSend && (Boolean(draft.trim()) || pendingAttachments.length > 0)
 
   useEffect(() => {
     setDraft(readTaskComposerDraft(task.id))
+    setPendingAttachments([])
   }, [task.id])
 
   useEffect(() => {
@@ -4149,12 +4169,24 @@ function AgentThread({
     maybeLoadOlder()
   }
 
+  const addImageFiles = async (files: File[]): Promise<void> => {
+    const imageFiles = files.filter((file) => file.type.startsWith('image/'))
+    if (imageFiles.length === 0) return
+    const nextAttachments = await Promise.all(imageFiles.map((file) => fileToPendingAttachment(file)))
+    setPendingAttachments((current) => [...current, ...nextAttachments].slice(0, 6))
+  }
+
   const send = (): void => {
     const content = draft.trim()
-    if (!canSend || !content) return
-    onSendMessage(task.id, content)
+    if (!canSend || (!content && pendingAttachments.length === 0)) return
+    onSendMessage(
+      task.id,
+      content,
+      pendingAttachments.map(({ name, mimeType, dataBase64 }) => ({ name, mimeType, dataBase64 }))
+    )
     writeTaskComposerDraft(task.id, '')
     setDraft('')
+    setPendingAttachments([])
   }
 
   const useTemplate = (template: string): void => {
@@ -4173,14 +4205,6 @@ function AgentThread({
           <div className="thread-empty-state">
             Chat is empty
           </div>
-        ) : threadEntries.length === 0 ? (
-          <div className="agent-step">
-            <Code2 size={16} />
-            <div>
-              <strong className="agent-step-label">Agent workspace</strong>
-              <p>{task.status === 'processing' ? 'Working on this task' : 'Waiting for the agent'}</p>
-            </div>
-          </div>
         ) : (
           threadEntries.map((entry) => (
             <div
@@ -4194,7 +4218,8 @@ function AgentThread({
                 </strong>
                 {entry.role === 'user' ? (
                   <div className="user-message-bubble">
-                    <MessageMarkdown content={entry.content} />
+                    <MessageAttachments attachments={entry.attachments} />
+                    {entry.content ? <MessageMarkdown content={entry.content} /> : null}
                   </div>
                 ) : (
                   <MessageMarkdown content={entry.content} />
@@ -4235,14 +4260,61 @@ function AgentThread({
         </div>
       )}
 
+      {pendingAttachments.length > 0 && (
+        <div className="composer-attachments" aria-label="Pending attachments">
+          {pendingAttachments.map((attachment) => (
+            <div key={attachment.id} className="composer-attachment">
+              <img src={attachment.dataUrl} alt={attachment.name} />
+              <button
+                className="composer-attachment-remove"
+                type="button"
+                title="Remove attachment"
+                onClick={() =>
+                  setPendingAttachments((current) => current.filter((item) => item.id !== attachment.id))
+                }
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="thread-composer">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          multiple
+          hidden
+          onChange={(event) => {
+            const files = Array.from(event.target.files ?? [])
+            void addImageFiles(files)
+            event.target.value = ''
+          }}
+        />
+        <button
+          className="icon-button"
+          type="button"
+          disabled={!canSend}
+          title="Attach image"
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <Paperclip size={16} />
+        </button>
         <textarea
           ref={composerRef}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           disabled={!canSend}
           rows={1}
-          placeholder={canSend ? 'Message' : disabledLabel}
+          placeholder={canSend ? 'Message or paste an image' : disabledLabel}
+          onPaste={(event) => {
+            const files = collectClipboardImageFiles(event.clipboardData)
+            if (files.length === 0) return
+            event.preventDefault()
+            void addImageFiles(files)
+          }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault()
@@ -4250,12 +4322,75 @@ function AgentThread({
             }
           }}
         />
-        <button className="icon-button" type="button" onClick={send} disabled={!canSend || !draft.trim()} title="Send">
+        <button className="icon-button" type="button" onClick={send} disabled={!canSubmit} title="Send">
           <Send size={16} />
         </button>
       </div>
     </div>
   )
+}
+
+function MessageAttachments({ attachments }: { attachments?: ConversationAttachment[] }): ReactElement | null {
+  if (!attachments || attachments.length === 0) return null
+  return (
+    <div className="message-attachments">
+      {attachments.map((attachment) =>
+        attachment.dataUrl ? (
+          <div key={attachment.id} className="message-attachment" title={attachment.name}>
+            <img src={attachment.dataUrl} alt={attachment.name} />
+          </div>
+        ) : (
+          <div key={attachment.id} className="message-attachment message-attachment-missing">
+            {attachment.name}
+          </div>
+        )
+      )}
+    </div>
+  )
+}
+
+interface PendingComposerAttachment {
+  id: string
+  name: string
+  mimeType: string
+  dataBase64: string
+  dataUrl: string
+}
+
+async function fileToPendingAttachment(file: File): Promise<PendingComposerAttachment> {
+  const dataUrl = await readFileAsDataUrl(file)
+  const commaIndex = dataUrl.indexOf(',')
+  const dataBase64 = commaIndex >= 0 ? dataUrl.slice(commaIndex + 1) : dataUrl
+  return {
+    id: crypto.randomUUID(),
+    name: file.name || 'image.png',
+    mimeType: file.type || 'image/png',
+    dataBase64,
+    dataUrl
+  }
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read image.'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function collectClipboardImageFiles(clipboardData: DataTransfer | null): File[] {
+  if (!clipboardData) return []
+
+  const fromItems: File[] = []
+  for (const item of Array.from(clipboardData.items ?? [])) {
+    if (!item.type.startsWith('image/')) continue
+    const file = item.getAsFile()
+    if (file) fromItems.push(file)
+  }
+  if (fromItems.length > 0) return fromItems
+
+  return Array.from(clipboardData.files ?? []).filter((file) => file.type.startsWith('image/'))
 }
 
 function MessageMarkdown({ content }: { content: string }): ReactElement {
@@ -4311,7 +4446,7 @@ function MessageMarkdown({ content }: { content: string }): ReactElement {
 
 function isNoisyConversationEntry(entry: ConversationEntry): boolean {
   const content = entry.content.trim()
-  if (!content) return true
+  if (!content) return (entry.attachments?.length ?? 0) === 0
   if (/^(system|user|assistant|thinking|tool_call|result|metadata|init|start|started|end|done|completed|success)$/i.test(content)) return true
   if (content.includes('You are running inside VibeBoard as a background coding agent.')) return true
   if (content.includes('Token and exploration rules:')) return true
@@ -4404,9 +4539,13 @@ function compactConversationEntries(entries: ConversationEntry[]): ConversationE
     // Keep system progress updates as separate chat rows so live status stays readable.
     if (previous && previous.role === 'assistant' && entry.role === 'assistant') {
       previous.content = joinConversationParts(previous.content, entry.content)
+      previous.attachments = [...(previous.attachments ?? []), ...(entry.attachments ?? [])]
+      if (previous.attachments.length === 0) {
+        delete previous.attachments
+      }
       continue
     }
-    compacted.push({ ...entry })
+    compacted.push({ ...entry, attachments: entry.attachments ? [...entry.attachments] : undefined })
   }
 
   return compacted

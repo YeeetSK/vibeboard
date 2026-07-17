@@ -2,7 +2,7 @@ import { app } from 'electron'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import type { CodeChange, Project, RunMode, Task } from '../shared/types'
+import type { CodeChange, ConversationAttachment, Project, RunMode, Task } from '../shared/types'
 import { isAgentAuthenticated, resolveAgentCommand } from './cursorAdapter'
 import { VibeBoardStore } from './database'
 
@@ -112,7 +112,13 @@ export async function runCursorTask({ taskId, store, onStateChanged }: RunCursor
 
   const baselineDiff = await collectGitDiffText(runTarget.cwd)
   store.appendConversation(taskId, 'system', formatRunTargetMessage(runTarget))
-  const optimizedPrompt = await buildFocusedPrompt(runTarget.cwd, context.prompt, context.previousPrompts, runTarget)
+  const optimizedPrompt = await buildFocusedPrompt(
+    runTarget.cwd,
+    context.prompt,
+    context.previousPrompts,
+    context.attachments,
+    runTarget
+  )
   store.appendConversation(taskId, 'system', 'Prepared a focused project brief to reduce unnecessary repo exploration.')
   onStateChanged()
 
@@ -739,6 +745,7 @@ async function buildFocusedPrompt(
   projectPath: string,
   prompt: string,
   previousPrompts: string[],
+  attachments: ConversationAttachment[] = [],
   runTarget?: TaskRunTarget
 ): Promise<string> {
   const [trackedFiles, changedFiles, manifestSummary, projectMemory] = await Promise.all([
@@ -748,6 +755,7 @@ async function buildFocusedPrompt(
     prepareProjectMemory(projectPath)
   ])
   const candidateFiles = rankRelevantFiles(prompt, trackedFiles, changedFiles).slice(0, 40)
+  const attachmentPaths = attachments.map((attachment) => attachment.filePath).filter(Boolean)
   const worktreeRules =
     runTarget?.mode === 'worktree'
       ? [
@@ -789,8 +797,15 @@ async function buildFocusedPrompt(
     manifestSummary ? `Project hints:\n${manifestSummary}` : '',
     candidateFiles.length > 0 ? `Focused file candidates:\n${candidateFiles.map((file) => `- ${file}`).join('\n')}` : '',
     '',
+    attachmentPaths.length > 0
+      ? [
+          'User-attached images for this message (read these files for visual context):',
+          ...attachmentPaths.map((filePath) => `- ${filePath}`)
+        ].join('\n')
+      : '',
+    '',
     'User task:',
-    prompt
+    prompt || (attachmentPaths.length > 0 ? 'Use the attached images as the primary task context.' : prompt)
   ]
     .filter(Boolean)
     .join('\n')

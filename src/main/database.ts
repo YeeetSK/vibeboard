@@ -7,6 +7,7 @@ import type {
   AppState,
   BoardTab,
   CodeChange,
+  ConversationAttachment,
   ConversationEntry,
   CreateLaneInput,
   CreateProjectInput,
@@ -21,7 +22,6 @@ import type {
   ReorderTabsInput,
   RenameInput,
   RunMode,
-  SendTaskMessageInput,
   SearchResult,
   SearchWorkspaceInput,
   Task,
@@ -218,11 +218,11 @@ export class VibeBoardStore {
           .prepare(
             'SELECT * FROM conversations WHERE taskId = ? AND createdAt < ? ORDER BY createdAt DESC LIMIT ?'
           )
-          .all(input.taskId, input.beforeCreatedAt, limit + 1) as ConversationEntry[])
+          .all(input.taskId, input.beforeCreatedAt, limit + 1) as Array<Record<string, unknown>>)
       : (this.db
           .prepare('SELECT * FROM conversations WHERE taskId = ? ORDER BY createdAt DESC LIMIT ?')
-          .all(input.taskId, limit + 1) as ConversationEntry[])
-    const conversations = conversationRows.slice(0, limit).reverse()
+          .all(input.taskId, limit + 1) as Array<Record<string, unknown>>)
+    const conversations = conversationRows.slice(0, limit).reverse().map(mapConversationRow)
 
     return {
       conversations,
@@ -554,7 +554,13 @@ export class VibeBoardStore {
       }))
   }
 
-  getTaskRunContext(taskId: string): { task: Task; project: Project | null; prompt: string; previousPrompts: string[] } | null {
+  getTaskRunContext(taskId: string): {
+    task: Task
+    project: Project | null
+    prompt: string
+    previousPrompts: string[]
+    attachments: ConversationAttachment[]
+  } | null {
     const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as Task | undefined
     if (!task) return null
 
@@ -562,9 +568,16 @@ export class VibeBoardStore {
       ? (this.db.prepare('SELECT * FROM projects WHERE id = ?').get(task.projectId) as Project | undefined)
       : null
     const promptRows = this.db
-      .prepare("SELECT content FROM conversations WHERE taskId = ? AND role = 'user' ORDER BY createdAt DESC LIMIT 3")
-      .all(taskId) as Array<{ content: string }>
-    const latestPrompt = promptRows[0]?.content
+      .prepare(
+        "SELECT content, attachmentsJson FROM conversations WHERE taskId = ? AND role = 'user' ORDER BY createdAt DESC LIMIT 3"
+      )
+      .all(taskId) as Array<{ content: string; attachmentsJson?: string }>
+    const latestRow = promptRows[0]
+    const attachments = parseAttachmentsJson(latestRow?.attachmentsJson)
+    const latestPrompt = latestRow
+      ? latestRow.content.trim() ||
+        (attachments.length > 0 ? 'Use the attached images as the primary task context.' : '')
+      : ''
 
     return {
       task,
@@ -574,7 +587,8 @@ export class VibeBoardStore {
         .slice(1)
         .map((row) => row.content.trim())
         .filter(Boolean)
-        .reverse()
+        .reverse(),
+      attachments
     }
   }
 
@@ -635,12 +649,19 @@ export class VibeBoardStore {
     return withPathState({ ...project, path: folderPath })
   }
 
-  appendConversation(taskId: string, role: ConversationEntry['role'], content: string): void {
+  appendConversation(
+    taskId: string,
+    role: ConversationEntry['role'],
+    content: string,
+    attachments: ConversationAttachment[] = []
+  ): void {
     const timestamp = now()
     const transaction = this.db.transaction(() => {
       this.db
-        .prepare('INSERT INTO conversations (id, taskId, role, content, createdAt) VALUES (?, ?, ?, ?, ?)')
-        .run(id(), taskId, role, content, timestamp)
+        .prepare(
+          'INSERT INTO conversations (id, taskId, role, content, attachmentsJson, createdAt) VALUES (?, ?, ?, ?, ?, ?)'
+        )
+        .run(id(), taskId, role, content, serializeAttachments(attachments), timestamp)
       this.db.prepare('UPDATE tasks SET updatedAt = ? WHERE id = ?').run(timestamp, taskId)
     })
     transaction()
@@ -663,12 +684,17 @@ export class VibeBoardStore {
     return interrupted.length
   }
 
-  sendTaskMessage(input: SendTaskMessageInput): void {
+  sendTaskMessage(input: {
+    taskId: string
+    content: string
+    attachments?: ConversationAttachment[]
+  }): void {
     const content = input.content.trim()
-    if (!content) return
+    const attachments = input.attachments ?? []
+    if (!content && attachments.length === 0) return
 
     const transaction = this.db.transaction(() => {
-      this.appendConversation(input.taskId, 'user', content)
+      this.appendConversation(input.taskId, 'user', content, attachments)
       this.db.prepare('UPDATE tasks SET updatedAt = ? WHERE id = ?').run(now(), input.taskId)
     })
 
@@ -1166,6 +1192,7 @@ export class VibeBoardStore {
         taskId TEXT NOT NULL,
         role TEXT NOT NULL,
         content TEXT NOT NULL,
+        attachmentsJson TEXT NOT NULL DEFAULT '[]',
         createdAt TEXT NOT NULL,
         FOREIGN KEY (taskId) REFERENCES tasks(id) ON DELETE CASCADE
       );
@@ -1208,6 +1235,7 @@ export class VibeBoardStore {
     this.ensureColumn('tasks', 'worktreePath', 'TEXT')
     this.ensureColumn('code_changes', 'language', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('code_changes', 'diffText', "TEXT NOT NULL DEFAULT ''")
+    this.ensureColumn('conversations', 'attachmentsJson', "TEXT NOT NULL DEFAULT '[]'")
     this.backfillTabLastUsedAt()
     this.backfillTabPositions()
     this.linkLegacyTabsToProjects()
@@ -1456,4 +1484,51 @@ export class VibeBoardStore {
       .prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
       .run(key, value)
   }
+}
+
+function mapConversationRow(row: Record<string, unknown>): ConversationEntry {
+  const attachments = parseAttachmentsJson(
+    typeof row.attachmentsJson === 'string' ? row.attachmentsJson : undefined
+  )
+  return {
+    id: String(row.id),
+    taskId: String(row.taskId),
+    role: row.role as ConversationEntry['role'],
+    content: String(row.content ?? ''),
+    createdAt: String(row.createdAt),
+    ...(attachments.length > 0 ? { attachments } : {})
+  }
+}
+
+function parseAttachmentsJson(value: string | undefined): ConversationAttachment[] {
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .map((item) => {
+        if (!item || typeof item !== 'object') return null
+        const record = item as Record<string, unknown>
+        const idValue = typeof record.id === 'string' ? record.id : ''
+        const name = typeof record.name === 'string' ? record.name : 'image'
+        const mimeType = typeof record.mimeType === 'string' ? record.mimeType : 'image/png'
+        const filePath = typeof record.filePath === 'string' ? record.filePath : ''
+        if (!idValue || !filePath) return null
+        return { id: idValue, name, mimeType, filePath }
+      })
+      .filter((item): item is ConversationAttachment => Boolean(item))
+  } catch {
+    return []
+  }
+}
+
+function serializeAttachments(attachments: ConversationAttachment[]): string {
+  return JSON.stringify(
+    attachments.map(({ id: attachmentId, name, mimeType, filePath }) => ({
+      id: attachmentId,
+      name,
+      mimeType,
+      filePath
+    }))
+  )
 }

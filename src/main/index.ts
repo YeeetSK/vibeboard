@@ -14,6 +14,7 @@ import {
   stopAllCursorTasks,
   stopCursorTask
 } from './cursorRunner'
+import { deleteTaskAttachments, saveTaskAttachments, withAttachmentDataUrls } from './attachments'
 import type {
   CreateLaneInput,
   CreateProjectInput,
@@ -191,7 +192,16 @@ const registerIpc = (): void => {
       }))
     }
   })
-  ipcMain.handle('task:detail', (_event, input: GetTaskDetailInput) => store.getTaskDetail(input))
+  ipcMain.handle('task:detail', async (_event, input: GetTaskDetailInput) => {
+    const detail = store.getTaskDetail(input)
+    const conversations = await Promise.all(
+      detail.conversations.map(async (entry) => ({
+        ...entry,
+        attachments: await withAttachmentDataUrls(entry.attachments)
+      }))
+    )
+    return { ...detail, conversations }
+  })
   ipcMain.handle('search:workspace', (_event, input: SearchWorkspaceInput) => store.searchWorkspace(input))
   ipcMain.handle('search:recordOpen', (_event, input: RecordSearchOpenInput) => store.recordSearchOpen(input))
   ipcMain.handle('project:create', (_event, input: CreateProjectInput) => store.createProject(input))
@@ -233,10 +243,20 @@ const registerIpc = (): void => {
   ipcMain.handle('task:move', (_event, input: MoveTaskInput) => store.moveTask(input))
   ipcMain.handle('task:delete', async (_event, taskId: string) => {
     await cleanupTasksGitWorkspace(store.listTasksForCleanup({ taskId }))
+    const task = store.getState().tasks.find((item) => item.id === taskId)
     store.deleteTask(taskId)
+    const stillExists = store.getState().tasks.some((item) => item.id === taskId)
+    if (task && !stillExists) {
+      await deleteTaskAttachments(taskId)
+    }
   })
-  ipcMain.handle('task:message', (_event, input: SendTaskMessageInput) => {
-    store.sendTaskMessage(input)
+  ipcMain.handle('task:message', async (_event, input: SendTaskMessageInput) => {
+    const attachments = await saveTaskAttachments(input.taskId, input.attachments)
+    store.sendTaskMessage({
+      taskId: input.taskId,
+      content: input.content,
+      attachments
+    })
     return startCursorTask(input.taskId)
   })
   ipcMain.handle('task:runCursor', (_event, taskId: string) => startCursorTask(taskId))
