@@ -154,6 +154,7 @@ const emptyTaskDetail: TaskDetail = {
   changes: [],
   hasOlderConversations: false
 }
+// Page size is user→agent turns (not raw DB rows / system progress lines).
 const conversationPageSize = 5
 
 const tabColors = ['#ff7a1a', '#f7c56b', '#2fcf75', '#42b883', '#9b8cff', '#ff5f57']
@@ -578,6 +579,11 @@ export function App(): ReactElement {
   }, [globalSearchQuery, isGlobalSearchOpen])
 
   useEffect(() => {
+    setSelectedTaskDetail(emptyTaskDetail)
+    setLoadingOlderConversations(false)
+  }, [selectedTask?.id])
+
+  useEffect(() => {
     let cancelled = false
 
     if (!selectedTask) {
@@ -586,20 +592,34 @@ export function App(): ReactElement {
       return
     }
 
+    const taskId = selectedTask.id
+    const taskStatus = selectedTask.status
+
     window.vibeboard
-      .getTaskDetail({ taskId: selectedTask.id, limit: conversationPageSize, includeChanges: true })
+      .getTaskDetail({ taskId, limit: conversationPageSize, includeChanges: true })
       .then((detail) => {
-        if (!cancelled) {
-          setSelectedTaskDetail((current) => {
-            const isSameTask = current.conversations.every((entry) => entry.taskId === selectedTask.id)
-            if (!isSameTask) return detail
-            return {
-              conversations: mergeConversationEntries(current.conversations, detail.conversations),
-              changes: detail.changes,
-              hasOlderConversations: current.hasOlderConversations || detail.hasOlderConversations
-            }
-          })
-        }
+        if (cancelled) return
+        setSelectedTaskDetail((current) => {
+          const sameTask =
+            current.conversations.length > 0 &&
+            current.conversations.every((entry) => entry.taskId === taskId)
+          // Opening a task must show the server page immediately — do not keep a stale
+          // partial thread that only grows after the next send/refetch.
+          if (!sameTask) return detail
+
+          const merged = mergeConversationEntries(current.conversations, detail.conversations)
+          // When idle, drop live system progress so classic user/assistant history stays clean.
+          const conversations =
+            taskStatus === 'processing' || taskStatus === 'attention'
+              ? merged
+              : merged.filter((entry) => entry.role !== 'system')
+
+          return {
+            conversations,
+            changes: detail.changes,
+            hasOlderConversations: current.hasOlderConversations || detail.hasOlderConversations
+          }
+        })
       })
 
     return () => {
@@ -619,7 +639,11 @@ export function App(): ReactElement {
 
   const loadOlderSelectedTaskConversations = async (): Promise<void> => {
     if (!selectedTask || !selectedTaskDetail.hasOlderConversations || isLoadingOlderConversations) return
-    const oldestConversation = selectedTaskDetail.conversations[0]
+    // Cursor must be a user turn anchor; system live-progress rows must not shrink the page window.
+    const oldestConversation =
+      selectedTaskDetail.conversations.find((entry) => entry.role === 'user') ??
+      selectedTaskDetail.conversations.find((entry) => entry.role !== 'system') ??
+      selectedTaskDetail.conversations[0]
     if (!oldestConversation) return
 
     setLoadingOlderConversations(true)

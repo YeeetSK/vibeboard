@@ -212,17 +212,83 @@ export class VibeBoardStore {
   }
 
   getTaskDetail(input: GetTaskDetailInput): TaskDetail {
-    const limit = Math.min(Math.max(input.limit ?? 5, 1), 50)
-    const conversationRows = input.beforeCreatedAt
+    // Page size is user→agent turns (one user message + its assistant output), not raw rows.
+    const turnLimit = Math.min(Math.max(input.limit ?? 5, 1), 50)
+    const liveSystemLimit = 5
+
+    const userAnchors = input.beforeCreatedAt
       ? (this.db
           .prepare(
-            'SELECT * FROM conversations WHERE taskId = ? AND createdAt < ? ORDER BY createdAt DESC LIMIT ?'
+            `SELECT createdAt FROM conversations
+             WHERE taskId = ? AND role = 'user' AND createdAt < ?
+             ORDER BY createdAt DESC LIMIT ?`
           )
-          .all(input.taskId, input.beforeCreatedAt, limit + 1) as Array<Record<string, unknown>>)
+          .all(input.taskId, input.beforeCreatedAt, turnLimit + 1) as Array<{ createdAt: string }>)
       : (this.db
-          .prepare('SELECT * FROM conversations WHERE taskId = ? ORDER BY createdAt DESC LIMIT ?')
-          .all(input.taskId, limit + 1) as Array<Record<string, unknown>>)
-    const conversations = conversationRows.slice(0, limit).reverse().map(mapConversationRow)
+          .prepare(
+            `SELECT createdAt FROM conversations
+             WHERE taskId = ? AND role = 'user'
+             ORDER BY createdAt DESC LIMIT ?`
+          )
+          .all(input.taskId, turnLimit + 1) as Array<{ createdAt: string }>)
+
+    const hasOlderConversations = userAnchors.length > turnLimit
+    const pageUserAnchors = userAnchors.slice(0, turnLimit).reverse()
+
+    let pageChatRows: Array<Record<string, unknown>> = []
+    if (pageUserAnchors.length > 0) {
+      const oldestCreatedAt = pageUserAnchors[0].createdAt
+      pageChatRows = input.beforeCreatedAt
+        ? (this.db
+            .prepare(
+              `SELECT * FROM conversations
+               WHERE taskId = ? AND role != 'system' AND createdAt >= ? AND createdAt < ?
+               ORDER BY createdAt`
+            )
+            .all(input.taskId, oldestCreatedAt, input.beforeCreatedAt) as Array<Record<string, unknown>>)
+        : (this.db
+            .prepare(
+              `SELECT * FROM conversations
+               WHERE taskId = ? AND role != 'system' AND createdAt >= ?
+               ORDER BY createdAt`
+            )
+            .all(input.taskId, oldestCreatedAt) as Array<Record<string, unknown>>)
+    } else if (!input.beforeCreatedAt) {
+      // No user turns yet (e.g. only live system / orphan assistant) — still return recent chat rows.
+      pageChatRows = (
+        this.db
+          .prepare(
+            `SELECT * FROM conversations
+             WHERE taskId = ? AND role != 'system'
+             ORDER BY createdAt DESC LIMIT ?`
+          )
+          .all(input.taskId, turnLimit * 2) as Array<Record<string, unknown>>
+      ).reverse()
+    }
+
+    const taskStatus = (
+      this.db.prepare('SELECT status FROM tasks WHERE id = ?').get(input.taskId) as
+        | { status?: string }
+        | undefined
+    )?.status
+    const includeLiveSystem =
+      !input.beforeCreatedAt && (taskStatus === 'processing' || taskStatus === 'attention')
+
+    const systemRows = includeLiveSystem
+      ? (
+          this.db
+            .prepare(
+              `SELECT * FROM conversations
+               WHERE taskId = ? AND role = 'system'
+               ORDER BY createdAt DESC LIMIT ?`
+            )
+            .all(input.taskId, liveSystemLimit) as Array<Record<string, unknown>>
+        ).reverse()
+      : []
+
+    const conversations = [...pageChatRows, ...systemRows]
+      .sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)))
+      .map(mapConversationRow)
 
     return {
       conversations,
@@ -232,7 +298,7 @@ export class VibeBoardStore {
           : (this.db
               .prepare('SELECT * FROM code_changes WHERE taskId = ? ORDER BY createdAt')
               .all(input.taskId) as CodeChange[]),
-      hasOlderConversations: conversationRows.length > limit
+      hasOlderConversations
     }
   }
 
