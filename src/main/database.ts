@@ -266,24 +266,48 @@ export class VibeBoardStore {
       ).reverse()
     }
 
-    const taskStatus = (
-      this.db.prepare('SELECT status FROM tasks WHERE id = ?').get(input.taskId) as
-        | { status?: string }
-        | undefined
-    )?.status
+    const taskRow = this.db.prepare('SELECT status, runStartedAt FROM tasks WHERE id = ?').get(input.taskId) as
+      | { status?: string; runStartedAt?: string | null }
+      | undefined
+    const taskStatus = taskRow?.status
+    const runStartedAt = taskRow?.runStartedAt ?? null
     const includeLiveSystem =
       !input.beforeCreatedAt && (taskStatus === 'processing' || taskStatus === 'attention')
 
+    // Only surface system progress from the active run (or latest user turn when idle-attention).
+    // Otherwise prior runs' tool/status rows leak into the current thread.
+    let systemSince = runStartedAt
+    if (includeLiveSystem && !systemSince) {
+      const lastUser = this.db
+        .prepare(
+          `SELECT createdAt FROM conversations
+           WHERE taskId = ? AND role = 'user'
+           ORDER BY createdAt DESC LIMIT 1`
+        )
+        .get(input.taskId) as { createdAt?: string } | undefined
+      systemSince = lastUser?.createdAt ?? null
+    }
+
     const systemRows = includeLiveSystem
-      ? (
-          this.db
-            .prepare(
-              `SELECT * FROM conversations
-               WHERE taskId = ? AND role = 'system'
-               ORDER BY createdAt DESC LIMIT ?`
-            )
-            .all(input.taskId, liveSystemLimit) as Array<Record<string, unknown>>
-        ).reverse()
+      ? systemSince
+        ? (
+            this.db
+              .prepare(
+                `SELECT * FROM conversations
+                 WHERE taskId = ? AND role = 'system' AND createdAt >= ?
+                 ORDER BY createdAt DESC LIMIT ?`
+              )
+              .all(input.taskId, systemSince, liveSystemLimit) as Array<Record<string, unknown>>
+          ).reverse()
+        : (
+            this.db
+              .prepare(
+                `SELECT * FROM conversations
+                 WHERE taskId = ? AND role = 'system'
+                 ORDER BY createdAt DESC LIMIT ?`
+              )
+              .all(input.taskId, liveSystemLimit) as Array<Record<string, unknown>>
+          ).reverse()
       : []
 
     const conversations = [...pageChatRows, ...systemRows]

@@ -609,9 +609,14 @@ export function App(): ReactElement {
 
           const merged = mergeConversationEntries(current.conversations, detail.conversations)
           // When idle, drop live system progress so classic user/assistant history stays clean.
+          // While running, take system rows only from the fresh page (already scoped to this run)
+          // so prior-run status does not stick around via client merge.
           const conversations =
             taskStatus === 'processing' || taskStatus === 'attention'
-              ? merged
+              ? [
+                  ...merged.filter((entry) => entry.role !== 'system'),
+                  ...detail.conversations.filter((entry) => entry.role === 'system')
+                ].sort((left, right) => left.createdAt.localeCompare(right.createdAt))
               : merged.filter((entry) => entry.role !== 'system')
 
           return {
@@ -4258,12 +4263,17 @@ function AgentThread({
     -1
   )
   const isRunning = task.status === 'processing'
+  const lastUserMessageAt =
+    [...conversations].reverse().find((entry) => entry.role === 'user')?.createdAt ?? null
+  // Prefer the active run start so prior-run system/thinking status stays out of this thread.
+  const systemSince = task.runStartedAt ?? lastUserMessageAt
   const threadEntries = compactConversationEntries(
     conversations
       .filter((entry, index) => {
         if (isNoisyConversationEntry(entry)) return false
         if (entry.role !== 'system') return true
         if (isUselessSystemStatusFragment(entry.content)) return false
+        if (systemSince && entry.createdAt < systemSince) return false
         // Live status prints are only useful while the agent is still running.
         if (task.status === 'processing') return true
         // After the AI returns a message, drop preceding system status updates.
