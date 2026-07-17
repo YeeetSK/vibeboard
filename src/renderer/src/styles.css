@@ -1956,9 +1956,9 @@ button {
 }
 
 .task-card.drag-preview {
-  width: 286px;
   box-shadow: 0 16px 34px rgba(0, 0, 0, 0.42);
   contain: none;
+  cursor: grabbing;
   pointer-events: none;
 }
 

@@ -373,6 +373,7 @@ export function App(): ReactElement {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [newTaskLaneId, setNewTaskLaneId] = useState<string | null>(null)
   const [activeDragTaskId, setActiveDragTaskId] = useState<string | null>(null)
+  const [dragOverlayWidth, setDragOverlayWidth] = useState<number | null>(null)
   const [dragPreviewTarget, setDragPreviewTarget] = useState<{ laneId: string; position: number } | null>(null)
   const [cursorStatus, setCursorStatus] = useState<CursorStatus>(emptyCursorStatus)
   const [isInstallingCursorCli, setInstallingCursorCli] = useState(false)
@@ -1185,8 +1186,15 @@ export function App(): ReactElement {
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [activeTab, deleteTabId, deleteTaskId, isGlobalSearchOpen, newTaskLaneId, quitRequest, renameTaskId, selectedTaskId, state.tabs])
 
+  const clearTaskDrag = (): void => {
+    setActiveDragTaskId(null)
+    setDragOverlayWidth(null)
+    setDragPreviewTarget(null)
+  }
+
   const onDragStart = (event: DragStartEvent): void => {
     setActiveDragTaskId(String(event.active.id))
+    setDragOverlayWidth(event.active.rect.current.initial?.width ?? null)
     setDragPreviewTarget(null)
   }
 
@@ -1218,14 +1226,29 @@ export function App(): ReactElement {
   }
 
   const onDragEnd = async (event: DragEndEvent): Promise<void> => {
-    setActiveDragTaskId(null)
-    setDragPreviewTarget(null)
-
     const target = getTaskDropTarget(event)
-    if (!target) return
-
     const task = state.tasks.find((item) => item.id === event.active.id)
-    if (!task) return
+
+    if (!target || !task) {
+      clearTaskDrag()
+      return
+    }
+
+    const sourceLaneTasks = state.tasks
+      .filter((item) => item.laneId === task.laneId)
+      .sort(byPosition)
+    const sourcePosition = sourceLaneTasks.findIndex((item) => item.id === task.id)
+    const didMove = task.laneId !== target.laneId || sourcePosition !== target.position
+
+    if (didMove) {
+      setState((current) => ({
+        ...current,
+        tasks: applyTaskMove(current.tasks, task.id, target.laneId, target.position)
+      }))
+    }
+    clearTaskDrag()
+
+    if (!didMove) return
 
     await runAction(`task:move:${task.id}`, async () => {
       await window.vibeboard.moveTask({
@@ -1382,10 +1405,7 @@ export function App(): ReactElement {
                 collisionDetection={taskCollisionDetection}
                 onDragStart={onDragStart}
                 onDragOver={onDragOver}
-                onDragCancel={() => {
-                  setActiveDragTaskId(null)
-                  setDragPreviewTarget(null)
-                }}
+                onDragCancel={clearTaskDrag}
                 onDragEnd={onDragEnd}
               >
                 <div
@@ -1413,7 +1433,7 @@ export function App(): ReactElement {
                 </div>
                 <DragOverlay dropAnimation={null}>
                   {activeDragTask ? (
-                    <TaskCardPreview task={activeDragTask} />
+                    <TaskCardPreview task={activeDragTask} width={dragOverlayWidth} />
                   ) : null}
                 </DragOverlay>
               </DndContext>
@@ -3526,7 +3546,7 @@ function TaskCard({
   })
   const style = {
     transform: isDragging ? undefined : CSS.Transform.toString(transform),
-    transition
+    transition: isDragging ? undefined : transition
   }
   const canMutate = task.status !== 'processing'
   const canFinish = canMutate && task.status !== 'done_unread' && task.status !== 'done_read'
@@ -3637,14 +3657,19 @@ function TaskCard({
   )
 }
 
-function TaskCardPreview({ task }: { task: Task }): ReactElement {
+function TaskCardPreview({ task, width }: { task: Task; width: number | null }): ReactElement {
   return (
-    <article className={`task-card drag-preview status-${task.status}`}>
-      <div className="task-title-row">
-        <h3>{task.title}</h3>
-        <TaskStatusChip status={task.status} />
+    <article
+      className={`task-card drag-preview status-${task.status}`}
+      style={width ? { width } : undefined}
+    >
+      <div className="task-open">
+        <div className="task-title-row">
+          <h3>{task.title}</h3>
+          <TaskStatusChip status={task.status} />
+        </div>
+        {task.summary && <p>{task.summary}</p>}
       </div>
-      {task.summary && <p>{task.summary}</p>}
     </article>
   )
 }
@@ -4919,6 +4944,32 @@ function buildTabStatusMap(tasks: Task[]): Map<string, Task['status']> {
   }
 
   return statuses
+}
+
+function applyTaskMove(tasks: Task[], taskId: string, targetLaneId: string, position: number): Task[] {
+  const moving = tasks.find((task) => task.id === taskId)
+  if (!moving) return tasks
+
+  const without = tasks.filter((task) => task.id !== taskId)
+  const targetLaneTasks = without.filter((task) => task.laneId === targetLaneId).sort(byPosition)
+  const clamped = Math.max(0, Math.min(position, targetLaneTasks.length))
+  targetLaneTasks.splice(clamped, 0, { ...moving, laneId: targetLaneId })
+
+  const updates = new Map<string, Task>()
+  targetLaneTasks.forEach((task, index) => {
+    updates.set(task.id, { ...task, laneId: targetLaneId, position: index })
+  })
+
+  if (moving.laneId !== targetLaneId) {
+    without
+      .filter((task) => task.laneId === moving.laneId)
+      .sort(byPosition)
+      .forEach((task, index) => {
+        updates.set(task.id, { ...task, position: index })
+      })
+  }
+
+  return tasks.map((task) => updates.get(task.id) ?? task)
 }
 
 function byPosition<T extends { position: number }>(a: T, b: T): number {
