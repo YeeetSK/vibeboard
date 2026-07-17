@@ -3357,6 +3357,7 @@ button:focus-visible {
 
 .tutorial-card {
   position: fixed;
+  z-index: 2;
   display: grid;
   gap: 10px;
   width: min(360px, calc(100vw - 32px));
@@ -3376,12 +3377,6 @@ button:focus-visible {
 .tutorial-card-below {
   top: 72px;
   left: 150px;
-}
-
-.tutorial-card-center {
-  top: 52%;
-  left: 50%;
-  transform: translate(-50%, -50%);
 }
 
 .tutorial-card-left {
@@ -3490,33 +3485,6 @@ button:focus-visible {
   font-size: 12px;
 }
 
-.tutorial-board-demo {
-  position: fixed;
-  z-index: 2501;
-  pointer-events: none;
-  overflow: hidden;
-}
-
-.tutorial-lane-grid {
-  height: 100%;
-  width: 100%;
-  padding: 0;
-}
-
-.tutorial-board-demo .lane {
-  box-shadow: none;
-}
-
-.tutorial-board-demo .task-card {
-  pointer-events: none;
-}
-
-.tutorial-board-demo .task-card-actions,
-.tutorial-board-demo .lane-delete-button {
-  display: none;
-  pointer-events: none;
-}
-
 .tutorial-demo {
   position: fixed;
   top: 64px;
@@ -3566,8 +3534,7 @@ button:focus-visible {
   .tutorial-card-right,
   .tutorial-card-below,
   .tutorial-card-left,
-  .tutorial-card-bottom,
-  .tutorial-card-center {
+  .tutorial-card-bottom {
     top: auto;
     right: 12px;
     bottom: 12px;

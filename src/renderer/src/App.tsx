@@ -266,7 +266,7 @@ const tutorialSteps = [
     body: 'Cards can be dragged between lanes and ordered inside each lane. Their borders show running, attention, and done states.',
     spotlight: 'board',
     target: 'board-lanes',
-    card: 'center'
+    card: 'bottom'
   },
   {
     id: 'worktree',
@@ -285,6 +285,92 @@ const tutorialSteps = [
     card: 'bottom'
   }
 ]
+
+const tutorialShowcaseTabId = 'tutorial-showcase-tab'
+const tutorialShowcaseProjectId = 'tutorial-showcase-project'
+const tutorialShowcaseCreatedAt = '2026-07-17T00:00:00.000Z'
+
+const tutorialShowcaseLanes: Lane[] = [
+  { id: 'tutorial-lane-backlog', tabId: tutorialShowcaseTabId, name: 'Backlog', position: 0 },
+  { id: 'tutorial-lane-active', tabId: tutorialShowcaseTabId, name: 'Active', position: 1 },
+  { id: 'tutorial-lane-review', tabId: tutorialShowcaseTabId, name: 'Review', position: 2 },
+  { id: 'tutorial-lane-done', tabId: tutorialShowcaseTabId, name: 'Done', position: 3 }
+]
+
+const createTutorialShowcaseTask = (
+  id: string,
+  laneId: string,
+  title: string,
+  summary: string,
+  status: Task['status'],
+  position: number
+): Task => ({
+  id,
+  tabId: tutorialShowcaseTabId,
+  laneId,
+  projectId: tutorialShowcaseProjectId,
+  title,
+  summary,
+  status,
+  runModeOverride: null,
+  branchName: null,
+  worktreePath: null,
+  pushedToMain: 0,
+  position,
+  createdAt: tutorialShowcaseCreatedAt,
+  updatedAt: tutorialShowcaseCreatedAt
+})
+
+const tutorialShowcaseTasks: Task[] = [
+  createTutorialShowcaseTask(
+    'tutorial-task-release',
+    'tutorial-lane-backlog',
+    'Plan release notes',
+    'Idle cards wait here until you run them.',
+    'idle',
+    0
+  ),
+  createTutorialShowcaseTask(
+    'tutorial-task-search',
+    'tutorial-lane-backlog',
+    'Improve global search',
+    'Drag cards between lanes to reorder work.',
+    'idle',
+    1
+  ),
+  createTutorialShowcaseTask(
+    'tutorial-task-tests',
+    'tutorial-lane-active',
+    'Fix failing tests',
+    'Running border means Cursor is busy.',
+    'processing',
+    0
+  ),
+  createTutorialShowcaseTask(
+    'tutorial-task-deploy',
+    'tutorial-lane-review',
+    'Clarify deploy target',
+    'Attention border means the agent needs you.',
+    'attention',
+    0
+  ),
+  createTutorialShowcaseTask(
+    'tutorial-task-diff',
+    'tutorial-lane-done',
+    'Review generated diff',
+    'Done unread keeps finished work visible.',
+    'done_unread',
+    0
+  )
+]
+
+const tutorialShowcaseTasksByLaneId = new Map(
+  tutorialShowcaseLanes.map((lane) => [
+    lane.id,
+    tutorialShowcaseTasks.filter((task) => task.laneId === lane.id)
+  ])
+)
+
 const commitTaskPrompt = [
   'Commit the current working tree changes for this task.',
   'Inspect git status and git diff first.',
@@ -434,10 +520,12 @@ export function App(): ReactElement {
     : null
   const openProjectLabel =
     navigator.userAgent.includes('Windows') ? 'Explorer' : navigator.userAgent.includes('Mac') ? 'Finder' : 'Folder'
+  const isTutorialActive = tutorialStep !== null
   const activeLanes = useMemo(
     () => state.lanes.filter((lane) => lane.tabId === activeTab?.id).sort(byPosition),
     [state.lanes, activeTab?.id]
   )
+  const boardLanes = isTutorialActive ? tutorialShowcaseLanes : activeLanes
   const activeTasks = useMemo(
     () => state.tasks.filter((task) => task.tabId === activeTab?.id),
     [state.tasks, activeTab?.id]
@@ -457,13 +545,15 @@ export function App(): ReactElement {
     }
     return grouped
   }, [state.tasks])
+  const boardTasksByLaneId = isTutorialActive ? tutorialShowcaseTasksByLaneId : tasksByLaneId
   const tabStatuses = useMemo(() => buildTabStatusMap(state.tasks), [state.tasks])
   const activeBoardStats = useMemo(() => {
-    const running = activeTasks.filter((task) => task.status === 'processing').length
-    const attention = activeTasks.filter((task) => task.status === 'attention').length
-    const done = activeTasks.filter((task) => task.status === 'done_read' || task.status === 'done_unread').length
-    return { running, attention, done, total: activeTasks.length }
-  }, [activeTasks])
+    const tasks = isTutorialActive ? tutorialShowcaseTasks : activeTasks
+    const running = tasks.filter((task) => task.status === 'processing').length
+    const attention = tasks.filter((task) => task.status === 'attention').length
+    const done = tasks.filter((task) => task.status === 'done_read' || task.status === 'done_unread').length
+    return { running, attention, done, total: tasks.length }
+  }, [activeTasks, isTutorialActive])
   const selectedTask = state.tasks.find((task) => task.id === selectedTaskId) ?? null
   const activeDragTask = state.tasks.find((task) => task.id === activeDragTaskId) ?? null
 
@@ -1479,22 +1569,28 @@ export function App(): ReactElement {
                 <div
                   data-tour="board-lanes"
                   className={activeDragTaskId ? 'lane-grid dragging-card' : 'lane-grid'}
-                  style={{ '--lane-count': Math.min(activeLanes.length, 4) } as React.CSSProperties}
+                  style={{ '--lane-count': Math.min(boardLanes.length, 4) } as React.CSSProperties}
                 >
-                  {activeLanes.map((lane) => (
+                  {boardLanes.map((lane) => (
                     <LaneColumn
                       key={lane.id}
                       lane={lane}
-                      tasks={tasksByLaneId.get(lane.id) ?? []}
-                      activeDragTaskId={activeDragTaskId}
-                      dropPreviewPosition={dragPreviewTarget?.laneId === lane.id ? dragPreviewTarget.position : null}
+                      tasks={boardTasksByLaneId.get(lane.id) ?? []}
+                      activeDragTaskId={isTutorialActive ? null : activeDragTaskId}
+                      dropPreviewPosition={
+                        isTutorialActive
+                          ? null
+                          : dragPreviewTarget?.laneId === lane.id
+                            ? dragPreviewTarget.position
+                            : null
+                      }
                       onOpenTask={openTask}
                       onAddTask={() => setNewTaskLaneId(lane.id)}
                       onDeleteLane={setDeleteLaneId}
                       onDeleteTask={setDeleteTaskId}
                       onFinishTask={finishTask}
                       onRenameTask={setRenameTaskId}
-                      canDelete={activeLanes.length > 1}
+                      canDelete={!isTutorialActive && activeLanes.length > 1}
                       onRenameLane={renameLane}
                     />
                   ))}
@@ -1792,10 +1888,6 @@ function TutorialOverlay({
         style={spotlightStyle(spotlightRect, currentStep.spotlight)}
       />
 
-      {currentStep.id === 'board' && (
-        <TutorialBoardDemo spotlightRect={spotlightRect} />
-      )}
-
       {currentStep.id === 'demo' && (
         <section className="modal-panel task-detail tutorial-demo" data-tour="tutorial-demo">
           <div className="modal-head">
@@ -1907,93 +1999,6 @@ function TutorialOverlay({
           </button>
         </div>
       </section>
-    </div>
-  )
-}
-
-const tutorialDemoTabId = 'tutorial-tab'
-const tutorialDemoProjectId = 'tutorial-project'
-const tutorialDemoCreatedAt = '2026-07-17T00:00:00.000Z'
-
-const tutorialDemoLanes: Lane[] = [
-  { id: 'tutorial-lane-backlog', tabId: tutorialDemoTabId, name: 'Backlog', position: 0 },
-  { id: 'tutorial-lane-active', tabId: tutorialDemoTabId, name: 'Active', position: 1 },
-  { id: 'tutorial-lane-review', tabId: tutorialDemoTabId, name: 'Review', position: 2 },
-  { id: 'tutorial-lane-done', tabId: tutorialDemoTabId, name: 'Done', position: 3 }
-]
-
-const createTutorialTask = (
-  id: string,
-  laneId: string,
-  title: string,
-  status: Task['status'],
-  position: number
-): Task => ({
-  id,
-  tabId: tutorialDemoTabId,
-  laneId,
-  projectId: tutorialDemoProjectId,
-  title,
-  summary: '',
-  status,
-  runModeOverride: null,
-  branchName: null,
-  worktreePath: null,
-  position,
-  createdAt: tutorialDemoCreatedAt,
-  updatedAt: tutorialDemoCreatedAt
-})
-
-const tutorialDemoTasks: Task[] = [
-  createTutorialTask('tutorial-task-release', 'tutorial-lane-backlog', 'Plan release notes', 'idle', 0),
-  createTutorialTask('tutorial-task-tests', 'tutorial-lane-active', 'Fix failing tests', 'processing', 0),
-  createTutorialTask('tutorial-task-deploy', 'tutorial-lane-review', 'Clarify deploy target', 'attention', 0),
-  createTutorialTask('tutorial-task-diff', 'tutorial-lane-done', 'Review generated diff', 'done_unread', 0)
-]
-
-function TutorialBoardDemo({ spotlightRect }: { spotlightRect: DOMRect | null }): ReactElement | null {
-  if (!spotlightRect) return null
-
-  const tasksByLane = new Map<string, Task[]>()
-  for (const lane of tutorialDemoLanes) {
-    tasksByLane.set(
-      lane.id,
-      tutorialDemoTasks.filter((task) => task.laneId === lane.id)
-    )
-  }
-
-  return (
-    <div
-      className="tutorial-board-demo"
-      style={{
-        top: spotlightRect.top,
-        left: spotlightRect.left,
-        width: spotlightRect.width,
-        height: spotlightRect.height
-      }}
-      aria-hidden="true"
-    >
-      <DndContext>
-        <div className="lane-grid tutorial-lane-grid" style={{ '--lane-count': 4 } as React.CSSProperties}>
-          {tutorialDemoLanes.map((lane) => (
-            <LaneColumn
-              key={lane.id}
-              lane={lane}
-              tasks={tasksByLane.get(lane.id) ?? []}
-              activeDragTaskId={null}
-              dropPreviewPosition={null}
-              onOpenTask={() => undefined}
-              onAddTask={() => undefined}
-              onDeleteLane={() => undefined}
-              onDeleteTask={() => undefined}
-              onFinishTask={() => undefined}
-              onRenameTask={() => undefined}
-              canDelete={false}
-              onRenameLane={() => undefined}
-            />
-          ))}
-        </div>
-      </DndContext>
     </div>
   )
 }
