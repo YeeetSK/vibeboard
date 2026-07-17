@@ -283,7 +283,7 @@ const commitTaskPrompt = [
   'Stage only files that belong to this task.',
   'Choose a concise conventional commit message yourself.',
   'Create the commit locally.',
-  'Do not push.',
+  'Push the commit to main on origin.',
   'If there are no commit-worthy changes, say that clearly.'
 ].join('\n')
 const draftPrPrompt = [
@@ -3906,7 +3906,7 @@ function TaskDetailModal({
                   type="button"
                   onClick={requestCommit}
                   disabled={!canChat}
-                  title="Ask agent to commit these changes"
+                  title="Ask agent to commit these changes and push to main"
                 >
                   <GitCommitHorizontal size={16} />
                   <span>Commit</span>
