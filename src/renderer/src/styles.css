@@ -2521,11 +2521,6 @@ button:focus-visible {
   grid-template-columns: 1fr;
 }
 
-.detail-grid-chat-only .message-markdown,
-.detail-grid-chat-only .role-assistant p {
-  max-width: min(96ch, 100%);
-}
-
 .detail-column {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -2874,6 +2869,13 @@ button:focus-visible {
 
 .role-assistant .message-markdown {
   max-width: 78ch;
+}
+
+.detail-grid-chat-only .message-markdown,
+.detail-grid-chat-only .role-assistant .message-markdown,
+.detail-grid-chat-only .role-assistant p,
+.detail-grid-chat-only .user-message-bubble {
+  max-width: 100%;
 }
 
 .prompt-template-row {
