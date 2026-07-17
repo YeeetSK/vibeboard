@@ -3181,7 +3181,12 @@ function DeleteTaskModal({
           </button>
         </header>
         <div className="confirm-body">
-          <p>This removes the task, its chat, and captured code changes.</p>
+          <p>
+            This removes the task, its chat, and captured code changes.
+            {task?.branchName || task?.worktreePath
+              ? ' Its worktree and branch are deleted locally and on origin when present.'
+              : ''}
+          </p>
         </div>
         <footer className="modal-actions">
           <button className="secondary-action" type="button" onClick={onClose} autoFocus>

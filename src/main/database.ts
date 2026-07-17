@@ -578,6 +578,28 @@ export class VibeBoardStore {
     }
   }
 
+  listTasksForCleanup(input: { taskId?: string; laneId?: string; tabId?: string }): Array<{ task: Task; project: Project | null }> {
+    let tasks: Task[] = []
+    if (input.taskId) {
+      const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(input.taskId) as Task | undefined
+      tasks = task ? [task] : []
+    } else if (input.laneId) {
+      tasks = this.db.prepare('SELECT * FROM tasks WHERE laneId = ?').all(input.laneId) as Task[]
+    } else if (input.tabId) {
+      tasks = this.db.prepare('SELECT * FROM tasks WHERE tabId = ?').all(input.tabId) as Task[]
+    }
+
+    const projectCache = new Map<string, Project | null>()
+    return tasks.map((task) => {
+      if (!task.projectId) return { task, project: null }
+      if (!projectCache.has(task.projectId)) {
+        const project = this.db.prepare('SELECT * FROM projects WHERE id = ?').get(task.projectId) as Project | undefined
+        projectCache.set(task.projectId, project ? withPathState(project) : null)
+      }
+      return { task, project: projectCache.get(task.projectId) ?? null }
+    })
+  }
+
   getProject(projectId: string): Project | null {
     const project = this.db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as Project | undefined
     return project ? withPathState(project) : null

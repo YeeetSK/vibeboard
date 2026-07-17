@@ -7,7 +7,13 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { VibeBoardStore } from './database'
 import { PlaceholderCursorAdapter, cursorInstallCommand } from './cursorAdapter'
-import { runCursorTask, stopCursorTask, stopAllCursorTasks, flushAllCursorProgress } from './cursorRunner'
+import {
+  cleanupTaskGitWorkspace,
+  flushAllCursorProgress,
+  runCursorTask,
+  stopAllCursorTasks,
+  stopCursorTask
+} from './cursorRunner'
 import type {
   CreateLaneInput,
   CreateProjectInput,
@@ -17,12 +23,14 @@ import type {
   MoveTaskInput,
   NotificationEventKey,
   NotificationSettings,
+  Project,
   RecordSearchOpenInput,
   ReorderTabsInput,
   RenameInput,
   RunTaskResult,
   SearchWorkspaceInput,
   SendTaskMessageInput,
+  Task,
   UpdateInfo,
   UpdateProjectRunModeInput,
   UpdateTabMetaInput,
@@ -71,6 +79,23 @@ const notificationInactivityMs = 2 * 60 * 1000
 
 const formatNotificationBody = (payload: NotificationPayload): string =>
   payload.body ? `${payload.title}: ${payload.body}` : payload.title
+
+const cleanupTasksGitWorkspace = async (
+  entries: Array<{ task: Task; project: Project | null }>
+): Promise<void> => {
+  for (const entry of entries) {
+    try {
+      await cleanupTaskGitWorkspace(entry.task, entry.project)
+    } catch (error) {
+      console.warn('[VibeBoard] Failed to clean up task git workspace', {
+        taskId: entry.task.id,
+        branchName: entry.task.branchName,
+        worktreePath: entry.task.worktreePath,
+        error: error instanceof Error ? error.message : error
+      })
+    }
+  }
+}
 
 app.setName('VibeBoard')
 if (process.platform === 'win32') {
@@ -179,18 +204,27 @@ const registerIpc = (): void => {
   ipcMain.handle('tab:reorder', (_event, input: ReorderTabsInput) => store.reorderTabs(input))
   ipcMain.handle('tab:close', (_event, tabId: string) => store.closeTab(tabId))
   ipcMain.handle('tab:reopen', (_event, tabId: string) => store.reopenTab(tabId))
-  ipcMain.handle('tab:delete', (_event, tabId: string) => store.deleteTab(tabId))
+  ipcMain.handle('tab:delete', async (_event, tabId: string) => {
+    await cleanupTasksGitWorkspace(store.listTasksForCleanup({ tabId }))
+    store.deleteTab(tabId)
+  })
   ipcMain.handle('tab:active', (_event, tabId: string) => store.setActiveTab(tabId))
   ipcMain.handle('lane:create', (_event, input: CreateLaneInput) => store.createLane(input))
   ipcMain.handle('lane:rename', (_event, input: RenameInput) => store.renameLane(input))
-  ipcMain.handle('lane:delete', (_event, laneId: string) => store.deleteLane(laneId))
+  ipcMain.handle('lane:delete', async (_event, laneId: string) => {
+    await cleanupTasksGitWorkspace(store.listTasksForCleanup({ laneId }))
+    store.deleteLane(laneId)
+  })
   ipcMain.handle('task:create', (_event, input: CreateTaskInput) => {
     const task = store.createTask(input)
     return task
   })
   ipcMain.handle('task:rename', (_event, input: RenameInput) => store.renameTask(input))
   ipcMain.handle('task:move', (_event, input: MoveTaskInput) => store.moveTask(input))
-  ipcMain.handle('task:delete', (_event, taskId: string) => store.deleteTask(taskId))
+  ipcMain.handle('task:delete', async (_event, taskId: string) => {
+    await cleanupTasksGitWorkspace(store.listTasksForCleanup({ taskId }))
+    store.deleteTask(taskId)
+  })
   ipcMain.handle('task:message', (_event, input: SendTaskMessageInput) => {
     store.sendTaskMessage(input)
     return startCursorTask(input.taskId)

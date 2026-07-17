@@ -1,10 +1,12 @@
 import { app } from 'electron'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { CodeChange, Project, RunMode, Task } from '../shared/types'
 import { isAgentAuthenticated, resolveAgentCommand } from './cursorAdapter'
 import { VibeBoardStore } from './database'
+
+const protectedBranchNames = new Set(['main', 'master', 'develop', 'development', 'trunk', 'dev', 'release'])
 
 const projectMemoryFileName = '.vibeboard-memory.md'
 const projectMemoryMaxChars = 12000
@@ -565,6 +567,57 @@ function buildTaskBranchName(task: Task): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, 42) || 'task'
   return `vibeboard/${slug}-${task.id.slice(0, 8)}`
+}
+
+/** Removes the task worktree and deletes its local + remote (origin) branch when present. */
+export async function cleanupTaskGitWorkspace(task: Task, project: Project | null): Promise<void> {
+  if (!project?.path) return
+  if (!task.branchName && !task.worktreePath) return
+
+  const cwd = project.path
+  const isGitRepo = await runCommandStrict('git', ['rev-parse', '--is-inside-work-tree'], cwd)
+    .then((output) => output.trim() === 'true')
+    .catch(() => false)
+  if (!isGitRepo) return
+
+  if (task.worktreePath) {
+    await runCommand('git', ['worktree', 'remove', '--force', task.worktreePath], cwd)
+    await rm(task.worktreePath, { recursive: true, force: true }).catch(() => undefined)
+    await runCommand('git', ['worktree', 'prune'], cwd)
+  }
+
+  const branchName = task.branchName?.trim()
+  if (!branchName || protectedBranchNames.has(branchName)) return
+
+  const currentBranch = (await runCommand('git', ['branch', '--show-current'], cwd)).trim()
+  if (currentBranch === branchName) {
+    const fallbackBranch = await resolveDefaultBranch(cwd)
+    if (fallbackBranch && fallbackBranch !== branchName) {
+      await runCommand('git', ['checkout', fallbackBranch], cwd)
+    }
+  }
+
+  await runCommand('git', ['branch', '-D', branchName], cwd)
+
+  const remoteHeads = await runCommand('git', ['ls-remote', '--heads', 'origin', branchName], cwd)
+  if (!remoteHeads.trim()) return
+
+  await runCommand('git', ['push', 'origin', '--delete', branchName], cwd)
+}
+
+async function resolveDefaultBranch(cwd: string): Promise<string | null> {
+  const symbolicRef = (await runCommand('git', ['symbolic-ref', 'refs/remotes/origin/HEAD'], cwd)).trim()
+  const remoteMatch = symbolicRef.match(/refs\/remotes\/origin\/(.+)$/)
+  if (remoteMatch?.[1]) return remoteMatch[1]
+
+  for (const candidate of ['main', 'master']) {
+    const exists = await runCommandStrict('git', ['show-ref', '--verify', '--quiet', `refs/heads/${candidate}`], cwd)
+      .then(() => true)
+      .catch(() => false)
+    if (exists) return candidate
+  }
+
+  return null
 }
 
 async function buildFocusedPrompt(projectPath: string, prompt: string, previousPrompts: string[]): Promise<string> {
