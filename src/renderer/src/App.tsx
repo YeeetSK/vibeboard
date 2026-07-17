@@ -957,6 +957,18 @@ export function App(): ReactElement {
         }))
       }
       await window.vibeboard.sendTaskMessage({ taskId, content: trimmed, attachments })
+      if (selectedTaskId === taskId) {
+        const detail = await window.vibeboard.getTaskDetail({
+          taskId,
+          limit: conversationPageSize,
+          includeChanges: true
+        })
+        setSelectedTaskDetail((current) => ({
+          conversations: mergeConversationEntries(current.conversations, detail.conversations),
+          changes: detail.changes,
+          hasOlderConversations: current.hasOlderConversations || detail.hasOlderConversations
+        }))
+      }
       await refresh()
     })
   }
@@ -4367,20 +4379,72 @@ function AgentThread({
 }
 
 function MessageAttachments({ attachments }: { attachments?: ConversationAttachment[] }): ReactElement | null {
+  const [preview, setPreview] = useState<ConversationAttachment | null>(null)
   if (!attachments || attachments.length === 0) return null
   return (
-    <div className="message-attachments">
-      {attachments.map((attachment) =>
-        attachment.dataUrl ? (
-          <div key={attachment.id} className="message-attachment" title={attachment.name}>
-            <img src={attachment.dataUrl} alt={attachment.name} />
-          </div>
-        ) : (
-          <div key={attachment.id} className="message-attachment message-attachment-missing">
-            {attachment.name}
-          </div>
-        )
-      )}
+    <>
+      <div className="message-attachments">
+        {attachments.map((attachment) =>
+          attachment.dataUrl ? (
+            <button
+              key={attachment.id}
+              type="button"
+              className="message-attachment"
+              title={`View ${attachment.name}`}
+              onClick={() => setPreview(attachment)}
+            >
+              <img src={attachment.dataUrl} alt={attachment.name} />
+            </button>
+          ) : (
+            <div key={attachment.id} className="message-attachment message-attachment-missing">
+              {attachment.name}
+            </div>
+          )
+        )}
+      </div>
+      {preview?.dataUrl ? (
+        <AttachmentImagePreview
+          name={preview.name}
+          dataUrl={preview.dataUrl}
+          onClose={() => setPreview(null)}
+        />
+      ) : null}
+    </>
+  )
+}
+
+function AttachmentImagePreview({
+  name,
+  dataUrl,
+  onClose
+}: {
+  name: string
+  dataUrl: string
+  onClose: () => void
+}): ReactElement {
+  useModalEscape(onClose)
+
+  return (
+    <div
+      className="attachment-preview-backdrop"
+      role="presentation"
+      onMouseDown={closeOnBackdropMouseDown(onClose)}
+    >
+      <div
+        className="attachment-preview-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label={name}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="attachment-preview-head">
+          <span title={name}>{name}</span>
+          <button className="icon-button" type="button" title="Close" onClick={onClose}>
+            <X size={16} />
+          </button>
+        </header>
+        <img className="attachment-preview-image" src={dataUrl} alt={name} />
+      </div>
     </div>
   )
 }
@@ -4557,14 +4621,52 @@ function mergeConversationEntries(left: ConversationEntry[], right: Conversation
     entriesById.set(entry.id, entry)
   }
   const entries = Array.from(entriesById.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-  const realEntryKeys = new Set(
-    entries
-      .filter((entry) => !entry.id.startsWith('optimistic-'))
-      .map((entry) => `${entry.taskId}:${entry.role}:${entry.content}`)
-  )
-  return entries.filter(
-    (entry) => !entry.id.startsWith('optimistic-') || !realEntryKeys.has(`${entry.taskId}:${entry.role}:${entry.content}`)
-  )
+  const realEntries = entries.filter((entry) => !entry.id.startsWith('optimistic-'))
+  const optimisticEntries = entries.filter((entry) => entry.id.startsWith('optimistic-'))
+  const usedRealIds = new Set<string>()
+  const coveredOptimisticIds = new Set<string>()
+  const dataUrlsByRealId = new Map<string, ConversationAttachment[]>()
+
+  for (const optimistic of optimisticEntries) {
+    const optimisticTime = Date.parse(optimistic.createdAt)
+    const match = realEntries
+      .filter((real) => {
+        if (usedRealIds.has(real.id)) return false
+        if (real.taskId !== optimistic.taskId || real.role !== optimistic.role) return false
+        if (real.content !== optimistic.content) return false
+        if ((real.attachments?.length ?? 0) !== (optimistic.attachments?.length ?? 0)) return false
+        return true
+      })
+      .sort((leftEntry, rightEntry) => {
+        const leftDelta = Math.abs(Date.parse(leftEntry.createdAt) - optimisticTime)
+        const rightDelta = Math.abs(Date.parse(rightEntry.createdAt) - optimisticTime)
+        return leftDelta - rightDelta
+      })[0]
+
+    if (!match) continue
+    usedRealIds.add(match.id)
+    coveredOptimisticIds.add(optimistic.id)
+    if (optimistic.attachments?.length) {
+      dataUrlsByRealId.set(match.id, optimistic.attachments)
+    }
+  }
+
+  return entries
+    .filter((entry) => !coveredOptimisticIds.has(entry.id))
+    .map((entry) => {
+      const optimisticAttachments = dataUrlsByRealId.get(entry.id)
+      if (!optimisticAttachments?.length) return entry
+      if (!entry.attachments?.length) {
+        return { ...entry, attachments: optimisticAttachments }
+      }
+      return {
+        ...entry,
+        attachments: entry.attachments.map((attachment, index) => ({
+          ...attachment,
+          dataUrl: attachment.dataUrl || optimisticAttachments[index]?.dataUrl
+        }))
+      }
+    })
 }
 
 function compactConversationEntries(entries: ConversationEntry[]): ConversationEntry[] {

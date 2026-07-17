@@ -2923,10 +2923,18 @@ button:focus-visible {
 .message-attachment {
   width: 120px;
   max-width: 100%;
+  padding: 0;
   border: 1px solid var(--line-soft);
   border-radius: 8px;
   overflow: hidden;
   background: #141414;
+  cursor: zoom-in;
+  color: inherit;
+  text-align: left;
+}
+
+.message-attachment:hover {
+  border-color: var(--line);
 }
 
 .message-attachment img {
@@ -2944,6 +2952,55 @@ button:focus-visible {
   color: var(--muted);
   font-size: 12px;
   text-align: center;
+  cursor: default;
+}
+
+.attachment-preview-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.attachment-preview-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  width: min(920px, 100%);
+  max-height: min(90vh, 100%);
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: #161616;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+}
+
+.attachment-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.attachment-preview-head span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-preview-image {
+  width: 100%;
+  max-height: calc(90vh - 72px);
+  object-fit: contain;
+  border-radius: 8px;
+  background: #0f0f0f;
 }
 
 .message {
