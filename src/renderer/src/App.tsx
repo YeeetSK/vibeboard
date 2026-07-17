@@ -1182,6 +1182,11 @@ export function App(): ReactElement {
           void cancelQuit()
           return
         }
+        // Nested modals (e.g. image preview over task detail) share Escape.
+        // Defer to the topmost useModalEscape handler so only that overlay closes.
+        if (modalEscapeStack.length > 1) {
+          return
+        }
         if (deleteTaskId) {
           event.preventDefault()
           setDeleteTaskId(null)
@@ -3237,17 +3242,34 @@ function closeOnBackdropMouseDown(onClose: () => void): (event: ReactMouseEvent<
   }
 }
 
+let modalEscapeSeq = 0
+const modalEscapeStack: number[] = []
+
 function useModalEscape(onClose: () => void): void {
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
   useEffect(() => {
+    const id = ++modalEscapeSeq
+    modalEscapeStack.push(id)
+
     const closeOnEscape = (event: KeyboardEvent): void => {
       if (event.defaultPrevented || event.isComposing || event.key !== 'Escape') return
+      // Nested modals (e.g. image preview over task detail) all listen on window;
+      // only the topmost mounted modal should close.
+      if (modalEscapeStack[modalEscapeStack.length - 1] !== id) return
       event.preventDefault()
-      onClose()
+      event.stopImmediatePropagation()
+      onCloseRef.current()
     }
 
     window.addEventListener('keydown', closeOnEscape, true)
-    return () => window.removeEventListener('keydown', closeOnEscape, true)
-  }, [onClose])
+    return () => {
+      const index = modalEscapeStack.indexOf(id)
+      if (index >= 0) modalEscapeStack.splice(index, 1)
+      window.removeEventListener('keydown', closeOnEscape, true)
+    }
+  }, [])
 }
 
 function DeleteTaskModal({
