@@ -4125,14 +4125,24 @@ function AgentThread({
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const olderScrollSnapshotRef = useRef<{ height: number; top: number } | null>(null)
-  const showSystemEntries = task.status === 'processing' || task.status === 'attention'
+  const lastAssistantIndex = conversations.reduce(
+    (lastIndex, entry, index) => (entry.role === 'assistant' ? index : lastIndex),
+    -1
+  )
   const threadEntries = compactConversationEntries(
     conversations
-      .filter(
-        (entry) =>
-          !isNoisyConversationEntry(entry) &&
-          (showSystemEntries || entry.role !== 'system')
-      )
+      .filter((entry, index) => {
+        if (isNoisyConversationEntry(entry)) return false
+        if (entry.role !== 'system') return true
+        // Live status prints are only useful while the agent is still running.
+        if (task.status === 'processing') return true
+        // After the AI returns a message, drop preceding system status updates.
+        // Keep system rows when they are the only feedback, or when they follow the reply (e.g. failure notes).
+        if (task.status === 'attention') {
+          return lastAssistantIndex === -1 || index > lastAssistantIndex
+        }
+        return false
+      })
       .map((entry) => ({
         ...entry,
         content:
