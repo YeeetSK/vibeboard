@@ -2503,6 +2503,15 @@ button:focus-visible {
   overflow: hidden;
 }
 
+.detail-grid-chat-only {
+  grid-template-columns: 1fr;
+}
+
+.detail-grid-chat-only .message-markdown,
+.detail-grid-chat-only .role-assistant p {
+  max-width: min(96ch, 100%);
+}
+
 .detail-column {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -2514,6 +2523,42 @@ button:focus-visible {
 
 .detail-column + .detail-column {
   border-left: 1px solid var(--line-soft);
+}
+
+.code-changes-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: #222222;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 520;
+  user-select: none;
+}
+
+.code-changes-switch:hover,
+.code-changes-switch:focus-within {
+  border-color: #565656;
+  background-color: #3a3a3a;
+  color: var(--text);
+}
+
+.code-changes-switch svg {
+  display: block;
+  flex: 0 0 auto;
+}
+
+.code-changes-switch input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .change-list {

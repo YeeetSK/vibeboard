@@ -228,6 +228,7 @@ const pendingReleaseNotesStorageKey = 'vibeboard.pendingReleaseNotes'
 const seenReleaseNotesStorageKey = 'vibeboard.seenReleaseNotesVersion'
 const taskComposerDraftStoragePrefix = 'vibeboard.taskComposerDraft.'
 const onboardingStorageKey = 'vibeboard.onboarding.v1'
+const showCodeChangesStorageKey = 'vibeboard.showCodeChanges'
 
 const runModeLabels: Record<RunMode, string> = {
   shared: 'Shared',
@@ -367,6 +368,24 @@ function writeTaskComposerDraft(taskId: string, value: string): void {
     }
   } catch {
     // Draft persistence is best-effort. The composer still works if storage is unavailable.
+  }
+}
+
+function readShowCodeChangesPreference(): boolean {
+  try {
+    const raw = localStorage.getItem(showCodeChangesStorageKey)
+    if (raw === null) return true
+    return raw !== '0' && raw !== 'false'
+  } catch {
+    return true
+  }
+}
+
+function writeShowCodeChangesPreference(value: boolean): void {
+  try {
+    localStorage.setItem(showCodeChangesStorageKey, value ? '1' : '0')
+  } catch {
+    // Preference persistence is best-effort.
   }
 }
 
@@ -3972,6 +3991,7 @@ function TaskDetailModal({
     task.title.trim()
   const canRetryPrompt = Boolean(project) && canUseCursor && Boolean(lastPrompt)
   const hasCapturedChanges = changes.length > 0
+  const [showCodeChanges, setShowCodeChanges] = useState(readShowCodeChangesPreference)
   useModalEscape(onClose)
 
   const requestCommit = (): void => {
@@ -3992,6 +4012,11 @@ function TaskDetailModal({
   const requestRetry = (): void => {
     if (!canRetry) return
     onRetryTask(task.id)
+  }
+
+  const setCodeChangesVisible = (visible: boolean): void => {
+    setShowCodeChanges(visible)
+    writeShowCodeChangesPreference(visible)
   }
 
   return (
@@ -4066,6 +4091,18 @@ function TaskDetailModal({
                   </button>
                 </>
               )}
+              <label
+                className="code-changes-switch"
+                title={showCodeChanges ? 'Hide code changes and enlarge chat' : 'Show code changes'}
+              >
+                <Code2 size={14} />
+                <span>Changes</span>
+                <input
+                  type="checkbox"
+                  checked={showCodeChanges}
+                  onChange={(event) => setCodeChangesVisible(event.target.checked)}
+                />
+              </label>
               <button
                 className="icon-text-button task-git-action danger"
                 type="button"
@@ -4083,7 +4120,7 @@ function TaskDetailModal({
           </div>
         </div>
 
-        <div className="detail-grid">
+        <div className={showCodeChanges ? 'detail-grid' : 'detail-grid detail-grid-chat-only'}>
           <section className="detail-column">
             <AgentThread
               key={task.id}
@@ -4101,22 +4138,24 @@ function TaskDetailModal({
             />
           </section>
 
-          <section className="detail-column">
-            <div className="section-title">
-              <Code2 size={16} />
-              <span>Code changes</span>
-            </div>
-            <div className="change-stack">
-              {changes.length > 0 && <ChangeSummary changes={changes} />}
-              <div className="change-list">
-                {changes.length === 0 ? (
-                  <div className="detail-empty-state">No changes captured</div>
-                ) : (
-                  changes.map((change) => <DiffViewer key={change.id} change={change} />)
-                )}
+          {showCodeChanges && (
+            <section className="detail-column">
+              <div className="section-title">
+                <Code2 size={16} />
+                <span>Code changes</span>
               </div>
-            </div>
-          </section>
+              <div className="change-stack">
+                {changes.length > 0 && <ChangeSummary changes={changes} />}
+                <div className="change-list">
+                  {changes.length === 0 ? (
+                    <div className="detail-empty-state">No changes captured</div>
+                  ) : (
+                    changes.map((change) => <DiffViewer key={change.id} change={change} />)
+                  )}
+                </div>
+              </div>
+            </section>
+          )}
         </div>
       </section>
     </div>
