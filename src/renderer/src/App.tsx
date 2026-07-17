@@ -4150,7 +4150,7 @@ function AgentThread({
         <div className="prompt-template-row" aria-label="Prompt templates">
           {canRetryPrompt && (
             <button
-              className="template-chip template-chip-retry"
+              className="template-chip"
               type="button"
               onClick={() => onRetryPrompt(task.id)}
               title={
