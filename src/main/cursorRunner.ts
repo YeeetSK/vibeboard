@@ -127,11 +127,23 @@ export async function runCursorTask({
   )
   onStateChanged()
 
-  const child = spawn(agentCommand, ['--print', '--force', '--trust', '--output-format', 'stream-json', optimizedPrompt], {
+  const agentArgs = ['--print', '--force', '--trust', '--output-format', 'stream-json']
+  const selectedModel = context.task.model?.trim()
+  if (selectedModel && selectedModel.toLowerCase() !== 'auto') {
+    agentArgs.push('--model', selectedModel)
+  }
+  agentArgs.push(optimizedPrompt)
+
+  const child = spawn(agentCommand, agentArgs, {
     cwd: runTarget.cwd,
     env: process.env
   })
-  console.info('[VibeBoard Cursor run]', { taskId, projectPath: runTarget.cwd, agentCommand })
+  console.info('[VibeBoard Cursor run]', {
+    taskId,
+    projectPath: runTarget.cwd,
+    agentCommand,
+    model: selectedModel || 'auto'
+  })
 
   let stdoutBuffer = ''
   let stderrBuffer = ''

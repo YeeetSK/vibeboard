@@ -1,4 +1,14 @@
-import { ReactElement, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Children,
+  ReactElement,
+  ReactNode,
+  isValidElement,
+  MouseEvent as ReactMouseEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 import { createPortal } from 'react-dom'
 import type { DragEvent as ReactDragEvent } from 'react'
 import {
@@ -64,11 +74,11 @@ import {
   CornerDownLeft,
   Download,
   Ellipsis,
+  Eye,
   ExternalLink,
   FolderPlus,
   FolderOpen,
   GitCommitHorizontal,
-  GitBranch,
   GitPullRequestDraft,
   History,
   LayoutDashboard,
@@ -82,15 +92,19 @@ import {
   Pin,
   RadioTower,
   RotateCcw,
+  Scan,
   Search,
   Send,
   Smartphone,
   Square,
+  ToggleLeft,
+  ToggleRight,
   Trash2,
   Undo2,
   X
 } from 'lucide-react'
 import type {
+  AgentModel,
   AppState,
   BoardTab,
   CodeChange,
@@ -102,7 +116,6 @@ import type {
   Project,
   QueuedTaskMessage,
   QuitRequest,
-  RunMode,
   SearchResult,
   Task,
   TaskDetail,
@@ -110,6 +123,8 @@ import type {
   UpdateInfo,
   NotificationEventSettings,
   NotificationSettings,
+  NotchOverlayCapability,
+  NotchOverlaySettings,
 } from '../../shared/types'
 
 hljs.registerLanguage('bash', bash)
@@ -216,7 +231,23 @@ const emptyNotificationSettings: NotificationSettings = {
       taskFailed: true,
       allTasksFinished: false
     }
-  }
+  },
+  playFinishSound: true
+}
+
+const emptyNotchOverlaySettings: NotchOverlaySettings = {
+  enabled: false,
+  expandOnTaskCompleted: true,
+  showFinishChat: true,
+  expandOnAttention: true,
+  expandOnAllFinished: false
+}
+
+const emptyNotchCapability: NotchOverlayCapability = {
+  supported: false,
+  platform: 'darwin',
+  hasNotch: false,
+  reason: null
 }
 
 interface PendingReleaseNotes {
@@ -230,18 +261,6 @@ const seenReleaseNotesStorageKey = 'vibeboard.seenReleaseNotesVersion'
 const taskComposerDraftStoragePrefix = 'vibeboard.taskComposerDraft.'
 const onboardingStorageKey = 'vibeboard.onboarding.v1'
 const showCodeChangesStorageKey = 'vibeboard.showCodeChanges'
-
-const runModeLabels: Record<RunMode, string> = {
-  shared: 'Shared',
-  branch: 'Branch',
-  worktree: 'Worktree'
-}
-
-const runModeDescriptions: Record<RunMode, string> = {
-  shared: 'One project folder',
-  branch: 'Git branch per task',
-  worktree: 'Git worktree per task'
-}
 
 const tutorialSteps = [
   {
@@ -269,9 +288,9 @@ const tutorialSteps = [
     card: 'bottom'
   },
   {
-    id: 'worktree',
-    title: 'Worktree is the default run mode',
-    body: 'Each task gets its own Git worktree so parallel agents do not fight over the same files.',
+    id: 'auto-move',
+    title: 'Auto-move and board actions',
+    body: 'Auto-move controls whether status changes move cards between Active, Review, and Done. Open the project folder or add lanes from here too.',
     spotlight: 'actions',
     target: 'board-actions',
     card: 'left'
@@ -313,6 +332,7 @@ const createTutorialShowcaseTask = (
   summary,
   status,
   runModeOverride: null,
+  model: null,
   branchName: null,
   worktreePath: null,
   pushedToMain: 0,
@@ -500,16 +520,14 @@ export function App(): ReactElement {
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(emptyNotificationSettings)
   const [isNotificationSettingsOpen, setNotificationSettingsOpen] = useState(false)
   const [notificationFeedback, setNotificationFeedback] = useState('')
+  const [notchOverlaySettings, setNotchOverlaySettings] = useState<NotchOverlaySettings>(emptyNotchOverlaySettings)
+  const [notchCapability, setNotchCapability] = useState<NotchOverlayCapability>(emptyNotchCapability)
+  const [isNotchSettingsOpen, setNotchSettingsOpen] = useState(false)
+  const [notchFeedback, setNotchFeedback] = useState('')
   const [releaseNotesModal, setReleaseNotesModal] = useState<PendingReleaseNotes | null>(null)
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<TaskDetail>(emptyTaskDetail)
   const [isLoadingOlderConversations, setLoadingOlderConversations] = useState(false)
-  const [tutorialStep, setTutorialStep] = useState<number | null>(() => {
-    try {
-      return window.localStorage.getItem(onboardingStorageKey) ? null : 0
-    } catch {
-      return null
-    }
-  })
+  const [tutorialStep, setTutorialStep] = useState<number | null>(null)
   const [isTutorialCompleteOpen, setTutorialCompleteOpen] = useState(false)
   const pendingActionsRef = useRef(new Set<string>())
   const [, setPendingActionVersion] = useState(0)
@@ -592,11 +610,46 @@ export function App(): ReactElement {
     })
     window.vibeboard.getUpdateInfo().then(setUpdateInfo)
     window.vibeboard.getNotificationSettings().then(setNotificationSettings)
+    void window.vibeboard.getNotchOverlayCapability().then(setNotchCapability)
+    void window.vibeboard.getNotchOverlaySettings().then(setNotchOverlaySettings)
     return () => {
       stopStateListener()
       stopQuitListener()
       stopUpdateListener()
       stopNotificationOpenListener()
+    }
+  }, [])
+
+  useEffect(() => {
+    let isCancelled = false
+
+    const checkOnboarding = async (): Promise<void> => {
+      try {
+        const localComplete = window.localStorage.getItem(onboardingStorageKey) === 'done'
+        const storedComplete = await window.vibeboard.getOnboardingComplete()
+
+        if (localComplete && !storedComplete) {
+          await window.vibeboard.markOnboardingComplete()
+        }
+
+        if (!isCancelled && !localComplete && !storedComplete) {
+          setTutorialStep(0)
+        }
+      } catch {
+        try {
+          if (!isCancelled && window.localStorage.getItem(onboardingStorageKey) !== 'done') {
+            setTutorialStep(0)
+          }
+        } catch {
+          // If persistence is unavailable, avoid showing the tutorial repeatedly.
+        }
+      }
+    }
+
+    void checkOnboarding()
+
+    return () => {
+      isCancelled = true
     }
   }, [])
 
@@ -944,10 +997,10 @@ export function App(): ReactElement {
     })
   }
 
-  const updateActiveProjectRunMode = async (runMode: RunMode): Promise<void> => {
-    if (!activeProject || activeProject.runMode === runMode) return
-    await runAction(`project:runMode:${activeProject.id}`, async () => {
-      await window.vibeboard.updateProjectRunMode({ projectId: activeProject.id, runMode })
+  const updateActiveProjectAutoMove = async (autoMoveTasks: boolean): Promise<void> => {
+    if (!activeProject || Boolean(activeProject.autoMoveTasks) === autoMoveTasks) return
+    await runAction(`project:autoMove:${activeProject.id}`, async () => {
+      await window.vibeboard.updateProjectAutoMove({ projectId: activeProject.id, autoMoveTasks })
       await refresh()
     })
   }
@@ -958,6 +1011,7 @@ export function App(): ReactElement {
     } catch {
       // Tutorial persistence is best-effort.
     }
+    void window.vibeboard.markOnboardingComplete()
   }
 
   const skipTutorial = (): void => {
@@ -973,11 +1027,6 @@ export function App(): ReactElement {
   }
 
   const replayTutorial = (): void => {
-    try {
-      window.localStorage.removeItem(onboardingStorageKey)
-    } catch {
-      // Tutorial persistence is best-effort.
-    }
     setTutorialCompleteOpen(false)
     setTutorialStep(0)
   }
@@ -1038,6 +1087,15 @@ export function App(): ReactElement {
     })
   }
 
+  const updateTaskModel = async (taskId: string, model: string | null): Promise<void> => {
+    const task = state.tasks.find((item) => item.id === taskId)
+    if (!task || (task.model ?? null) === model) return
+    await runAction(`task:model:${taskId}`, async () => {
+      await window.vibeboard.updateTaskModel({ taskId, model })
+      await refresh()
+    })
+  }
+
   const renameTask = async (id: string, title: string): Promise<void> => {
     const task = state.tasks.find((item) => item.id === id)
     if (!title.trim() || task?.status === 'processing') return
@@ -1063,6 +1121,8 @@ export function App(): ReactElement {
   }
 
   const openTask = async (task: Task): Promise<void> => {
+    // Tutorial showcase cards are fake and are not in app state.
+    if (isTutorialActive || task.id.startsWith('tutorial-')) return
     setSelectedTaskId(task.id)
   }
 
@@ -1226,6 +1286,22 @@ export function App(): ReactElement {
       const nextSettings = await window.vibeboard.updateNotificationSettings(settings)
       setNotificationSettings(nextSettings)
       setNotificationFeedback('Saved')
+    })
+  }
+
+  const saveNotchOverlaySettings = async (settings: NotchOverlaySettings): Promise<void> => {
+    await runAction('notch:save', async () => {
+      const nextSettings = await window.vibeboard.updateNotchOverlaySettings(settings)
+      setNotchOverlaySettings(nextSettings)
+      const capability = await window.vibeboard.getNotchOverlayCapability()
+      setNotchCapability(capability)
+      setNotchFeedback(
+        nextSettings.enabled
+          ? capability.supported
+            ? 'Saved. Overlay active.'
+            : capability.reason ?? 'Saved, but this display is not supported.'
+          : 'Saved. Overlay off.'
+      )
     })
   }
 
@@ -1471,6 +1547,16 @@ export function App(): ReactElement {
               setNotificationSettingsOpen(true)
             }}
           />
+          {notchCapability.platform === 'darwin' && (
+            <NotchOverlayLauncher
+              onOpen={() => {
+                setNotchFeedback('')
+                void window.vibeboard.getNotchOverlayCapability().then(setNotchCapability)
+                void window.vibeboard.getNotchOverlaySettings().then(setNotchOverlaySettings)
+                setNotchSettingsOpen(true)
+              }}
+            />
+          )}
           {isDevMode && <DevTutorialLauncher onOpen={replayTutorial} />}
 
           <section className="panel board-snapshot">
@@ -1518,10 +1604,10 @@ export function App(): ReactElement {
                 </div>
                 <div className="board-header-actions" data-tour="board-actions">
                   {activeProject && (
-                    <RunModeDropdown
-                      runMode={activeProject.runMode}
-                      disabled={isActionPending(`project:runMode:${activeProject.id}`)}
-                      onChange={updateActiveProjectRunMode}
+                    <AutoMoveToggle
+                      enabled={Boolean(activeProject.autoMoveTasks)}
+                      disabled={isActionPending(`project:autoMove:${activeProject.id}`)}
+                      onChange={updateActiveProjectAutoMove}
                     />
                   )}
                   <button
@@ -1636,6 +1722,7 @@ export function App(): ReactElement {
           onRetryTask={retryTask}
           onRetryPrompt={retryTaskPrompt}
           onStopTask={stopTask}
+          onUpdateModel={updateTaskModel}
           onDeleteTask={setDeleteTaskId}
           onClose={() => setSelectedTaskId(null)}
         />
@@ -1710,6 +1797,17 @@ export function App(): ReactElement {
         />
       )}
 
+      {isNotchSettingsOpen && (
+        <NotchOverlaySettingsModal
+          settings={notchOverlaySettings}
+          capability={notchCapability}
+          feedback={notchFeedback}
+          isSaving={isActionPending('notch:save')}
+          onClose={() => setNotchSettingsOpen(false)}
+          onSave={saveNotchOverlaySettings}
+        />
+      )}
+
       <UpdateBanner
         info={updateInfo}
         onDownload={downloadUpdate}
@@ -1739,78 +1837,37 @@ export function App(): ReactElement {
   )
 }
 
-function RunModeDropdown({
-  runMode,
+function AutoMoveToggle({
+  enabled,
   disabled,
   onChange
 }: {
-  runMode: RunMode
+  enabled: boolean
   disabled: boolean
-  onChange: (runMode: RunMode) => void
+  onChange: (enabled: boolean) => void
 }): ReactElement {
-  const [isOpen, setOpen] = useState(false)
-  const menuRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    if (!isOpen) return
-
-    const closeOnOutside = (event: PointerEvent): void => {
-      if (!menuRef.current?.contains(event.target as Node)) {
-        setOpen(false)
-      }
-    }
-    const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        setOpen(false)
-      }
-    }
-
-    window.addEventListener('pointerdown', closeOnOutside, true)
-    window.addEventListener('keydown', closeOnEscape, true)
-    return () => {
-      window.removeEventListener('pointerdown', closeOnOutside, true)
-      window.removeEventListener('keydown', closeOnEscape, true)
-    }
-  }, [isOpen])
+  const tooltip =
+    enabled
+      ? 'Auto-move is on. Finished tasks move to Review, and opening them moves them to Done.'
+      : 'Auto-move is off. Task status changes still happen, but cards stay in the lane where you put them.'
 
   return (
-    <div className="run-mode-menu" ref={menuRef}>
+    <span className="auto-move-toggle-wrap">
       <button
-        className={isOpen ? 'run-mode-trigger open' : 'run-mode-trigger'}
+        className={enabled ? 'icon-text-button auto-move-toggle enabled' : 'icon-text-button auto-move-toggle'}
         type="button"
         disabled={disabled}
-        onClick={() => setOpen((value) => !value)}
-        title="Task run isolation"
+        onClick={() => onChange(!enabled)}
+        aria-pressed={enabled}
+        aria-describedby="auto-move-tooltip"
       >
-        <GitBranch size={15} />
-        <span>{runModeLabels[runMode]}</span>
-        <ChevronDown size={14} />
+        {enabled ? <ToggleRight size={17} /> : <ToggleLeft size={17} />}
+        <span>Auto-move</span>
       </button>
-
-      {isOpen && (
-        <div className="run-mode-options" role="menu">
-          {(['worktree', 'branch', 'shared'] as RunMode[]).map((mode) => (
-            <button
-              key={mode}
-              className={mode === runMode ? 'selected' : ''}
-              type="button"
-              role="menuitemradio"
-              aria-checked={mode === runMode}
-              onClick={() => {
-                onChange(mode)
-                setOpen(false)
-              }}
-            >
-              <span className="run-mode-check">{mode === runMode && <Check size={14} />}</span>
-              <span className="run-mode-option-copy">
-                <strong>{runModeLabels[mode]}</strong>
-                <small>{runModeDescriptions[mode]}</small>
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+      <span className="auto-move-tooltip" id="auto-move-tooltip" role="tooltip">
+        {tooltip}
+      </span>
+    </span>
   )
 }
 
@@ -2011,32 +2068,47 @@ function TutorialCompleteOverlay({ onClose }: { onClose: () => void }): ReactEle
     const canvas = confettiCanvasRef.current
     if (!canvas) return
 
+    // Electron CSP blocks blob workers, so keep rendering on the main thread.
     const fireConfetti = confetti.create(canvas, {
       resize: true,
-      useWorker: true
+      useWorker: false
     })
     const defaults = {
-      particleCount: 80,
-      spread: 64,
-      startVelocity: 34,
-      ticks: 220,
-      gravity: 0.92,
-      scalar: 0.9,
+      particleCount: 100,
+      spread: 70,
+      startVelocity: 38,
+      ticks: 240,
+      gravity: 0.9,
+      scalar: 0.95,
       colors: ['#ff7a1a', '#2fcf75', '#f7c56b', '#9b8cff', '#f2f2f2']
     }
 
-    void fireConfetti({
-      ...defaults,
-      origin: { x: 0.34, y: 0.42 },
-      angle: 58
-    })
-    void fireConfetti({
-      ...defaults,
-      origin: { x: 0.66, y: 0.42 },
-      angle: 122
+    let burstTimeout = 0
+    const frameId = window.requestAnimationFrame(() => {
+      void fireConfetti({
+        ...defaults,
+        origin: { x: 0.28, y: 0.35 },
+        angle: 60
+      })
+      void fireConfetti({
+        ...defaults,
+        origin: { x: 0.72, y: 0.35 },
+        angle: 120
+      })
+      burstTimeout = window.setTimeout(() => {
+        void fireConfetti({
+          ...defaults,
+          particleCount: 55,
+          origin: { x: 0.5, y: 0.28 },
+          angle: 90,
+          spread: 100
+        })
+      }, 180)
     })
 
     return () => {
+      window.cancelAnimationFrame(frameId)
+      window.clearTimeout(burstTimeout)
       fireConfetti.reset()
     }
   }, [])
@@ -2214,6 +2286,15 @@ function NotificationLauncher({ onOpen }: { onOpen: () => void }): ReactElement 
   )
 }
 
+function NotchOverlayLauncher({ onOpen }: { onOpen: () => void }): ReactElement {
+  return (
+    <button className="global-search-launcher notch-launcher" type="button" onClick={onOpen} title="Notch overlay">
+      <Scan size={16} />
+      <span>Notch</span>
+    </button>
+  )
+}
+
 function DevTutorialLauncher({ onOpen }: { onOpen: () => void }): ReactElement {
   return (
     <button className="global-search-launcher dev-tutorial-launcher" type="button" onClick={onOpen} title="Replay tutorial">
@@ -2326,6 +2407,22 @@ function NotificationSettingsModal({
           <section className="settings-section">
             <label className="settings-toggle-row">
               <span>
+                <strong>Play sound when a task finishes</strong>
+              </span>
+              <input
+                type="checkbox"
+                checked={draft.playFinishSound}
+                onChange={(event) =>
+                  setDraft((current) => ({ ...current, playFinishSound: event.target.checked }))
+                }
+              />
+            </label>
+            <p className="settings-note">Uses a short system chime on macOS when any task completes.</p>
+          </section>
+
+          <section className="settings-section">
+            <label className="settings-toggle-row">
+              <span>
                 <Smartphone size={15} />
                 <strong>ntfy.sh</strong>
               </span>
@@ -2431,6 +2528,156 @@ function NotificationEventChecks({
         />
         <span>All tasks finished</span>
       </label>
+    </div>
+  )
+}
+
+function NotchOverlaySettingsModal({
+  settings,
+  capability,
+  feedback,
+  isSaving,
+  onClose,
+  onSave
+}: {
+  settings: NotchOverlaySettings
+  capability: NotchOverlayCapability
+  feedback: string
+  isSaving: boolean
+  onClose: () => void
+  onSave: (settings: NotchOverlaySettings) => Promise<void>
+}): ReactElement {
+  const [draft, setDraft] = useState(settings)
+  useModalEscape(onClose)
+
+  useEffect(() => {
+    setDraft(settings)
+  }, [settings])
+
+  const save = (): void => {
+    void onSave(draft)
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={closeOnBackdropMouseDown(onClose)}>
+      <section
+        className="modal-panel compact notification-settings-modal"
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
+        onKeyDownCapture={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            onClose()
+          }
+          if (event.key === 'Enter' && (event.target as HTMLElement).tagName !== 'TEXTAREA') {
+            event.preventDefault()
+            save()
+          }
+        }}
+      >
+        <header className="modal-head">
+          <div>
+            <h2>Notch overlay</h2>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} title="Close">
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="notification-settings-body">
+          {!capability.supported && (
+            <p className="settings-note">
+              {capability.reason ?? 'Notch overlay needs a notched Mac display.'}
+            </p>
+          )}
+          {capability.supported && capability.reason && (
+            <p className="settings-note">{capability.reason}</p>
+          )}
+
+          <section className="settings-section">
+            <label className="settings-toggle-row">
+              <span>
+                <Scan size={15} />
+                <strong>Show overlay</strong>
+              </span>
+              <input
+                type="checkbox"
+                checked={draft.enabled}
+                disabled={!capability.supported}
+                onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))}
+              />
+            </label>
+            <p className="settings-note">
+              Available on notched MacBooks. Compact mode shows live status at the camera notch.
+            </p>
+          </section>
+
+          <section className="settings-section">
+            <div className="settings-section-title">Expand when</div>
+            <div className="notification-event-grid">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={draft.expandOnTaskCompleted}
+                  disabled={!capability.supported || !draft.enabled}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, expandOnTaskCompleted: event.target.checked }))
+                  }
+                />
+                <span>Task completed</span>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={draft.showFinishChat}
+                  disabled={!capability.supported || !draft.enabled || !draft.expandOnTaskCompleted}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, showFinishChat: event.target.checked }))
+                  }
+                />
+                <span>Show answer and reply field</span>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={draft.expandOnAttention}
+                  disabled={!capability.supported || !draft.enabled}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, expandOnAttention: event.target.checked }))
+                  }
+                />
+                <span>Needs attention</span>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={draft.expandOnAllFinished}
+                  disabled={!capability.supported || !draft.enabled}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, expandOnAllFinished: event.target.checked }))
+                  }
+                />
+                <span>All tasks finished</span>
+              </label>
+            </div>
+            <p className="settings-note">
+              Compact always shows live status. The notch only expands when a task finishes with
+              answer + reply enabled. Needs attention stays compact and opens the task on click.
+            </p>
+          </section>
+        </div>
+
+        <footer className="modal-actions notification-actions">
+          <span className="settings-feedback">{feedback}</span>
+          <button className="primary-action" type="button" onClick={save} disabled={isSaving || !capability.supported}>
+            Save
+            <span className="key-hint key-hint-icon" aria-label="Enter">
+              <CornerDownLeft size={14} />
+            </span>
+          </button>
+        </footer>
+      </section>
     </div>
   )
 }
@@ -4030,6 +4277,7 @@ function TaskDetailModal({
   onRetryTask,
   onRetryPrompt,
   onStopTask,
+  onUpdateModel,
   onDeleteTask,
   onClose
 }: {
@@ -4045,6 +4293,7 @@ function TaskDetailModal({
   onRetryTask: (taskId: string) => void
   onRetryPrompt: (taskId: string) => void
   onStopTask: (taskId: string) => void
+  onUpdateModel: (taskId: string, model: string | null) => void
   onDeleteTask: (taskId: string) => void
   onClose: () => void
 }): ReactElement {
@@ -4205,6 +4454,7 @@ function TaskDetailModal({
               onLoadOlderConversations={onLoadOlderConversations}
               onSendMessage={onSendMessage}
               onRetryPrompt={onRetryPrompt}
+              onUpdateModel={onUpdateModel}
             />
           </section>
 
@@ -4243,7 +4493,8 @@ function AgentThread({
   disabledLabel,
   onLoadOlderConversations,
   onSendMessage,
-  onRetryPrompt
+  onRetryPrompt,
+  onUpdateModel
 }: {
   conversations: ConversationEntry[]
   task: Task
@@ -4256,6 +4507,7 @@ function AgentThread({
   onLoadOlderConversations: () => void
   onSendMessage: (taskId: string, content: string, attachments?: TaskMessageAttachmentInput[]) => void
   onRetryPrompt: (taskId: string) => void
+  onUpdateModel: (taskId: string, model: string | null) => void
 }): ReactElement {
   const [draft, setDraft] = useState(() => readTaskComposerDraft(task.id))
   const [pendingAttachments, setPendingAttachments] = useState<PendingComposerAttachment[]>([])
@@ -4440,6 +4692,12 @@ function AgentThread({
 
       {(canSend || canRetryPrompt) && (
         <div className="prompt-template-row" aria-label="Prompt templates">
+          <TaskModelPicker
+            taskId={task.id}
+            model={task.model ?? null}
+            disabled={!canSend}
+            onChange={onUpdateModel}
+          />
           {canRetryPrompt && (
             <button
               className="template-chip"
@@ -4540,6 +4798,144 @@ function AgentThread({
           <Send size={16} />
         </button>
       </div>
+    </div>
+  )
+}
+
+function TaskModelPicker({
+  taskId,
+  model,
+  disabled,
+  onChange
+}: {
+  taskId: string
+  model: string | null
+  disabled: boolean
+  onChange: (taskId: string, model: string | null) => void
+}): ReactElement {
+  const [models, setModels] = useState<AgentModel[]>([])
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [isLoading, setLoading] = useState(false)
+  const [isOpen, setOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadModels = async (): Promise<void> => {
+      setLoading(true)
+      setLoadError(null)
+      try {
+        if (typeof window.vibeboard.listAgentModels !== 'function') {
+          throw new Error('Restart VibeBoard to load models')
+        }
+        const nextModels = await window.vibeboard.listAgentModels()
+        if (!cancelled) setModels(nextModels)
+      } catch (error) {
+        if (cancelled) return
+        setModels([])
+        setLoadError(error instanceof Error ? error.message : 'Could not load models')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    void loadModels()
+    return () => {
+      cancelled = true
+    }
+  }, [taskId])
+
+  useEffect(() => {
+    if (!isOpen) return
+
+    const closeOnOutside = (event: PointerEvent): void => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setOpen(false)
+      }
+    }
+
+    window.addEventListener('pointerdown', closeOnOutside, true)
+    window.addEventListener('keydown', closeOnEscape, true)
+    return () => {
+      window.removeEventListener('pointerdown', closeOnOutside, true)
+      window.removeEventListener('keydown', closeOnEscape, true)
+    }
+  }, [isOpen])
+
+  const selectedValue = model ?? ''
+  const selectedModel =
+    models.find((item) => item.id === selectedValue) ??
+    (selectedValue
+      ? { id: selectedValue, label: selectedValue, isDefault: false, isCurrent: false }
+      : null)
+  const selectedLabel = selectedModel?.label ?? 'Auto'
+  const options: AgentModel[] = [
+    { id: '', label: 'Auto', isDefault: true },
+    ...models.filter((item) => item.id.toLowerCase() !== 'auto')
+  ]
+  if (selectedValue && !options.some((item) => item.id === selectedValue)) {
+    options.splice(1, 0, { id: selectedValue, label: selectedValue })
+  }
+
+  const title = loadError
+    ? loadError
+    : isLoading
+      ? 'Loading Cursor models…'
+      : 'Model for this task'
+
+  return (
+    <div className="task-model-menu" ref={menuRef}>
+      <button
+        className={isOpen ? 'template-chip task-model-trigger open' : 'template-chip task-model-trigger'}
+        type="button"
+        disabled={disabled || isLoading}
+        title={title}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="task-model-trigger-copy">
+          <span className="task-model-trigger-label">Model</span>
+          <span className="task-model-trigger-value">{isLoading ? '…' : selectedLabel}</span>
+        </span>
+        <ChevronDown size={13} />
+      </button>
+
+      {isOpen && (
+        <div className="task-model-options" role="listbox" aria-label="Cursor models">
+          {loadError && <div className="task-model-empty">{loadError}</div>}
+          {!loadError &&
+            options.map((item) => {
+              const isSelected = item.id === selectedValue
+              return (
+                <button
+                  key={item.id || 'auto'}
+                  className={isSelected ? 'selected' : undefined}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  onClick={() => {
+                    onChange(taskId, item.id || null)
+                    setOpen(false)
+                  }}
+                >
+                  <span className="task-model-check">{isSelected && <Check size={13} />}</span>
+                  <span className="task-model-option-copy">
+                    <strong>{item.label}</strong>
+                    {item.id ? <small>{item.id}</small> : <small>CLI default</small>}
+                  </span>
+                </button>
+              )
+            })}
+        </div>
+      )}
     </div>
   )
 }
@@ -4686,6 +5082,26 @@ function MessageMarkdown({ content }: { content: string }): ReactElement {
               </div>
             )
           },
+          tr({ children }) {
+            const cells = Children.toArray(children)
+            const [firstCell, ...remainingCells] = cells
+            if (
+              cells.length > 1 &&
+              hasRenderableMarkdownCellContent(firstCell) &&
+              remainingCells.every((cell) => !hasRenderableMarkdownCellContent(cell))
+            ) {
+              return (
+                <tr className="markdown-table-note-row">
+                  <td colSpan={cells.length}>{markdownCellChildren(firstCell)}</td>
+                </tr>
+              )
+            }
+
+            return <tr>{children}</tr>
+          },
+          img({ src, alt }) {
+            return <MarkdownImage src={src} alt={alt} />
+          },
           code({ className, children }) {
             const rawCode = String(children).replace(/\n$/, '')
             const language = normalizeLanguage((className ?? '').replace(/^language-/, ''))
@@ -4708,6 +5124,50 @@ function MessageMarkdown({ content }: { content: string }): ReactElement {
       </ReactMarkdown>
     </div>
   )
+}
+
+function hasRenderableMarkdownCellContent(cell: ReactNode): boolean {
+  const content = markdownCellChildren(cell)
+  if (content === null || content === undefined) return false
+  if (typeof content === 'string') return content.trim().length > 0
+  if (typeof content === 'number') return true
+  if (Array.isArray(content)) return content.some((child) => hasRenderableMarkdownCellContent(child))
+  if (isValidElement<{ children?: ReactNode }>(content)) return hasRenderableMarkdownCellContent(content.props.children)
+  return true
+}
+
+function markdownCellChildren(cell: ReactNode): ReactNode {
+  return isValidElement<{ children?: ReactNode }>(cell) ? cell.props.children : cell
+}
+
+function MarkdownImage({ src, alt }: { src?: string; alt?: string }): ReactElement {
+  const [didFail, setDidFail] = useState(false)
+  const label = alt?.trim() || 'Image'
+  const isBadge = isBadgeImage(src, label)
+
+  if (!src || didFail) {
+    return isBadge ? (
+      <span className="markdown-badge-fallback">{label}</span>
+    ) : (
+      <span className="markdown-image-fallback" role="img" aria-label={label}>
+        {label}
+      </span>
+    )
+  }
+
+  return (
+    <img
+      className={isBadge ? 'markdown-badge-image' : 'markdown-image'}
+      src={src}
+      alt={label}
+      loading="lazy"
+      onError={() => setDidFail(true)}
+    />
+  )
+}
+
+function isBadgeImage(src: string | undefined, alt: string): boolean {
+  return Boolean(src?.includes('img.shields.io') || /^(license|platform|build|version|status)\b/i.test(alt))
 }
 
 function isNoisyConversationEntry(entry: ConversationEntry): boolean {
@@ -4932,6 +5392,7 @@ function ChangeSummary({ changes }: { changes: CodeChange[] }): ReactElement {
 }
 
 function DiffViewer({ change }: { change: CodeChange }): ReactElement {
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false)
   const diffText = useMemo(() => change.diffText.trim() || fallbackDiff(change), [change])
   const rows = useMemo(() => compactDiffRows(parseDiffRows(diffText)), [diffText])
   const language = useMemo(
@@ -4939,15 +5400,30 @@ function DiffViewer({ change }: { change: CodeChange }): ReactElement {
     [change.filePath, change.language]
   )
   const languageLabel = useMemo(() => displayLanguage(language), [language])
+  const markdownPreview = useMemo(() => markdownPreviewFromDiff(diffText), [diffText])
+  const canPreviewMarkdown = language === 'markdown' && Boolean(markdownPreview.trim())
 
   return (
     <article className="diff-file">
       <header className="diff-file-header">
-        <div>
+        <div className="diff-file-title">
           <span className={`change-type ${change.changeType}`}>{change.changeType}</span>
           <strong>{change.filePath}</strong>
         </div>
-        <span>{languageLabel}</span>
+        <div className="diff-file-meta">
+          {canPreviewMarkdown && (
+            <button
+              className="icon-text-button markdown-preview-button"
+              type="button"
+              onClick={() => setIsPreviewOpen(true)}
+              title="Preview rendered Markdown"
+            >
+              <Eye size={14} />
+              <span>Preview</span>
+            </button>
+          )}
+          <span>{languageLabel}</span>
+        </div>
       </header>
       <div className="diff-table" role="table" aria-label={`${change.filePath} diff`}>
         <div className="diff-rows">
@@ -4966,7 +5442,43 @@ function DiffViewer({ change }: { change: CodeChange }): ReactElement {
           })}
         </div>
       </div>
+      {isPreviewOpen && (
+        <MarkdownPreviewModal
+          filePath={change.filePath}
+          content={markdownPreview}
+          onClose={() => setIsPreviewOpen(false)}
+        />
+      )}
     </article>
+  )
+}
+
+function MarkdownPreviewModal({
+  filePath,
+  content,
+  onClose
+}: {
+  filePath: string
+  content: string
+  onClose: () => void
+}): ReactElement {
+  return (
+    <div className="modal-backdrop markdown-preview-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
+      <section className="modal-panel markdown-preview-modal" role="dialog" aria-modal="true" aria-label={`${filePath} preview`}>
+        <header className="modal-head">
+          <div>
+            <h2>Markdown preview</h2>
+            <p>{filePath}</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} title="Close preview">
+            <X size={18} />
+          </button>
+        </header>
+        <div className="markdown-preview-body">
+          <MessageMarkdown content={content} />
+        </div>
+      </section>
+    </div>
   )
 }
 
@@ -5089,6 +5601,14 @@ function omittedDiffRow(count: number): DiffRow {
 function diffGutterLabel(row: DiffRow): string {
   if (row.kind === 'context' || row.kind === 'omitted' || row.kind === 'hunk') return ' '
   return row.raw[0] ?? ' '
+}
+
+function markdownPreviewFromDiff(diffText: string): string {
+  return parseDiffRows(diffText)
+    .filter((row) => row.kind === 'context' || row.kind === 'added')
+    .map((row) => row.text)
+    .join('\n')
+    .trim()
 }
 
 function diffLineKind(line: string): 'added' | 'removed' | 'hunk' | 'context' {

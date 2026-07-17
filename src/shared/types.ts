@@ -6,6 +6,7 @@ export interface Project {
   name: string
   path: string
   runMode: RunMode
+  autoMoveTasks: number
   pathMissing: boolean
   createdAt: string
 }
@@ -44,6 +45,8 @@ export interface Task {
   summary: string
   status: TaskStatus
   runModeOverride: RunMode | null
+  /** Cursor Agent model id; null uses the CLI default (Auto). */
+  model: string | null
   branchName: string | null
   worktreePath: string | null
   /**
@@ -59,6 +62,13 @@ export interface Task {
   runStartedAt?: string | null
   /** Follow-up messages waiting to run after the current agent finishes. */
   queuedMessages?: QueuedTaskMessage[]
+}
+
+export interface AgentModel {
+  id: string
+  label: string
+  isDefault?: boolean
+  isCurrent?: boolean
 }
 
 export interface ConversationAttachment {
@@ -170,6 +180,17 @@ export interface TaskMessageAttachmentInput {
   dataBase64: string
 }
 
+export interface UpdateProjectAutoMoveInput {
+  projectId: string
+  autoMoveTasks: boolean
+}
+
+export interface UpdateTaskModelInput {
+  taskId: string
+  /** Cursor Agent model id, or null for Auto/default. */
+  model: string | null
+}
+
 export interface SendTaskMessageInput {
   taskId: string
   content: string
@@ -253,6 +274,48 @@ export interface NotificationSettings {
   desktopEnabled: boolean
   desktopEvents: NotificationEventSettings
   ntfy: NtfySettings
+  /** Play a short sound when a task finishes. */
+  playFinishSound: boolean
+}
+
+export interface NotchOverlaySettings {
+  enabled: boolean
+  /** Expand when a task finishes successfully. */
+  expandOnTaskCompleted: boolean
+  /** On finish, show the AI answer plus a reply field in the notch. */
+  showFinishChat: boolean
+  /** Expand when a task needs attention (closest to AI asking / blocked). */
+  expandOnAttention: boolean
+  /** Expand when the last running task stops. */
+  expandOnAllFinished: boolean
+}
+
+export interface NotchOverlayCapability {
+  supported: boolean
+  platform: string
+  hasNotch: boolean
+  reason: string | null
+}
+
+export type NotchOverlayMode = 'compact' | 'expanded'
+
+export interface NotchOverlaySnapshot {
+  mode: NotchOverlayMode
+  runningCount: number
+  attentionCount: number
+  doneCount: number
+  headline: string
+  /** Right-side compact label, e.g. "3" or "3 sessions". */
+  trailing: string | null
+  detail: string | null
+  taskId: string | null
+  taskTitle: string | null
+  /** Latest assistant reply when showing the finish-chat panel. */
+  answer: string | null
+  /** Show the chat reply field in the expanded notch. */
+  showReply: boolean
+  /** Ask the overlay to focus the reply input. */
+  focusInput: boolean
 }
 
 export type UpdateStatus =
@@ -293,10 +356,24 @@ export interface VibeBoardApi {
   getNotificationSettings: () => Promise<NotificationSettings>
   updateNotificationSettings: (settings: NotificationSettings) => Promise<NotificationSettings>
   sendTestNotification: () => Promise<void>
+  getNotchOverlayCapability: () => Promise<NotchOverlayCapability>
+  getNotchOverlaySettings: () => Promise<NotchOverlaySettings>
+  updateNotchOverlaySettings: (settings: NotchOverlaySettings) => Promise<NotchOverlaySettings>
+  getNotchOverlaySnapshot: () => Promise<NotchOverlaySnapshot>
+  onNotchOverlaySnapshot: (callback: (snapshot: NotchOverlaySnapshot) => void) => () => void
+  openTaskFromNotch: (taskId: string) => Promise<void>
+  collapseNotchOverlay: () => Promise<void>
+  peekNotchOverlay: () => Promise<void>
+  dismissNotchFinishChat: (options?: { force?: boolean }) => Promise<boolean>
+  reopenNotchFinishChat: () => Promise<boolean>
+  sendNotchReply: (input: { taskId: string; content: string }) => Promise<void>
+  getOnboardingComplete: () => Promise<boolean>
+  markOnboardingComplete: () => Promise<void>
   reportUserActivity: () => void
   createProject: (input: CreateProjectInput) => Promise<Project | null>
   relocateProject: (projectId: string) => Promise<Project | null>
   updateProjectRunMode: (input: UpdateProjectRunModeInput) => Promise<void>
+  updateProjectAutoMove: (input: UpdateProjectAutoMoveInput) => Promise<void>
   openProjectFolder: (projectId: string) => Promise<void>
   openExternalUrl: (url: string) => Promise<void>
   createTab: (input: CreateTabInput) => Promise<BoardTab>
@@ -314,6 +391,7 @@ export interface VibeBoardApi {
   renameTask: (input: RenameInput) => Promise<void>
   moveTask: (input: MoveTaskInput) => Promise<void>
   deleteTask: (taskId: string) => Promise<void>
+  updateTaskModel: (input: UpdateTaskModelInput) => Promise<void>
   sendTaskMessage: (input: SendTaskMessageInput) => Promise<RunTaskResult>
   runTaskWithCursor: (taskId: string) => Promise<RunTaskResult>
   retryTaskPrompt: (taskId: string) => Promise<RunTaskResult>
@@ -321,6 +399,7 @@ export interface VibeBoardApi {
   updateTaskStatus: (input: UpdateTaskStatusInput) => Promise<void>
   markTaskRead: (taskId: string) => Promise<void>
   getCursorAdapterStatus: () => Promise<CursorStatus>
+  listAgentModels: () => Promise<AgentModel[]>
   installCursorCli: () => Promise<RunTaskResult>
   openCursorInstallTerminal: () => Promise<void>
   openCursorSetup: () => Promise<void>

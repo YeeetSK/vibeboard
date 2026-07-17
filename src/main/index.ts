@@ -3,11 +3,27 @@ import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 import { VibeBoardStore } from './database'
-import { PlaceholderCursorAdapter, cursorInstallCommand } from './cursorAdapter'
+import { PlaceholderCursorAdapter, cursorInstallCommand, listAgentModels } from './cursorAdapter'
+import {
+  bindNotchOverlayDeps,
+  collapseNotchOverlay,
+  destroyNotchOverlay,
+  dismissNotchFinishChat,
+  getNotchOverlayCapability,
+  getNotchOverlaySnapshot,
+  handleNotchOverlayStatusChange,
+  isNotchOverlayWindow,
+  openTaskFromNotch,
+  peekNotchOverlay,
+  purgeNotchOverlays,
+  reopenNotchFinishChat,
+  sendReplyFromNotch,
+  syncNotchOverlay
+} from './notchOverlay'
 import {
   cleanupTaskGitWorkspace,
   flushAllCursorProgress,
@@ -25,6 +41,7 @@ import type {
   MoveTaskInput,
   NotificationEventKey,
   NotificationSettings,
+  NotchOverlaySettings,
   Project,
   QueuedTaskMessage,
   RecordSearchOpenInput,
@@ -35,8 +52,10 @@ import type {
   SendTaskMessageInput,
   Task,
   UpdateInfo,
+  UpdateProjectAutoMoveInput,
   UpdateProjectRunModeInput,
   UpdateTabMetaInput,
+  UpdateTaskModelInput,
   UpdateTaskStatusInput
 } from '../shared/types'
 import type { TaskStatusChangeEvent } from './database'
@@ -106,6 +125,44 @@ if (process.platform === 'win32') {
   app.setAppUserModelId(appUserModelId)
 }
 
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    focusMainWindow()
+  })
+}
+
+function focusMainWindow(): void {
+  const targetWindow =
+    [...windows].find((window) => !window.isDestroyed()) ??
+    BrowserWindow.getAllWindows().find((window) => !isNotchOverlayWindow(window) && !window.isDestroyed())
+  if (!targetWindow || targetWindow.isDestroyed()) {
+    if (app.isReady()) createWindow()
+    return
+  }
+  if (targetWindow.isMinimized()) targetWindow.restore()
+  targetWindow.show()
+  targetWindow.focus()
+  if (process.platform === 'darwin') {
+    app.focus({ steal: true })
+  }
+}
+
+function applyDockIcon(): void {
+  if (process.platform !== 'darwin' || !app.dock) return
+  const candidates = [
+    path.join(app.getAppPath(), 'build', 'icon.png'),
+    path.join(process.cwd(), 'build', 'icon.png')
+  ]
+  for (const iconPath of candidates) {
+    if (!existsSync(iconPath)) continue
+    app.dock.setIcon(iconPath)
+    return
+  }
+}
+
 function getUpdateMode(): UpdateInfo['mode'] {
   if (is.dev) return 'dev'
   return 'auto'
@@ -161,6 +218,33 @@ const createWindow = (): void => {
   mainWindow.on('ready-to-show', () => {
     mainWindow.maximize()
     mainWindow.show()
+    mainWindow.focus()
+    if (process.platform === 'darwin') {
+      app.focus({ steal: true })
+    }
+    // Notch must not sync before the main window is up — a panel created during
+    // boot can steal activation and leave the app feeling "opened then lost".
+    if (store.getNotchOverlaySettings().enabled) {
+      syncNotchOverlay()
+    }
+  })
+  mainWindow.on('focus', () => {
+    if (store.getNotchOverlaySettings().enabled) syncNotchOverlay()
+  })
+  mainWindow.on('blur', () => {
+    if (store.getNotchOverlaySettings().enabled) syncNotchOverlay()
+  })
+  mainWindow.on('show', () => {
+    if (store.getNotchOverlaySettings().enabled) syncNotchOverlay()
+  })
+  mainWindow.on('hide', () => {
+    if (store.getNotchOverlaySettings().enabled) syncNotchOverlay()
+  })
+  mainWindow.on('minimize', () => {
+    if (store.getNotchOverlaySettings().enabled) syncNotchOverlay()
+  })
+  mainWindow.on('restore', () => {
+    if (store.getNotchOverlaySettings().enabled) syncNotchOverlay()
   })
   mainWindow.on('close', (event) => {
     if (isQuitConfirmed) return
@@ -169,6 +253,10 @@ const createWindow = (): void => {
   })
   mainWindow.on('closed', () => {
     windows.delete(mainWindow)
+    // Never leave a notch panel alive as the only remaining window.
+    if ([...windows].every((window) => window.isDestroyed())) {
+      destroyNotchOverlay()
+    }
   })
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void openExternalUrl(url)
@@ -209,6 +297,9 @@ const registerIpc = (): void => {
   ipcMain.handle('project:create', (_event, input: CreateProjectInput) => store.createProject(input))
   ipcMain.handle('project:runMode', (_event, input: UpdateProjectRunModeInput) =>
     store.updateProjectRunMode(input.projectId, input.runMode)
+  )
+  ipcMain.handle('project:autoMove', (_event, input: UpdateProjectAutoMoveInput) =>
+    store.updateProjectAutoMove(input.projectId, input.autoMoveTasks)
   )
   ipcMain.handle('project:openFolder', async (_event, projectId: string) => {
     const project = store.getProject(projectId)
@@ -253,19 +344,11 @@ const registerIpc = (): void => {
       await deleteTaskAttachments(taskId)
     }
   })
+  ipcMain.handle('task:model', (_event, input: UpdateTaskModelInput) => {
+    store.updateTaskModel(input.taskId, input.model)
+  })
   ipcMain.handle('task:message', async (_event, input: SendTaskMessageInput) => {
-    const attachments = await saveTaskAttachments(input.taskId, input.attachments)
-    if (runningTasks.has(input.taskId)) {
-      enqueueTaskMessage(input.taskId, input.content, attachments)
-      broadcastStateChanged()
-      return { started: true, message: 'Message queued. It will send when the current run finishes.' }
-    }
-    store.sendTaskMessage({
-      taskId: input.taskId,
-      content: input.content,
-      attachments
-    })
-    return startCursorTask(input.taskId)
+    return sendTaskMessageAndMaybeRun(input)
   })
   ipcMain.handle('task:runCursor', (_event, taskId: string) => startCursorTask(taskId))
   ipcMain.handle('task:retryPrompt', (_event, taskId: string) => retryTaskPrompt(taskId))
@@ -286,6 +369,7 @@ const registerIpc = (): void => {
   ipcMain.handle('task:status', (_event, input: UpdateTaskStatusInput) => store.updateTaskStatus(input))
   ipcMain.handle('task:read', (_event, taskId: string) => store.markTaskRead(taskId))
   ipcMain.handle('cursor:status', () => cursorAdapter.status())
+  ipcMain.handle('cursor:listModels', () => listAgentModels())
   ipcMain.handle('cursor:installCli', () => cursorAdapter.installCli())
   ipcMain.handle('cursor:installTerminal', () => openCursorInstallTerminal())
   ipcMain.handle('cursor:setup', () => openCursorSetup())
@@ -308,6 +392,32 @@ const registerIpc = (): void => {
       { throwOnError: true, bypassActivityGate: true }
     )
   )
+  ipcMain.handle('notch:capability', () => getNotchOverlayCapability())
+  ipcMain.handle('notch:getSettings', () => store.getNotchOverlaySettings())
+  ipcMain.handle('notch:updateSettings', (_event, settings: NotchOverlaySettings) => {
+    const next = store.updateNotchOverlaySettings(settings)
+    syncNotchOverlay()
+    return next
+  })
+  ipcMain.handle('notch:getSnapshot', () => getNotchOverlaySnapshot())
+  ipcMain.handle('notch:openTask', (_event, taskId: string) => {
+    openTaskFromNotch(taskId)
+  })
+  ipcMain.handle('notch:collapse', () => {
+    collapseNotchOverlay()
+  })
+  ipcMain.handle('notch:peek', () => {
+    peekNotchOverlay()
+  })
+  ipcMain.handle('notch:dismiss', (_event, options?: { force?: boolean }) =>
+    dismissNotchFinishChat(options)
+  )
+  ipcMain.handle('notch:reopen', () => reopenNotchFinishChat())
+  ipcMain.handle('notch:sendReply', async (_event, input: { taskId: string; content: string }) => {
+    await sendReplyFromNotch(input.taskId, input.content)
+  })
+  ipcMain.handle('onboarding:getComplete', () => store.getOnboardingComplete())
+  ipcMain.handle('onboarding:markComplete', () => store.markOnboardingComplete())
   ipcMain.on('app:userActivity', () => {
     lastRendererActivityAt = Date.now()
   })
@@ -318,6 +428,7 @@ const registerIpc = (): void => {
     clearQuitPromptFallback()
     isQuitConfirmed = true
     isQuitPromptOpen = false
+    destroyNotchOverlay()
     await shutdownCursorAgentsForQuit()
     app.quit()
   })
@@ -632,6 +743,7 @@ const installUpdate = (): UpdateInfo => {
     releaseNotes: updateInfo.releaseNotes
   })
   isQuitConfirmed = true
+  destroyNotchOverlay()
   void shutdownCursorAgentsForQuit().finally(() => {
     autoUpdater.quitAndInstall(false, true)
   })
@@ -732,6 +844,21 @@ const compareVersions = (a: string, b: string): number => {
   }
 
   return 0
+}
+
+const sendTaskMessageAndMaybeRun = async (input: SendTaskMessageInput): Promise<RunTaskResult> => {
+  const attachments = await saveTaskAttachments(input.taskId, input.attachments)
+  if (runningTasks.has(input.taskId)) {
+    enqueueTaskMessage(input.taskId, input.content, attachments)
+    broadcastStateChanged()
+    return { started: true, message: 'Message queued. It will send when the current run finishes.' }
+  }
+  store.sendTaskMessage({
+    taskId: input.taskId,
+    content: input.content,
+    attachments
+  })
+  return startCursorTask(input.taskId)
 }
 
 const startCursorTask = (taskId: string): RunTaskResult => {
@@ -907,10 +1034,16 @@ const broadcastStateChanged = (): void => {
   for (const window of windows) {
     window.webContents.send('state:changed')
   }
+  // Notch is optional — only sync when enabled so board updates stay lightweight.
+  if (store.getNotchOverlaySettings().enabled) {
+    syncNotchOverlay()
+  }
 }
 
 const openTaskFromNotification = (taskId: string): void => {
-  const targetWindow = BrowserWindow.getAllWindows()[0]
+  const targetWindow =
+    [...windows].find((window) => !window.isDestroyed()) ??
+    BrowserWindow.getAllWindows().find((window) => !isNotchOverlayWindow(window) && !window.isDestroyed())
   if (!targetWindow || targetWindow.webContents.isDestroyed()) return
 
   if (targetWindow.isMinimized()) {
@@ -979,7 +1112,7 @@ const sendDesktopNotification = async (payload: NotificationPayload): Promise<vo
 }
 
 const isUserActiveInApp = (): boolean =>
-  BrowserWindow.getAllWindows().some((window) => window.isFocused()) &&
+  [...windows].some((window) => !window.isDestroyed() && window.isFocused()) &&
   Date.now() - lastRendererActivityAt < notificationInactivityMs
 
 const sendConfiguredNotification = async (
@@ -1036,6 +1169,17 @@ const sendConfiguredNotification = async (
   }
 }
 
+const playTaskFinishedSoundIfEnabled = (): void => {
+  if (!store.getNotificationSettings().playFinishSound) return
+  if (process.platform === 'darwin') {
+    void execFileAsync('afplay', ['/System/Library/Sounds/Glass.aiff']).catch(() => {
+      shell.beep()
+    })
+    return
+  }
+  shell.beep()
+}
+
 const handleTaskStatusChange = (event: TaskStatusChangeEvent): void => {
   const notifications: NotificationPayload[] = []
   const wasRunning = event.oldStatus === 'processing'
@@ -1067,6 +1211,7 @@ const handleTaskStatusChange = (event: TaskStatusChangeEvent): void => {
       priority: 'default',
       taskId: event.task.id
     })
+    playTaskFinishedSoundIfEnabled()
   }
 
   if (
@@ -1087,12 +1232,26 @@ const handleTaskStatusChange = (event: TaskStatusChangeEvent): void => {
   for (const notification of notifications) {
     void sendConfiguredNotification(notification)
   }
+
+  if (!deferForQueuedMessages) {
+    handleNotchOverlayStatusChange({
+      task: event.task,
+      oldStatus: event.oldStatus,
+      newStatus: event.newStatus,
+      runningCount: runningTaskCount,
+      runningCountBeforeChange: runningTaskCountBeforeChange
+    })
+  } else {
+    syncNotchOverlay()
+  }
 }
 
 const requestQuitConfirmation = (): void => {
   if (isQuitPromptOpen) return
 
-  const targetWindow = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  const targetWindow =
+    [...windows].find((window) => !window.isDestroyed()) ??
+    BrowserWindow.getAllWindows().find((window) => !isNotchOverlayWindow(window) && !window.isDestroyed())
   if (!targetWindow || targetWindow.webContents.isDestroyed()) {
     quitWithoutPrompt()
     return
@@ -1119,6 +1278,7 @@ const quitWithoutPrompt = (): void => {
   clearQuitPromptFallback()
   isQuitConfirmed = true
   isQuitPromptOpen = false
+  destroyNotchOverlay()
   void shutdownCursorAgentsForQuit().finally(() => {
     app.quit()
   })
@@ -1151,17 +1311,39 @@ const shutdownCursorAgentsForQuit = async (): Promise<void> => {
 }
 
 app.whenReady().then(() => {
+  if (!gotSingleInstanceLock) return
   electronApp.setAppUserModelId(appUserModelId)
+  applyDockIcon()
+  // Dev restarts often leave a previous Electron child alive with its notch panel.
+  reapStaleDevElectronProcesses()
+  // Wipe any leftover notch panels from a previous / crashed session in this process.
+  purgeNotchOverlays()
   store = new VibeBoardStore()
   const recoveredCount = store.recoverInterruptedProcessingTasks()
   if (recoveredCount > 0) {
     console.info('[VibeBoard] Recovered interrupted processing tasks:', recoveredCount)
   }
   store.setTaskStatusListener(handleTaskStatusChange)
+  bindNotchOverlayDeps({
+    getSettings: () => store.getNotchOverlaySettings(),
+    getRunningCount: () => store.getRunningTaskCount(),
+    getAttentionCount: () => store.getAttentionTaskCount(),
+    getDoneUnreadCount: () => store.getDoneUnreadTaskCount(),
+    getDoneReadCount: () => store.getDoneReadTaskCount(),
+    getLatestAssistantReply: (taskId) => store.getLatestAssistantMessage(taskId),
+    onOpenTask: (taskId) => openTaskFromNotification(taskId),
+    onSendReply: async (taskId, content) => {
+      await sendTaskMessageAndMaybeRun({ taskId, content, attachments: [] })
+      broadcastStateChanged()
+    },
+    isMainAppFocused: () =>
+      [...windows].some((window) => !window.isDestroyed() && window.isFocused())
+  })
   registerIpc()
   registerUpdaterEvents()
 
   app.on('browser-window-created', (_, window) => {
+    if (isNotchOverlayWindow(window)) return
     optimizer.watchWindowShortcuts(window)
   })
 
@@ -1171,20 +1353,74 @@ app.whenReady().then(() => {
   }, 3000)
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow()
-    }
+    focusMainWindow()
   })
 })
 
 app.on('window-all-closed', () => {
+  destroyNotchOverlay()
   if (process.platform !== 'darwin') {
     app.quit()
   }
 })
 
 app.on('before-quit', (event) => {
-  if (isQuitConfirmed) return
+  // Always kill notch panels first so they cannot outlive the quit flow.
+  destroyNotchOverlay()
+  if (isQuitConfirmed) {
+    return
+  }
   event.preventDefault()
   requestQuitConfirmation()
 })
+
+app.on('will-quit', () => {
+  destroyNotchOverlay()
+})
+
+/** Kill leftover Electron children from prior `npm run dev` runs (ghost notch panels). */
+const reapStaleDevElectronProcesses = (): void => {
+  if (!is.dev || process.platform === 'win32') return
+  const marker = `${path.sep}vibeboard${path.sep}node_modules${path.sep}electron`
+  const stalePids: number[] = []
+  try {
+    const rows = execFileSync('/bin/ps', ['-ax', '-o', 'pid=,ppid=,command='], {
+      encoding: 'utf8',
+      timeout: 2000
+    })
+    for (const line of rows.split('\n')) {
+      if (!line.includes(marker)) continue
+      // Never touch Helper/GPU/Renderer processes for the live app.
+      if (/Helper|GPU|Renderer|Plugin/i.test(line)) continue
+      const parts = line.trim().split(/\s+/)
+      const pid = Number(parts[0])
+      const ppid = Number(parts[1])
+      if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) continue
+      if (ppid === process.pid) continue
+      stalePids.push(pid)
+    }
+  } catch {
+    return
+  }
+
+  for (const pid of stalePids) {
+    try {
+      process.kill(pid, 'SIGTERM')
+    } catch {
+      // Already gone.
+    }
+  }
+  // Ghost mains often ignore SIGTERM (quit prompt / hung renderer) — force them.
+  if (stalePids.length > 0) {
+    setTimeout(() => {
+      for (const pid of stalePids) {
+        try {
+          process.kill(pid, 0)
+          process.kill(pid, 'SIGKILL')
+        } catch {
+          // Already gone.
+        }
+      }
+    }, 400)
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "vibeboard",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "A dark desktop board for organizing AI coding tasks across projects.",
   "main": "out/main/index.js",
   "author": "YeeetSK",

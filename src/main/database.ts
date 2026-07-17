@@ -17,6 +17,7 @@ import type {
   Lane,
   MoveTaskInput,
   NotificationSettings,
+  NotchOverlaySettings,
   Project,
   RecordSearchOpenInput,
   ReorderTabsInput,
@@ -30,6 +31,7 @@ import type {
   UpdateTabMetaInput,
   UpdateTaskStatusInput
 } from '../shared/types'
+import { defaultNotchOverlaySettings, mergeNotchOverlaySettings } from './notchOverlay'
 
 const now = (): string => new Date().toISOString()
 const id = (): string => crypto.randomUUID()
@@ -49,10 +51,10 @@ const taskStatusLabel = (status: TaskStatus): string => {
 }
 
 const statusLaneMatchers: Record<TaskStatus, RegExp[]> = {
-  idle: [/\b(backlog|todo|waiting|ideas?)\b/i],
+  idle: [/\b(active|todo|waiting|ideas?)\b/i],
   processing: [/\b(active|running|in progress|doing|working)\b/i],
   attention: [/\b(needs you|attention|review|blocked|issue|fix)\b/i],
-  done_unread: [/\b(done|complete|completed|finished|shipped)\b/i],
+  done_unread: [/\b(review|needs you|attention)\b/i],
   done_read: [/\b(done|complete|completed|finished|shipped)\b/i]
 }
 
@@ -78,7 +80,8 @@ export const defaultNotificationSettings: NotificationSettings = {
       taskFailed: true,
       allTasksFinished: false
     }
-  }
+  },
+  playFinishSound: true
 }
 
 const mergeNotificationSettings = (settings: Partial<NotificationSettings>): NotificationSettings => ({
@@ -99,7 +102,8 @@ const mergeNotificationSettings = (settings: Partial<NotificationSettings>): Not
       allTasksFinished:
         settings.ntfy?.events?.allTasksFinished ?? defaultNotificationSettings.ntfy.events.allTasksFinished
     }
-  }
+  },
+  playFinishSound: settings.playFinishSound ?? defaultNotificationSettings.playFinishSound
 })
 
 const normalizeRunMode = (value: string | null | undefined): RunMode => {
@@ -110,6 +114,7 @@ const normalizeRunMode = (value: string | null | undefined): RunMode => {
 const withPathState = (project: Project): Project => ({
   ...project,
   runMode: normalizeRunMode(project.runMode),
+  autoMoveTasks: project.autoMoveTasks ?? 1,
   pathMissing: !existsSync(project.path)
 })
 
@@ -183,6 +188,60 @@ export class VibeBoardStore {
     const nextSettings = mergeNotificationSettings(settings)
     this.setSetting('notificationSettings', JSON.stringify(nextSettings))
     return nextSettings
+  }
+
+  getNotchOverlaySettings(): NotchOverlaySettings {
+    const raw = this.getSetting('notchOverlaySettings')
+    if (!raw) return defaultNotchOverlaySettings
+
+    try {
+      const parsed = JSON.parse(raw) as Partial<NotchOverlaySettings>
+      return mergeNotchOverlaySettings(parsed)
+    } catch {
+      return defaultNotchOverlaySettings
+    }
+  }
+
+  updateNotchOverlaySettings(settings: NotchOverlaySettings): NotchOverlaySettings {
+    const nextSettings = mergeNotchOverlaySettings(settings)
+    this.setSetting('notchOverlaySettings', JSON.stringify(nextSettings))
+    return nextSettings
+  }
+
+  getAttentionTaskCount(): number {
+    const row = this.db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'attention'").get() as {
+      count: number
+    }
+    return row.count
+  }
+
+  getDoneTaskCount(): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) as count FROM tasks WHERE status IN ('done_unread', 'done_read')")
+      .get() as { count: number }
+    return row.count
+  }
+
+  getDoneUnreadTaskCount(): number {
+    const row = this.db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'done_unread'").get() as {
+      count: number
+    }
+    return row.count
+  }
+
+  getDoneReadTaskCount(): number {
+    const row = this.db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'done_read'").get() as {
+      count: number
+    }
+    return row.count
+  }
+
+  getOnboardingComplete(): boolean {
+    return this.getSetting('onboarding.v1') === 'done'
+  }
+
+  markOnboardingComplete(): void {
+    this.setSetting('onboarding.v1', 'done')
   }
 
   getState(): AppState {
@@ -714,6 +773,10 @@ export class VibeBoardStore {
     this.db.prepare('UPDATE projects SET runMode = ? WHERE id = ?').run(normalizedRunMode, projectId)
   }
 
+  updateProjectAutoMove(projectId: string, autoMoveTasks: boolean): void {
+    this.db.prepare('UPDATE projects SET autoMoveTasks = ? WHERE id = ?').run(autoMoveTasks ? 1 : 0, projectId)
+  }
+
   getRunningTaskCount(): number {
     const row = this.db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'processing'").get() as {
       count: number
@@ -755,6 +818,19 @@ export class VibeBoardStore {
       this.db.prepare('UPDATE tasks SET updatedAt = ? WHERE id = ?').run(timestamp, taskId)
     })
     transaction()
+  }
+
+  getLatestAssistantMessage(taskId: string): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT content FROM conversations
+         WHERE taskId = ? AND role = 'assistant'
+         ORDER BY createdAt DESC
+         LIMIT 1`
+      )
+      .get(taskId) as { content: string } | undefined
+    const content = row?.content?.trim()
+    return content ? content : null
   }
 
   recoverInterruptedProcessingTasks(): number {
@@ -869,13 +945,14 @@ export class VibeBoardStore {
       name: input.name?.trim() || path.basename(folderPath),
       path: folderPath,
       runMode: 'worktree',
+      autoMoveTasks: 1,
       pathMissing: false,
       createdAt: now()
     }
 
     this.db
-      .prepare('INSERT INTO projects (id, name, path, runMode, createdAt) VALUES (?, ?, ?, ?, ?)')
-      .run(project.id, project.name, project.path, project.runMode, project.createdAt)
+      .prepare('INSERT INTO projects (id, name, path, runMode, autoMoveTasks, createdAt) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(project.id, project.name, project.path, project.runMode, project.autoMoveTasks, project.createdAt)
 
     this.createTab({ name: project.name, projectId: project.id })
     return project
@@ -914,7 +991,7 @@ export class VibeBoardStore {
         tab.createdAt,
         tab.lastUsedAt
       )
-      ;['Backlog', 'Active', 'Review', 'Done'].forEach((name, position) => {
+      ;['Active', 'Review', 'Done'].forEach((name, position) => {
         insertLane.run(id(), tab.id, name, position)
       })
       this.setSetting('activeTabId', tab.id)
@@ -1083,6 +1160,7 @@ export class VibeBoardStore {
       summary: input.prompt?.trim() ?? '',
       status: 'idle',
       runModeOverride: null,
+      model: null,
       branchName: null,
       worktreePath: null,
       pushedToMain: 0,
@@ -1094,7 +1172,7 @@ export class VibeBoardStore {
     const transaction = this.db.transaction(() => {
       this.db
         .prepare(
-          'INSERT INTO tasks (id, tabId, laneId, projectId, title, summary, status, runModeOverride, branchName, worktreePath, pushedToMain, position, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO tasks (id, tabId, laneId, projectId, title, summary, status, runModeOverride, model, branchName, worktreePath, pushedToMain, position, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         )
         .run(
           task.id,
@@ -1105,6 +1183,7 @@ export class VibeBoardStore {
           task.summary,
           task.status,
           task.runModeOverride,
+          task.model,
           task.branchName,
           task.worktreePath,
           task.pushedToMain,
@@ -1116,6 +1195,11 @@ export class VibeBoardStore {
 
     transaction()
     return task
+  }
+
+  updateTaskModel(taskId: string, model: string | null): void {
+    const normalized = model?.trim() || null
+    this.db.prepare('UPDATE tasks SET model = ?, updatedAt = ? WHERE id = ?').run(normalized, now(), taskId)
   }
 
   updateTaskRunWorkspace(input: { taskId: string; branchName: string | null; worktreePath: string | null }): void {
@@ -1193,7 +1277,7 @@ export class VibeBoardStore {
     const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(input.taskId) as Task | undefined
     if (!task || task.status === input.status) return
     const timestamp = now()
-    const targetLane = this.findStatusLane(task.tabId, input.status)
+    const targetLane = this.shouldAutoMoveTask(task) ? this.findStatusLane(task.tabId, input.status) : null
     const leavingProcessing = task.status === 'processing' && input.status !== 'processing'
     const runStartedAt = leavingProcessing ? null : (task.runStartedAt ?? null)
 
@@ -1228,15 +1312,41 @@ export class VibeBoardStore {
   }
 
   markTaskRead(taskId: string): void {
-    this.db
-      .prepare("UPDATE tasks SET status = 'done_read', updatedAt = ? WHERE id = ? AND status = 'done_unread'")
-      .run(now(), taskId)
+    const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as Task | undefined
+    if (!task || task.status !== 'done_unread') return
+
+    const timestamp = now()
+    const targetLane = this.shouldAutoMoveTask(task) ? this.findStatusLane(task.tabId, 'done_read') : null
+    const transaction = this.db.transaction(() => {
+      if (targetLane && targetLane.id !== task.laneId) {
+        const targetPosition = this.nextTaskPosition(targetLane.id)
+        this.db
+          .prepare("UPDATE tasks SET laneId = ?, position = ?, status = 'done_read', updatedAt = ? WHERE id = ?")
+          .run(targetLane.id, targetPosition, timestamp, taskId)
+        this.reorderLaneTasks(task.laneId, timestamp)
+        return
+      }
+
+      this.db
+        .prepare("UPDATE tasks SET status = 'done_read', updatedAt = ? WHERE id = ?")
+        .run(timestamp, taskId)
+    })
+
+    transaction()
   }
 
   private findStatusLane(tabId: string, status: TaskStatus): Lane | null {
     const lanes = this.getLanesForTab(tabId)
     const matchers = statusLaneMatchers[status]
     return lanes.find((lane) => matchers.some((matcher) => matcher.test(lane.name))) ?? null
+  }
+
+  private shouldAutoMoveTask(task: Task): boolean {
+    if (!task.projectId) return true
+    const project = this.db.prepare('SELECT autoMoveTasks FROM projects WHERE id = ?').get(task.projectId) as
+      | { autoMoveTasks: number }
+      | undefined
+    return project?.autoMoveTasks !== 0
   }
 
   private nextTaskPosition(laneId: string): number {
@@ -1268,6 +1378,7 @@ export class VibeBoardStore {
         name TEXT NOT NULL,
         path TEXT NOT NULL,
         runMode TEXT NOT NULL DEFAULT 'worktree',
+        autoMoveTasks INTEGER NOT NULL DEFAULT 1,
         createdAt TEXT NOT NULL
       );
 
@@ -1353,7 +1464,9 @@ export class VibeBoardStore {
     this.ensureColumn('tabs', 'position', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('tabs', 'lastUsedAt', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('projects', 'runMode', "TEXT NOT NULL DEFAULT 'worktree'")
+    this.ensureColumn('projects', 'autoMoveTasks', 'INTEGER NOT NULL DEFAULT 1')
     this.ensureColumn('tasks', 'runModeOverride', 'TEXT')
+    this.ensureColumn('tasks', 'model', 'TEXT')
     this.ensureColumn('tasks', 'branchName', 'TEXT')
     this.ensureColumn('tasks', 'worktreePath', 'TEXT')
     this.ensureColumn('tasks', 'runStartedAt', 'TEXT')
@@ -1365,6 +1478,7 @@ export class VibeBoardStore {
     this.backfillTabPositions()
     this.linkLegacyTabsToProjects()
     this.defaultProjectsToWorktree()
+    this.migrateToReviewFlowLanes()
   }
 
   private defaultProjectsToWorktree(): void {
@@ -1372,6 +1486,74 @@ export class VibeBoardStore {
 
     this.db.prepare("UPDATE projects SET runMode = 'worktree' WHERE runMode = 'shared'").run()
     this.setSetting('defaultedProjectsToWorktree', now())
+  }
+
+  private migrateToReviewFlowLanes(): void {
+    if (this.getSetting('migratedToReviewFlowLanes')) return
+
+    const tabs = this.db.prepare('SELECT id FROM tabs').all() as Array<{ id: string }>
+    const transaction = this.db.transaction(() => {
+      for (const tab of tabs) {
+        const lanes = this.getLanesForTab(tab.id)
+        const backlogLane = lanes.find((lane) => /^backlog$/i.test(lane.name.trim()))
+        let activeLane = lanes.find((lane) => /^active$/i.test(lane.name.trim()))
+
+        if (backlogLane && !activeLane) {
+          this.db.prepare("UPDATE lanes SET name = 'Active' WHERE id = ?").run(backlogLane.id)
+          activeLane = { ...backlogLane, name: 'Active' }
+        } else if (backlogLane && activeLane) {
+          this.moveAllTasksToLane(backlogLane.id, activeLane.id)
+          this.db.prepare('DELETE FROM lanes WHERE id = ?').run(backlogLane.id)
+        }
+
+        this.moveTasksWithStatusToLane(tab.id, 'done_unread', ['Review'])
+        this.moveTasksWithStatusToLane(tab.id, 'done_read', ['Done'])
+        this.reorderTabLanes(tab.id)
+      }
+
+      this.setSetting('migratedToReviewFlowLanes', now())
+    })
+
+    transaction()
+  }
+
+  private moveAllTasksToLane(sourceLaneId: string, targetLaneId: string): void {
+    const timestamp = now()
+    let position = this.nextTaskPosition(targetLaneId)
+    const tasks = this.db
+      .prepare('SELECT id FROM tasks WHERE laneId = ? ORDER BY position')
+      .all(sourceLaneId) as Array<{ id: string }>
+    const updateTask = this.db.prepare('UPDATE tasks SET laneId = ?, position = ?, updatedAt = ? WHERE id = ?')
+    for (const task of tasks) {
+      updateTask.run(targetLaneId, position, timestamp, task.id)
+      position += 1
+    }
+  }
+
+  private moveTasksWithStatusToLane(tabId: string, status: TaskStatus, laneNames: string[]): void {
+    const lanes = this.getLanesForTab(tabId)
+    const targetLane = lanes.find((lane) => laneNames.some((name) => lane.name.trim().toLowerCase() === name.toLowerCase()))
+    if (!targetLane) return
+
+    const timestamp = now()
+    let position = this.nextTaskPosition(targetLane.id)
+    const tasks = this.db
+      .prepare('SELECT id, laneId FROM tasks WHERE tabId = ? AND status = ? AND laneId != ? ORDER BY updatedAt, position')
+      .all(tabId, status, targetLane.id) as Array<{ id: string; laneId: string }>
+    const updateTask = this.db.prepare('UPDATE tasks SET laneId = ?, position = ?, updatedAt = ? WHERE id = ?')
+    for (const task of tasks) {
+      updateTask.run(targetLane.id, position, timestamp, task.id)
+      this.reorderLaneTasks(task.laneId, timestamp)
+      position += 1
+    }
+  }
+
+  private reorderTabLanes(tabId: string): void {
+    const lanes = this.getLanesForTab(tabId)
+    const updatePosition = this.db.prepare('UPDATE lanes SET position = ? WHERE id = ?')
+    lanes.forEach((lane, position) => {
+      updatePosition.run(position, lane.id)
+    })
   }
 
   private nextTabPosition(): number {
@@ -1413,12 +1595,13 @@ export class VibeBoardStore {
       name: 'VibeBoard',
       path: app.getAppPath(),
       runMode: 'worktree',
+      autoMoveTasks: 1,
       pathMissing: false,
       createdAt: now()
     }
     this.db
-      .prepare('INSERT INTO projects (id, name, path, runMode, createdAt) VALUES (?, ?, ?, ?, ?)')
-      .run(project.id, project.name, project.path, project.runMode, project.createdAt)
+      .prepare('INSERT INTO projects (id, name, path, runMode, autoMoveTasks, createdAt) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(project.id, project.name, project.path, project.runMode, project.autoMoveTasks, project.createdAt)
 
     const productTab = this.createTab({ name: 'VibeBoard', projectId: project.id })
     this.updateTabMeta({ id: productTab.id, isPinned: true, color: '#ff7a1a' })
@@ -1430,7 +1613,7 @@ export class VibeBoardStore {
 
     const runningTask = this.createTask({
       tabId: productTab.id,
-      laneId: productLanes[1].id,
+      laneId: productLanes[0].id,
       projectId: project.id,
       title: 'Run Cursor in the background',
       prompt: 'Wire the task Run button so Cursor runs headlessly in the selected project folder and captured diffs appear on the right.'
@@ -1441,7 +1624,7 @@ export class VibeBoardStore {
 
     const doneTask = this.createTask({
       tabId: productTab.id,
-      laneId: productLanes[3].id,
+      laneId: productLanes[1].id,
       projectId: project.id,
       title: 'Render real code diffs',
       prompt: 'Replace the summary-only code changes card with actual unified diffs and language-aware formatting.'
@@ -1490,7 +1673,7 @@ export class VibeBoardStore {
 
     const attentionTask = this.createTask({
       tabId: productTab.id,
-      laneId: productLanes[2].id,
+      laneId: productLanes[1].id,
       projectId: null,
       title: 'Select a project before running',
       prompt: 'Make the Run button explain what is missing when a task has no project selected.'
@@ -1516,7 +1699,7 @@ export class VibeBoardStore {
 
     this.createTask({
       tabId: releaseTab.id,
-      laneId: releaseLanes[2].id,
+      laneId: releaseLanes[1].id,
       projectId: project.id,
       title: 'Check packaged installers',
       prompt: 'Run the local packaging checks and list the installer artifacts.'

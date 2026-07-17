@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import type { CursorDebugInfo, CursorStatus, RunTaskResult } from '../shared/types'
+import type { AgentModel, CursorDebugInfo, CursorStatus, RunTaskResult } from '../shared/types'
 
 const execFileAsync = promisify(execFile)
 const cursorAgentVersion = '2026.07.09-a3815c0'
@@ -87,6 +87,67 @@ export async function isAgentAuthenticated(command?: string | null): Promise<boo
   const agentCommand = command ?? (await resolveAgentCommand())
   if (!agentCommand) return false
   return isAuthenticatedStatus(await getAgentAuthStatus(agentCommand))
+}
+
+export async function listAgentModels(): Promise<AgentModel[]> {
+  const agentCommand = await resolveAgentCommand()
+  if (!agentCommand) {
+    throw new Error('Cursor Agent is not installed.')
+  }
+  if (!(await isAgentAuthenticated(agentCommand))) {
+    throw new Error('Cursor Agent is not signed in.')
+  }
+
+  try {
+    const { stdout, stderr } = await execFileAsync(agentCommand, ['models'], {
+      timeout: 20000,
+      maxBuffer: 1024 * 1024
+    })
+    const models = parseAgentModelsOutput([stdout, stderr].join('\n'))
+    if (models.length === 0) {
+      throw new Error('No models returned by Cursor Agent.')
+    }
+    return models
+  } catch (error) {
+    if (error instanceof Error && /not installed|not signed in|No models returned/i.test(error.message)) {
+      throw error
+    }
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`Could not list Cursor models. ${detail}`)
+  }
+}
+
+function parseAgentModelsOutput(output: string): AgentModel[] {
+  const models: AgentModel[] = []
+  const seen = new Set<string>()
+
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || /^available models/i.test(line) || /^tip:/i.test(line) || /^use --model/i.test(line)) {
+      continue
+    }
+
+    const match = line.match(/^(\S+)\s+-\s+(.+)$/)
+    if (!match) continue
+
+    const id = match[1]
+    let label = match[2].trim()
+    let isDefault = false
+    let isCurrent = false
+    const tagMatch = label.match(/^(.*?)\s*\(([^)]*)\)\s*$/)
+    if (tagMatch) {
+      label = tagMatch[1].trim() || id
+      const tags = tagMatch[2].toLowerCase()
+      isDefault = /\bdefault\b/.test(tags)
+      isCurrent = /\bcurrent\b/.test(tags)
+    }
+
+    if (seen.has(id)) continue
+    seen.add(id)
+    models.push({ id, label, isDefault, isCurrent })
+  }
+
+  return models
 }
 
 async function getAgentAuthStatus(command: string): Promise<string> {
