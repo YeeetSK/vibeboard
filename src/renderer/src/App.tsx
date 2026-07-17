@@ -83,6 +83,7 @@ import {
   Search,
   Send,
   Smartphone,
+  Square,
   Trash2,
   Undo2,
   X
@@ -994,6 +995,15 @@ export function App(): ReactElement {
     })
   }
 
+  const stopTask = async (taskId: string): Promise<void> => {
+    const task = state.tasks.find((item) => item.id === taskId)
+    if (task?.status !== 'processing') return
+    await runAction(`task:stop:${taskId}`, async () => {
+      await window.vibeboard.stopTask(taskId)
+      await refresh()
+    })
+  }
+
   const cancelQuit = async (): Promise<void> => {
     await runAction('quit:cancel', async () => {
       setQuitRequest(null)
@@ -1424,6 +1434,7 @@ export function App(): ReactElement {
           onSendMessage={sendTaskMessage}
           onRetryTask={retryTask}
           onRetryPrompt={retryTaskPrompt}
+          onStopTask={stopTask}
           onDeleteTask={setDeleteTaskId}
           onClose={() => setSelectedTaskId(null)}
         />
@@ -3826,6 +3837,33 @@ function TaskRunMeta({ task, project }: { task: Task; project: Project | null })
   )
 }
 
+function formatTaskRunElapsed(startedAt: string, nowMs: number): string {
+  const startedMs = Date.parse(startedAt)
+  if (!Number.isFinite(startedMs)) return '0s'
+  const totalSeconds = Math.max(0, Math.floor((nowMs - startedMs) / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours}h ${minutes}m`
+  if (minutes > 0) return `${minutes}m ${seconds.toString().padStart(2, '0')}s`
+  return `${seconds}s`
+}
+
+function TaskRunElapsed({ startedAt }: { startedAt: string }): ReactElement {
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [startedAt])
+
+  return (
+    <span className="task-run-elapsed" title="Time since this run started">
+      {formatTaskRunElapsed(startedAt, nowMs)}
+    </span>
+  )
+}
+
 function TaskDetailModal({
   task,
   project,
@@ -3838,6 +3876,7 @@ function TaskDetailModal({
   onSendMessage,
   onRetryTask,
   onRetryPrompt,
+  onStopTask,
   onDeleteTask,
   onClose
 }: {
@@ -3852,11 +3891,14 @@ function TaskDetailModal({
   onSendMessage: (taskId: string, content: string) => void
   onRetryTask: (taskId: string) => void
   onRetryPrompt: (taskId: string) => void
+  onStopTask: (taskId: string) => void
   onDeleteTask: (taskId: string) => void
   onClose: () => void
 }): ReactElement {
   const canChat = Boolean(project) && canUseCursor && task.status !== 'processing'
   const canRetry = canChat && task.status === 'attention'
+  const isRunning = task.status === 'processing'
+  const runStartedAt = task.runStartedAt ?? (isRunning ? task.updatedAt : null)
   const lastPrompt =
     [...conversations].reverse().find((entry) => entry.role === 'user')?.content.trim() ||
     task.summary.trim() ||
@@ -3892,9 +3934,26 @@ function TaskDetailModal({
           <div>
             <h2>{task.title}</h2>
             <p>{project?.name ?? 'No project'}</p>
+            {isRunning && runStartedAt && (
+              <div className="task-run-status">
+                <span className="task-run-status-label">Running</span>
+                <TaskRunElapsed startedAt={runStartedAt} />
+              </div>
+            )}
             <TaskRunMeta task={task} project={project} />
           </div>
           <div className="modal-head-actions">
+            {isRunning && (
+              <button
+                className="icon-text-button task-stop-action"
+                type="button"
+                onClick={() => onStopTask(task.id)}
+                title="Stop the current task run"
+              >
+                <Square size={14} />
+                <span>Stop</span>
+              </button>
+            )}
             {canRetry && (
               <button
                 className="icon-text-button task-retry-action"

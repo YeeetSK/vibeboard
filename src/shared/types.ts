@@ -43,6 +43,8 @@ export interface Task {
   position: number
   createdAt: string
   updatedAt: string
+  /** ISO timestamp set while a Cursor run is active; null/omitted when idle. */
+  runStartedAt?: string | null
 }
 
 export interface ConversationEntry {
@@ -285,6 +287,7 @@ export interface VibeBoardApi {
   sendTaskMessage: (input: SendTaskMessageInput) => Promise<RunTaskResult>
   runTaskWithCursor: (taskId: string) => Promise<RunTaskResult>
   retryTaskPrompt: (taskId: string) => Promise<RunTaskResult>
+  stopTask: (taskId: string) => Promise<RunTaskResult>
   updateTaskStatus: (input: UpdateTaskStatusInput) => Promise<void>
   markTaskRead: (taskId: string) => Promise<void>
   getCursorAdapterStatus: () => Promise<CursorStatus>

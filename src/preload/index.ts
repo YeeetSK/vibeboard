@@ -80,6 +80,7 @@ const api: VibeBoardApi = {
   sendTaskMessage: (input: SendTaskMessageInput) => ipcRenderer.invoke('task:message', input),
   runTaskWithCursor: (taskId: string) => ipcRenderer.invoke('task:runCursor', taskId),
   retryTaskPrompt: (taskId: string) => ipcRenderer.invoke('task:retryPrompt', taskId),
+  stopTask: (taskId: string) => ipcRenderer.invoke('task:stop', taskId),
   updateTaskStatus: (input: UpdateTaskStatusInput) => ipcRenderer.invoke('task:status', input),
   markTaskRead: (taskId: string) => ipcRenderer.invoke('task:read', taskId),
   getCursorAdapterStatus: () => ipcRenderer.invoke('cursor:status'),

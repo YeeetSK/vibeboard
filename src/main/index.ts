@@ -42,6 +42,7 @@ let store: VibeBoardStore
 const cursorAdapter = new PlaceholderCursorAdapter()
 const runningTasks = new Set<string>()
 const runningTaskPromises = new Map<string, Promise<void>>()
+const taskRunStartedAt = new Map<string, string>()
 const cancelledTasks = new Set<string>()
 const projectRunQueues = new Map<string, Promise<void>>()
 const windows = new Set<BrowserWindow>()
@@ -180,7 +181,16 @@ const createWindow = (): void => {
 }
 
 const registerIpc = (): void => {
-  ipcMain.handle('state:get', () => store.getState())
+  ipcMain.handle('state:get', () => {
+    const state = store.getState()
+    return {
+      ...state,
+      tasks: state.tasks.map((task) => ({
+        ...task,
+        runStartedAt: taskRunStartedAt.get(task.id) ?? null
+      }))
+    }
+  })
   ipcMain.handle('task:detail', (_event, input: GetTaskDetailInput) => store.getTaskDetail(input))
   ipcMain.handle('search:workspace', (_event, input: SearchWorkspaceInput) => store.searchWorkspace(input))
   ipcMain.handle('search:recordOpen', (_event, input: RecordSearchOpenInput) => store.recordSearchOpen(input))
@@ -231,6 +241,20 @@ const registerIpc = (): void => {
   })
   ipcMain.handle('task:runCursor', (_event, taskId: string) => startCursorTask(taskId))
   ipcMain.handle('task:retryPrompt', (_event, taskId: string) => retryTaskPrompt(taskId))
+  ipcMain.handle('task:stop', async (_event, taskId: string) => {
+    const wasStopped = await stopAndWaitForCursorTask(taskId)
+    if (!wasStopped) {
+      return { started: false, message: 'No running task to stop.' }
+    }
+    store.updateTaskStatus({ taskId, status: 'attention' })
+    store.appendConversation(
+      taskId,
+      'system',
+      'Task stopped. Retry keeps the saved conversation and focused project context.'
+    )
+    broadcastStateChanged()
+    return { started: true, message: 'Task stopped.' }
+  })
   ipcMain.handle('task:status', (_event, input: UpdateTaskStatusInput) => store.updateTaskStatus(input))
   ipcMain.handle('task:read', (_event, taskId: string) => store.markTaskRead(taskId))
   ipcMain.handle('cursor:status', () => cursorAdapter.status())
@@ -653,6 +677,7 @@ const startCursorTask = (taskId: string): RunTaskResult => {
 
   cancelledTasks.delete(taskId)
   runningTasks.add(taskId)
+  taskRunStartedAt.set(taskId, new Date().toISOString())
 
   if (isRetry) {
     store.appendConversation(taskId, 'system', 'Retrying with the saved task conversation and focused project context.')
@@ -684,6 +709,7 @@ const startCursorTask = (taskId: string): RunTaskResult => {
   const runPromise = run().finally(() => {
     runningTasks.delete(taskId)
     runningTaskPromises.delete(taskId)
+    taskRunStartedAt.delete(taskId)
     if (projectQueueKey && projectRunQueues.get(projectQueueKey) === runPromise) {
       projectRunQueues.delete(projectQueueKey)
     }

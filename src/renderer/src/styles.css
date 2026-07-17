@@ -2299,6 +2299,53 @@ textarea {
   background: rgba(255, 122, 26, 0.16);
 }
 
+.task-run-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: #ffb36b;
+  font-size: 12px;
+  font-weight: 560;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-run-status-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-run-status-label::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff7a1a;
+  box-shadow: 0 0 0 3px rgba(255, 122, 26, 0.18);
+}
+
+.task-run-elapsed {
+  color: var(--muted);
+  font-weight: 520;
+}
+
+.task-stop-action {
+  height: 30px;
+  padding: 0 9px;
+  border-color: rgba(255, 95, 87, 0.42);
+  background: rgba(255, 95, 87, 0.1);
+  color: #ff8b84;
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.task-stop-action:hover,
+.task-stop-action:focus-visible {
+  border-color: rgba(255, 95, 87, 0.68);
+  background: rgba(255, 95, 87, 0.16);
+}
+
 .task-git-action.danger {
   border-color: rgba(255, 95, 87, 0.28);
   color: #ff8b84;
