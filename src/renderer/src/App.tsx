@@ -585,6 +585,16 @@ export function App(): ReactElement {
     }
   }, [selectedTask?.id, selectedTask?.status, selectedTask?.updatedAt])
 
+  // If a task finishes while its detail is open, treat it as already viewed (dashed done border).
+  useEffect(() => {
+    if (!selectedTask || selectedTask.status !== 'done_unread') return
+    const taskId = selectedTask.id
+    void runAction(`task:read:${taskId}`, async () => {
+      await window.vibeboard.markTaskRead(taskId)
+      await refresh()
+    })
+  }, [selectedTask?.id, selectedTask?.status])
+
   const loadOlderSelectedTaskConversations = async (): Promise<void> => {
     if (!selectedTask || !selectedTaskDetail.hasOlderConversations || isLoadingOlderConversations) return
     const oldestConversation = selectedTaskDetail.conversations[0]
@@ -735,9 +745,6 @@ export function App(): ReactElement {
       }
 
       await window.vibeboard.setActiveTab(task.tabId)
-      if (task.status === 'done_unread') {
-        await window.vibeboard.markTaskRead(task.id)
-      }
 
       setGlobalSearchOpen(false)
       setGlobalSearchQuery('')
@@ -916,12 +923,6 @@ export function App(): ReactElement {
 
   const openTask = async (task: Task): Promise<void> => {
     setSelectedTaskId(task.id)
-    if (task.status === 'done_unread') {
-      await runAction(`task:read:${task.id}`, async () => {
-        await window.vibeboard.markTaskRead(task.id)
-        await refresh()
-      })
-    }
   }
 
   const sendTaskMessage = async (
