@@ -4,18 +4,16 @@
   --notch-compact-height: 32px;
   --notch-expanded-height: 104px;
   --notch-chat-height: 452px;
+  --notch-parked-height: 68px;
   --notch-camera-gap: 172px;
   --text: #eeeeee;
   --muted: #a7a7a7;
   --muted-2: #7f7f7f;
   --line: #3d3d3d;
+  --font-sans: 'Geist Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
   color: var(--text);
-  font-family:
-    'SF Pro Text',
-    'Segoe UI',
-    system-ui,
-    -apple-system,
-    sans-serif;
+  font-family: var(--font-sans);
 }
 
 * {
@@ -55,6 +53,11 @@ textarea {
   width: 100%;
   height: 100%;
   pointer-events: none;
+  background: transparent;
+}
+
+.notch-shell.is-idle {
+  background: transparent;
 }
 
 .notch-dismiss-hit {
@@ -69,6 +72,10 @@ textarea {
   pointer-events: auto;
 }
 
+.notch-shell.is-parked .notch-dismiss-hit {
+  pointer-events: none;
+}
+
 .notch-island {
   position: relative;
   z-index: 1;
@@ -80,16 +87,37 @@ textarea {
   margin: 0;
   padding: 0;
   border: 0;
-  border-radius: 0 0 14px 14px;
+  border-radius: 0;
   background: #000000;
   color: var(--text);
   cursor: pointer;
   text-align: left;
   overflow: hidden;
   -webkit-app-region: no-drag;
+  /* Collapse into the hardware camera housing, then expand left/right. */
+  --notch-side-inset: max(0px, calc((100% - var(--notch-camera-gap)) / 2));
+  clip-path: inset(0 var(--notch-side-inset) 0 var(--notch-side-inset));
   transition:
     width 220ms cubic-bezier(0.22, 1, 0.36, 1),
-    height 220ms cubic-bezier(0.22, 1, 0.36, 1);
+    height 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    clip-path 340ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-radius 340ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.notch-island.surface-visible {
+  --notch-side-inset: 0px;
+  clip-path: inset(0 0 0 0);
+  border-radius: 0 0 14px 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notch-island {
+    transition:
+      width 1ms linear,
+      height 1ms linear,
+      clip-path 1ms linear,
+      border-radius 1ms linear;
+  }
 }
 
 .notch-island.expanded {
@@ -106,10 +134,85 @@ textarea {
 }
 
 .notch-island.expanded.finish-chat {
-  width: var(--notch-expanded-width);
+  width: 100%;
   height: var(--notch-chat-height);
-  max-height: calc(100% - 8px);
+  max-height: none;
   cursor: default;
+  transform-origin: top center;
+  /* Park/expand should only animate height; clip/width jumps look like the window moves. */
+  transition: height 340ms cubic-bezier(0.22, 1, 0.36, 1);
+  /* Let clicks on empty black chrome fall through to the dismiss-hit behind. */
+  pointer-events: none;
+}
+
+.notch-island.expanded.finish-chat.surface-visible {
+  clip-path: inset(0 0 0 0);
+  border-radius: 0 0 14px 14px;
+}
+
+.notch-island.expanded.finish-chat.is-parked {
+  height: var(--notch-parked-height);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+/* Title stays put; only height + body clip on park. */
+.notch-parked-line {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0 16px 8px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.notch-parked-title {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notch-island.expanded.finish-chat .notch-top,
+.notch-island.expanded.finish-chat .notch-parked-line,
+.notch-island.expanded.finish-chat .notch-answer,
+.notch-island.expanded.finish-chat .notch-reply,
+.notch-island.expanded.finish-chat .notch-detail {
+  pointer-events: auto;
+}
+
+.notch-island.expanded.finish-chat .notch-body {
+  pointer-events: none;
+  animation: notch-finish-body-in 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.notch-island.expanded.finish-chat.is-parked .notch-body {
+  opacity: 0;
+  pointer-events: none;
+  animation: none;
+}
+
+@keyframes notch-finish-body-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notch-island.expanded.finish-chat {
+    transition: height 1ms linear;
+  }
 }
 
 .notch-top {
@@ -135,6 +238,21 @@ textarea {
 
 .notch-side-right {
   justify-content: flex-end;
+  gap: 8px;
+}
+
+.notch-esc-close {
+  flex: 0 0 auto;
+  color: var(--muted-2);
+  font-size: 11px;
+  font-weight: 450;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.notch-esc-close.holding {
+  color: var(--muted);
 }
 
 .notch-open-task {
@@ -142,20 +260,20 @@ textarea {
   align-items: center;
   justify-content: center;
   height: 24px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
+  padding: 0 9px;
+  border: 1px solid transparent;
   border-radius: 6px;
-  background: #2a2a2a;
-  color: var(--text);
+  background: #1c1c1c;
+  color: var(--muted);
   font-size: 11px;
-  font-weight: 520;
+  font-weight: 450;
   cursor: pointer;
   white-space: nowrap;
 }
 
 .notch-open-task:hover {
-  background: #333;
-  border-color: #484848;
+  background: #252525;
+  color: var(--text);
 }
 
 .notch-camera-gap {
@@ -169,6 +287,7 @@ textarea {
   border-radius: 999px;
   background: #7f7f7f;
   flex: 0 0 auto;
+  transition: background-color 280ms ease;
 }
 
 .tone-running .notch-dot {
@@ -189,20 +308,66 @@ textarea {
   background: #6b6b6b;
 }
 
+.notch-slot {
+  display: inline-grid;
+  align-items: center;
+  overflow: hidden;
+  height: 1.15em;
+  min-width: 0;
+  line-height: 1.15;
+  vertical-align: middle;
+}
+
+.notch-slot-track {
+  display: flex;
+  flex-direction: column;
+  will-change: transform;
+}
+
+.notch-slot-track.is-rolling {
+  animation: notch-slot-roll 340ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.notch-slot-item {
+  display: flex;
+  align-items: center;
+  justify-content: inherit;
+  height: 1.15em;
+  min-width: 0;
+}
+
+.notch-headline.notch-slot,
 .notch-headline {
   overflow: hidden;
   color: var(--text);
   font-size: 12px;
-  font-weight: 560;
+  font-weight: 480;
   white-space: nowrap;
 }
 
+.notch-queue-badge {
+  flex: 0 0 auto;
+  color: var(--muted-2);
+  font-size: 11px;
+  font-weight: 450;
+  white-space: nowrap;
+}
+
+.notch-trailing.notch-slot,
 .notch-trailing {
   color: var(--muted);
   font-size: 12px;
-  font-weight: 520;
+  font-weight: 450;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.notch-trailing.notch-slot {
+  justify-items: end;
+}
+
+.notch-trailing .notch-slot-item {
+  justify-content: flex-end;
 }
 
 .notch-spinner {
@@ -215,32 +380,41 @@ textarea {
   animation: notch-spin 0.85s linear infinite;
 }
 
+@keyframes notch-slot-roll {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notch-slot-track.is-rolling {
+    animation: none;
+  }
+
+  .notch-dot {
+    transition: none;
+  }
+}
+
 .notch-body {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   justify-content: flex-start;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
   min-height: 0;
-  padding: 0 16px 14px;
-}
-
-.notch-title {
-  overflow: hidden;
-  color: var(--text);
-  font-size: 14px;
-  font-weight: 560;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  padding: 2px 16px 12px;
 }
 
 .notch-detail {
   overflow: hidden;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 450;
   line-height: 1.3;
 }
 
@@ -248,23 +422,34 @@ textarea {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   min-height: 0;
 }
 
 .notch-answer-label {
-  color: var(--muted-2);
-  font-size: 11px;
-  font-weight: 520;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 450;
+  line-height: 1;
+}
+
+.notch-answer-label svg {
+  flex: 0 0 auto;
+  color: var(--muted);
 }
 
 .notch-answer-markdown {
   overflow: auto;
-  max-height: 220px;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   padding-right: 4px;
-  color: #d8d8d8;
-  font-size: 12.5px;
-  font-weight: 500;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 450;
   line-height: 1.45;
   user-select: text;
   -webkit-user-select: text;
@@ -302,7 +487,7 @@ textarea {
 
 .message-markdown strong {
   color: var(--text);
-  font-weight: 650;
+  font-weight: 400;
 }
 
 .message-markdown code {
@@ -310,6 +495,7 @@ textarea {
   border-radius: 4px;
   background: #1c1c1c;
   color: #f0f0f0;
+  font-family: var(--font-mono);
   font-size: 0.92em;
 }
 
@@ -321,9 +507,53 @@ textarea {
   background: #141414;
 }
 
+.markdown-code-block {
+  position: relative;
+  margin: 0 0 0.65em;
+  padding: 28px 10px 8px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #141414;
+}
+
+.markdown-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #1c1c1c;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 450;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.markdown-code-block:hover .markdown-code-copy,
+.markdown-code-block:focus-within .markdown-code-copy,
+.markdown-code-copy:focus-visible {
+  opacity: 1;
+}
+
+.markdown-code-block .markdown-code {
+  display: block;
+  padding: 0;
+  background: transparent;
+  font-family: var(--font-mono);
+  white-space: pre;
+}
+
 .message-markdown pre code {
   padding: 0;
   background: transparent;
+  font-family: var(--font-mono);
 }
 
 .message-markdown a {
@@ -334,18 +564,36 @@ textarea {
   display: grid;
   gap: 8px;
   flex: 0 0 auto;
+  margin-top: auto;
+}
+
+.notch-reply-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 4px 4px 4px 12px;
+  border: 1px solid #2a2a2a;
+  border-radius: 10px;
+  background: #141414;
+}
+
+.notch-reply-bar:focus-within {
+  border-color: #3a3a3a;
 }
 
 .notch-reply-input {
   width: 100%;
-  min-height: 52px;
-  max-height: 88px;
-  padding: 9px 11px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #1a1a1a;
+  min-height: 28px;
+  max-height: 72px;
+  padding: 6px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--text);
   font-size: 13px;
+  font-weight: 450;
   line-height: 1.35;
   resize: none;
   outline: none;
@@ -353,12 +601,33 @@ textarea {
   -webkit-user-select: text;
 }
 
-.notch-reply-input:focus {
-  border-color: #484848;
-}
-
 .notch-reply-input::placeholder {
   color: var(--muted-2);
+}
+
+.notch-reply-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.notch-reply-send:hover:not(:disabled),
+.notch-reply-send:focus-visible:not(:disabled) {
+  background: #1f1f1f;
+  color: var(--text);
+  outline: none;
+}
+
+.notch-reply-send:disabled {
+  cursor: default;
+  opacity: 0.35;
 }
 
 @keyframes notch-pulse {

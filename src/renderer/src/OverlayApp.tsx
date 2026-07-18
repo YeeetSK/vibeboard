@@ -1,7 +1,10 @@
 import { FormEvent, ReactElement, useEffect, useRef, useState } from 'react'
+import { Code2, Send } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { NotchOverlaySnapshot } from '../../shared/types'
+import { MarkdownCodeBlock } from './MarkdownCodeBlock'
+import { NotchSlotText } from './NotchSlotText'
 
 const emptySnapshot: NotchOverlaySnapshot = {
   mode: 'compact',
@@ -15,12 +18,24 @@ const emptySnapshot: NotchOverlaySnapshot = {
   taskTitle: null,
   answer: null,
   showReply: false,
-  focusInput: false
+  focusInput: false,
+  surfaceVisible: false,
+  escapeCloseRemainingSec: null,
+  parked: false,
+  finishQueueRemaining: 0
 }
 
 /** Single newlines become hard breaks so agent replies match the chat layout. */
 function preserveMarkdownNewlines(content: string): string {
   return content.replace(/\r\n/g, '\n').replace(/([^\n])\n(?!\n)/g, '$1  \n')
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
 }
 
 export function OverlayApp(): ReactElement {
@@ -54,6 +69,7 @@ export function OverlayApp(): ReactElement {
   }, [snapshot.showReply, snapshot.taskId])
 
   const isFinishChat = Boolean(snapshot.mode === 'expanded' && snapshot.showReply)
+
   const tone =
     snapshot.headline === 'Needs you'
       ? 'attention'
@@ -64,10 +80,6 @@ export function OverlayApp(): ReactElement {
             snapshot.headline === 'Done'
           ? 'done'
           : 'idle'
-
-  const dismiss = (force = false): void => {
-    void window.vibeboard.dismissNotchFinishChat(force ? { force: true } : undefined)
-  }
 
   const handleCompactClick = (): void => {
     void window.vibeboard.reopenNotchFinishChat().then((opened) => {
@@ -90,38 +102,82 @@ export function OverlayApp(): ReactElement {
     }
   }
 
+  const hasVisibleContent = Boolean(
+    snapshot.showReply || snapshot.headline.trim() || snapshot.trailing
+  )
+  // Never paint an empty black pill: only reveal the island when there is content.
+  const surfaceClass = snapshot.surfaceVisible && hasVisibleContent ? ' surface-visible' : ''
+  const canSubmit = Boolean(snapshot.taskId && draft.trim() && !sending)
+  const escRemaining =
+    snapshot.escapeCloseRemainingSec == null
+      ? null
+      : snapshot.escapeCloseRemainingSec.toFixed(1)
+  const escHolding =
+    snapshot.escapeCloseRemainingSec != null && snapshot.escapeCloseRemainingSec < 1.5
+
+  // Idle / empty: render nothing so a visible window never paints black chrome.
+  if (!isFinishChat && !hasVisibleContent) {
+    return <div className="notch-shell is-idle" aria-hidden="true" />
+  }
+
   if (isFinishChat) {
+    const isParked = snapshot.parked
     return (
-      <div className="notch-shell finish-open">
-        <button
-          className="notch-dismiss-hit"
-          type="button"
-          aria-label="Dismiss"
-          onClick={() => dismiss(false)}
-        />
-        <div
-          className={`notch-island expanded finish-chat tone-${tone}`}
-          role="dialog"
-          onMouseDown={(event) => event.stopPropagation()}
-          onClick={(event) => event.stopPropagation()}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') {
+      <div className={`notch-shell finish-open${isParked ? ' is-parked' : ''}`}>
+        {!isParked ? (
+          <button
+            className="notch-dismiss-hit"
+            type="button"
+            aria-label="Park finished chat"
+            onMouseDown={(event) => {
+              // Park on press so it wins over focus/input side effects.
               event.preventDefault()
-              dismiss(true)
-            }
+              void window.vibeboard.parkNotchFinishChat()
+            }}
+          />
+        ) : null}
+        <div
+          className={`notch-island expanded finish-chat tone-${tone}${surfaceClass}${isParked ? ' is-parked' : ''}`}
+          role="dialog"
+          aria-label={isParked ? 'Finished task, click to expand' : 'Task finished'}
+          onMouseEnter={() => {
+            if (isParked) window.vibeboard.setNotchMousePassthrough(false)
+          }}
+          onMouseLeave={() => {
+            if (isParked) window.vibeboard.setNotchMousePassthrough(true)
+          }}
+          onClick={() => {
+            if (isParked) void window.vibeboard.unparkNotchFinishChat()
           }}
         >
           <span className="notch-top">
             <span className="notch-side notch-side-left">
               <span className="notch-dot" aria-hidden="true" />
-              <span className="notch-headline">{snapshot.headline || 'Finished'}</span>
+              <NotchSlotText
+                className="notch-headline"
+                value={snapshot.headline || 'Finished'}
+              />
+              {escRemaining != null ? (
+                <span
+                  className={escHolding ? 'notch-esc-close holding' : 'notch-esc-close'}
+                  aria-live="polite"
+                >
+                  ESC to close ({escRemaining}s)
+                </span>
+              ) : null}
+              {snapshot.finishQueueRemaining > 0 ? (
+                <span className="notch-queue-badge">
+                  +{snapshot.finishQueueRemaining} more
+                </span>
+              ) : null}
             </span>
             <span className="notch-camera-gap" aria-hidden="true" />
             <span className="notch-side notch-side-right">
               <button
                 className="notch-open-task"
                 type="button"
-                onClick={() => {
+                onClick={(event) => {
+                  event.stopPropagation()
                   if (snapshot.taskId) void window.vibeboard.openTaskFromNotch(snapshot.taskId)
                 }}
               >
@@ -130,14 +186,47 @@ export function OverlayApp(): ReactElement {
             </span>
           </span>
 
-          <div className="notch-body">
-            {snapshot.taskTitle ? <span className="notch-title">{snapshot.taskTitle}</span> : null}
+          {snapshot.taskTitle ? (
+            <div className="notch-parked-line">
+              <span className="notch-parked-title">{snapshot.taskTitle}</span>
+            </div>
+          ) : null}
 
+          <div
+            className="notch-body"
+            aria-hidden={isParked}
+            onClick={(event) => event.stopPropagation()}
+          >
             {snapshot.answer ? (
               <div className="notch-answer">
-                <span className="notch-answer-label">Agent</span>
+                <span className="notch-answer-label">
+                  <Code2 size={14} strokeWidth={1.75} aria-hidden="true" />
+                  Agent
+                </span>
                 <div className="notch-answer-markdown message-markdown">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      pre({ children }) {
+                        return <>{children}</>
+                      },
+                      code({ className, children }) {
+                        const rawCode = String(children).replace(/\n$/, '')
+                        const language = (className ?? '').replace(/^language-/, '')
+                        const isBlock = rawCode.includes('\n') || Boolean(className)
+                        if (!isBlock) {
+                          return <code className="inline-code">{children}</code>
+                        }
+                        return (
+                          <MarkdownCodeBlock
+                            code={rawCode}
+                            language={language}
+                            html={escapeHtml(rawCode)}
+                          />
+                        )
+                      }
+                    }}
+                  >
                     {preserveMarkdownNewlines(snapshot.answer)}
                   </ReactMarkdown>
                 </div>
@@ -152,25 +241,32 @@ export function OverlayApp(): ReactElement {
                 void submitReply(event)
               }}
             >
-              <textarea
-                ref={inputRef}
-                className="notch-reply-input"
-                value={draft}
-                rows={2}
-                placeholder="Reply to continue…"
-                disabled={sending}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault()
-                    void submitReply()
-                  }
-                  if (event.key === 'Escape') {
-                    event.preventDefault()
-                    dismiss(true)
-                  }
-                }}
-              />
+              <div className="notch-reply-bar">
+                <textarea
+                  ref={inputRef}
+                  className="notch-reply-input"
+                  value={draft}
+                  rows={1}
+                  placeholder="Message…"
+                  disabled={sending}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault()
+                      void submitReply()
+                    }
+                  }}
+                />
+                <button
+                  className="notch-reply-send"
+                  type="submit"
+                  disabled={!canSubmit}
+                  title="Send"
+                  aria-label="Send"
+                >
+                  <Send size={15} strokeWidth={1.75} />
+                </button>
+              </div>
             </form>
           </div>
         </div>
@@ -180,7 +276,7 @@ export function OverlayApp(): ReactElement {
 
   return (
     <button
-      className={`notch-island compact tone-${tone}`}
+      className={`notch-island compact tone-${tone}${surfaceClass}`}
       type="button"
       onClick={handleCompactClick}
       title="Reopen last finish panel, or open a task that needs you"
@@ -190,17 +286,22 @@ export function OverlayApp(): ReactElement {
           {snapshot.headline ? (
             <>
               <span className="notch-dot" aria-hidden="true" />
-              <span className="notch-headline">{snapshot.headline}</span>
+              <NotchSlotText className="notch-headline" value={snapshot.headline} />
             </>
           ) : null}
         </span>
         <span className="notch-camera-gap" aria-hidden="true" />
         <span className="notch-side notch-side-right">
-          {snapshot.trailing === 'spinner' ? (
-            <span className="notch-spinner" aria-hidden="true" />
-          ) : snapshot.trailing ? (
-            <span className="notch-trailing">{snapshot.trailing}</span>
-          ) : null}
+          <NotchSlotText
+            className="notch-trailing"
+            value={
+              snapshot.trailing === 'spinner'
+                ? 'spinner'
+                : snapshot.trailing
+                  ? snapshot.trailing
+                  : null
+            }
+          />
         </span>
       </span>
     </button>
