@@ -4,7 +4,7 @@ A dark desktop kanban board for organizing AI coding work across multiple projec
 
 VibeBoard is built for developers who run AI agents on real codebases and need more structure than a single chat thread or IDE sidebar. Each repository gets its own board. Each agent run becomes a task card you can move through custom lanes, inspect, and follow to completion.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](./LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)](https://github.com/YeeetSK/vibeboard/releases)
 
 ## Screenshot
@@ -148,4 +148,6 @@ Use the issue and PR templates under `.github/` when reporting bugs or proposing
 
 ## License
 
-MIT. See `package.json`.
+[PolyForm Noncommercial License 1.0.0](./LICENSE).
+
+You may use VibeBoard for personal and other noncommercial purposes. Selling VibeBoard, redistributing it for a fee, or using it for other commercial purposes is not allowed without a separate commercial license from the copyright holder.
