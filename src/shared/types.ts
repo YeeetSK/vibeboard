@@ -51,7 +51,7 @@ export interface Task {
   worktreePath: string | null
   /**
    * 1 when this task's code changes were committed and pushed to main/origin
-   * with a clean working tree afterward. 0 otherwise — including chat-only tasks
+   * with a clean working tree afterward. 0 otherwise, including chat-only tasks
    * that never had code changes.
    */
   pushedToMain: number
@@ -278,6 +278,15 @@ export interface NotificationSettings {
   playFinishSound: boolean
 }
 
+export type ReduceMotionPreference = 'system' | 'reduce' | 'no-preference'
+
+export interface AppearanceSettings {
+  uiFontSize: number
+  codeFontSize: number
+  fontSmoothing: boolean
+  reduceMotion: ReduceMotionPreference
+}
+
 export interface NotchOverlaySettings {
   enabled: boolean
   /** Expand when a task finishes successfully. */
@@ -316,6 +325,14 @@ export interface NotchOverlaySnapshot {
   showReply: boolean
   /** Ask the overlay to focus the reply input. */
   focusInput: boolean
+  /** Whether the island surface is revealed (animates in/out of the hardware notch). */
+  surfaceVisible: boolean
+  /** Remaining seconds shown for hold-Esc-to-close (finish chat only). */
+  escapeCloseRemainingSec: number | null
+  /** Finish chat temporarily parked after click-away (mid size, click to expand). */
+  parked: boolean
+  /** Other finished tasks waiting behind the current finish panel. */
+  finishQueueRemaining: number
 }
 
 export type UpdateStatus =
@@ -355,7 +372,10 @@ export interface VibeBoardApi {
   installUpdate: () => Promise<UpdateInfo>
   getNotificationSettings: () => Promise<NotificationSettings>
   updateNotificationSettings: (settings: NotificationSettings) => Promise<NotificationSettings>
+  getAppearanceSettings: () => Promise<AppearanceSettings>
+  updateAppearanceSettings: (settings: AppearanceSettings) => Promise<AppearanceSettings>
   sendTestNotification: () => Promise<void>
+  previewFinishSound: () => Promise<void>
   getNotchOverlayCapability: () => Promise<NotchOverlayCapability>
   getNotchOverlaySettings: () => Promise<NotchOverlaySettings>
   updateNotchOverlaySettings: (settings: NotchOverlaySettings) => Promise<NotchOverlaySettings>
@@ -366,6 +386,12 @@ export interface VibeBoardApi {
   peekNotchOverlay: () => Promise<void>
   dismissNotchFinishChat: (options?: { force?: boolean }) => Promise<boolean>
   reopenNotchFinishChat: () => Promise<boolean>
+  unparkNotchFinishChat: () => Promise<boolean>
+  parkNotchFinishChat: () => Promise<boolean>
+  scheduleDevNotchFinishTest: (delayMs?: number) => Promise<{ ok: boolean; delayMs?: number; reason?: string }>
+  startNotchMarketingDemo: () => Promise<{ ok: boolean; reason?: string }>
+  stopNotchMarketingDemo: () => Promise<{ ok: boolean }>
+  setNotchMousePassthrough: (passthrough: boolean) => void
   sendNotchReply: (input: { taskId: string; content: string }) => Promise<void>
   getOnboardingComplete: () => Promise<boolean>
   markOnboardingComplete: () => Promise<void>

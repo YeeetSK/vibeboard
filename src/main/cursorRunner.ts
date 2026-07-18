@@ -138,12 +138,6 @@ export async function runCursorTask({
     cwd: runTarget.cwd,
     env: process.env
   })
-  console.info('[VibeBoard Cursor run]', {
-    taskId,
-    projectPath: runTarget.cwd,
-    agentCommand,
-    model: selectedModel || 'auto'
-  })
 
   let stdoutBuffer = ''
   let stderrBuffer = ''
@@ -510,7 +504,7 @@ function mergeThinkingBuffer(previous: string, next: string): string {
   return `${left} ${right}`
 }
 
-/** Only publish complete thoughts — never raw stream deltas like "actual source of the". */
+/** Only publish complete thoughts, never raw stream deltas like "actual source of the". */
 function formatThinkingProgress(buffer: string): string | null {
   const normalized = buffer.replace(/\s+/g, ' ').trim()
   if (normalized.length < liveThinkingMinPublishLength) return null

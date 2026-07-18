@@ -36,7 +36,6 @@ export interface CursorAdapter {
 export class PlaceholderCursorAdapter implements CursorAdapter {
   async status(): Promise<CursorStatus> {
     const debug = await getCursorDebugInfo()
-    console.info('[VibeBoard Cursor debug]', debug)
     const isReady = Boolean(debug.agentCommand) && isAuthenticatedStatus(debug.authStatus)
     return {
       available: isReady,
@@ -213,7 +212,6 @@ function legacyCursorAgentCandidates(): string[] {
 
 async function installCursorCli(): Promise<RunTaskResult> {
   lastInstallOutput = `Running: ${cursorInstallCommand}`
-  console.info('[VibeBoard Cursor install]', lastInstallOutput)
   const result = await runInstallCommand('/bin/zsh', ['-lc', cursorInstallCommand])
   const command = await resolveAgentCommand()
 

@@ -9,6 +9,7 @@ import type {
   MoveTaskInput,
   NotificationOpenRequest,
   NotificationSettings,
+  AppearanceSettings,
   NotchOverlayCapability,
   NotchOverlaySettings,
   NotchOverlaySnapshot,
@@ -60,7 +61,10 @@ const api: VibeBoardApi = {
   installUpdate: () => ipcRenderer.invoke('updates:install'),
   getNotificationSettings: () => ipcRenderer.invoke('notifications:get'),
   updateNotificationSettings: (settings: NotificationSettings) => ipcRenderer.invoke('notifications:update', settings),
+  getAppearanceSettings: () => ipcRenderer.invoke('appearance:get'),
+  updateAppearanceSettings: (settings: AppearanceSettings) => ipcRenderer.invoke('appearance:update', settings),
   sendTestNotification: () => ipcRenderer.invoke('notifications:test'),
+  previewFinishSound: () => ipcRenderer.invoke('notifications:previewFinishSound'),
   getNotchOverlayCapability: () => ipcRenderer.invoke('notch:capability'),
   getNotchOverlaySettings: () => ipcRenderer.invoke('notch:getSettings'),
   updateNotchOverlaySettings: (settings: NotchOverlaySettings) => ipcRenderer.invoke('notch:updateSettings', settings),
@@ -76,6 +80,15 @@ const api: VibeBoardApi = {
   dismissNotchFinishChat: (options?: { force?: boolean }) =>
     ipcRenderer.invoke('notch:dismiss', options),
   reopenNotchFinishChat: () => ipcRenderer.invoke('notch:reopen'),
+  unparkNotchFinishChat: () => ipcRenderer.invoke('notch:unpark'),
+  parkNotchFinishChat: () => ipcRenderer.invoke('notch:park'),
+  scheduleDevNotchFinishTest: (delayMs?: number) =>
+    ipcRenderer.invoke('notch:devFinishTest', delayMs),
+  startNotchMarketingDemo: () => ipcRenderer.invoke('notch:marketingDemoStart'),
+  stopNotchMarketingDemo: () => ipcRenderer.invoke('notch:marketingDemoStop'),
+  setNotchMousePassthrough: (passthrough: boolean) => {
+    ipcRenderer.send('notch:mousePassthrough', passthrough)
+  },
   sendNotchReply: (input: { taskId: string; content: string }) =>
     ipcRenderer.invoke('notch:sendReply', input),
   getOnboardingComplete: () => ipcRenderer.invoke('onboarding:getComplete'),

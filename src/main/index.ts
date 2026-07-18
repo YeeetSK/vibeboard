@@ -21,8 +21,14 @@ import {
   peekNotchOverlay,
   purgeNotchOverlays,
   reopenNotchFinishChat,
+  parkNotchFinishChat,
+  scheduleDevNotchFinishTest,
+  startNotchMarketingDemo,
+  stopNotchMarketingDemo,
   sendReplyFromNotch,
-  syncNotchOverlay
+  setNotchOverlayMousePassthrough,
+  syncNotchOverlay,
+  unparkNotchFinishChat
 } from './notchOverlay'
 import {
   cleanupTaskGitWorkspace,
@@ -41,6 +47,7 @@ import type {
   MoveTaskInput,
   NotificationEventKey,
   NotificationSettings,
+  AppearanceSettings,
   NotchOverlaySettings,
   Project,
   QueuedTaskMessage,
@@ -222,7 +229,7 @@ const createWindow = (): void => {
     if (process.platform === 'darwin') {
       app.focus({ steal: true })
     }
-    // Notch must not sync before the main window is up — a panel created during
+    // Notch must not sync before the main window is up: a panel created during
     // boot can steal activation and leave the app feeling "opened then lost".
     if (store.getNotchOverlaySettings().enabled) {
       syncNotchOverlay()
@@ -335,14 +342,35 @@ const registerIpc = (): void => {
   ipcMain.handle('task:rename', (_event, input: RenameInput) => store.renameTask(input))
   ipcMain.handle('task:move', (_event, input: MoveTaskInput) => store.moveTask(input))
   ipcMain.handle('task:delete', async (_event, taskId: string) => {
-    await cleanupTasksGitWorkspace(store.listTasksForCleanup({ taskId }))
+    const cleanupEntries = store.listTasksForCleanup({ taskId })
     const task = store.getState().tasks.find((item) => item.id === taskId)
+    if (!task) return { ok: true as const }
+    if (task.status === 'processing') {
+      throw new Error('Can’t delete a running task.')
+    }
+
     clearTaskMessageQueue(taskId)
     store.deleteTask(taskId)
     const stillExists = store.getState().tasks.some((item) => item.id === taskId)
-    if (task && !stillExists) {
-      await deleteTaskAttachments(taskId)
+    if (stillExists) {
+      throw new Error('Couldn’t delete this task.')
     }
+
+    // Return immediately so the board can update; git/attachments cleanup is background work.
+    broadcastStateChanged()
+    void (async () => {
+      try {
+        await cleanupTasksGitWorkspace(cleanupEntries)
+        await deleteTaskAttachments(taskId)
+      } catch (error) {
+        console.warn('[VibeBoard] Failed to clean up deleted task assets', {
+          taskId,
+          error: error instanceof Error ? error.message : error
+        })
+      }
+    })()
+
+    return { ok: true as const }
   })
   ipcMain.handle('task:model', (_event, input: UpdateTaskModelInput) => {
     store.updateTaskModel(input.taskId, input.model)
@@ -381,6 +409,10 @@ const registerIpc = (): void => {
   ipcMain.handle('notifications:update', (_event, settings: NotificationSettings) =>
     store.updateNotificationSettings(settings)
   )
+  ipcMain.handle('appearance:get', () => store.getAppearanceSettings())
+  ipcMain.handle('appearance:update', (_event, settings: AppearanceSettings) =>
+    store.updateAppearanceSettings(settings)
+  )
   ipcMain.handle('notifications:test', () =>
     sendConfiguredNotification(
       {
@@ -392,6 +424,9 @@ const registerIpc = (): void => {
       { throwOnError: true, bypassActivityGate: true }
     )
   )
+  ipcMain.handle('notifications:previewFinishSound', () => {
+    playTaskFinishedSound()
+  })
   ipcMain.handle('notch:capability', () => getNotchOverlayCapability())
   ipcMain.handle('notch:getSettings', () => store.getNotchOverlaySettings())
   ipcMain.handle('notch:updateSettings', (_event, settings: NotchOverlaySettings) => {
@@ -413,6 +448,42 @@ const registerIpc = (): void => {
     dismissNotchFinishChat(options)
   )
   ipcMain.handle('notch:reopen', () => reopenNotchFinishChat())
+  ipcMain.handle('notch:unpark', () => unparkNotchFinishChat())
+  ipcMain.handle('notch:park', () => parkNotchFinishChat())
+  ipcMain.handle('notch:devFinishTest', (_event, delayMs?: number) => {
+    if (!is.dev) return { ok: false as const, reason: 'Dev only' }
+    if (process.platform !== 'darwin') {
+      return { ok: false as const, reason: 'Notch finish test is only available on macOS.' }
+    }
+    const current = store.getNotchOverlaySettings()
+    if (!current.enabled) {
+      store.updateNotchOverlaySettings({ ...current, enabled: true, showFinishChat: true })
+      syncNotchOverlay()
+    }
+    const ok = scheduleDevNotchFinishTest(
+      typeof delayMs === 'number' && Number.isFinite(delayMs) ? delayMs : undefined
+    )
+    return { ok, delayMs: 1500 }
+  })
+  ipcMain.handle('notch:marketingDemoStart', () => {
+    if (!is.dev) return { ok: false as const, reason: 'Dev only' }
+    // Marketing demo may simulate the island on Windows; only persist settings on macOS.
+    if (process.platform === 'darwin') {
+      const current = store.getNotchOverlaySettings()
+      if (!current.enabled) {
+        store.updateNotchOverlaySettings({ ...current, enabled: true, showFinishChat: true })
+      }
+    }
+    const ok = startNotchMarketingDemo()
+    return { ok }
+  })
+  ipcMain.handle('notch:marketingDemoStop', () => {
+    stopNotchMarketingDemo()
+    return { ok: true as const }
+  })
+  ipcMain.on('notch:mousePassthrough', (_event, passthrough: boolean) => {
+    setNotchOverlayMousePassthrough(Boolean(passthrough))
+  })
   ipcMain.handle('notch:sendReply', async (_event, input: { taskId: string; content: string }) => {
     await sendReplyFromNotch(input.taskId, input.content)
   })
@@ -847,6 +918,10 @@ const compareVersions = (a: string, b: string): number => {
 }
 
 const sendTaskMessageAndMaybeRun = async (input: SendTaskMessageInput): Promise<RunTaskResult> => {
+  const task = store.getState().tasks.find((item) => item.id === input.taskId)
+  if (!task) {
+    throw new Error('Task no longer exists.')
+  }
   const attachments = await saveTaskAttachments(input.taskId, input.attachments)
   if (runningTasks.has(input.taskId)) {
     enqueueTaskMessage(input.taskId, input.content, attachments)
@@ -1034,7 +1109,7 @@ const broadcastStateChanged = (): void => {
   for (const window of windows) {
     window.webContents.send('state:changed')
   }
-  // Notch is optional — only sync when enabled so board updates stay lightweight.
+  // Notch is optional: only sync when enabled so board updates stay lightweight.
   if (store.getNotchOverlaySettings().enabled) {
     syncNotchOverlay()
   }
@@ -1120,9 +1195,6 @@ const sendConfiguredNotification = async (
   options: { throwOnError?: boolean; bypassActivityGate?: boolean } = {}
 ): Promise<void> => {
   if (!options.bypassActivityGate && isUserActiveInApp()) {
-    if (is.dev) {
-      console.info('[VibeBoard notifications] skipped while app is active')
-    }
     return
   }
 
@@ -1169,8 +1241,7 @@ const sendConfiguredNotification = async (
   }
 }
 
-const playTaskFinishedSoundIfEnabled = (): void => {
-  if (!store.getNotificationSettings().playFinishSound) return
+const playTaskFinishedSound = (): void => {
   if (process.platform === 'darwin') {
     void execFileAsync('afplay', ['/System/Library/Sounds/Glass.aiff']).catch(() => {
       shell.beep()
@@ -1178,6 +1249,11 @@ const playTaskFinishedSoundIfEnabled = (): void => {
     return
   }
   shell.beep()
+}
+
+const playTaskFinishedSoundIfEnabled = (): void => {
+  if (!store.getNotificationSettings().playFinishSound) return
+  playTaskFinishedSound()
 }
 
 const handleTaskStatusChange = (event: TaskStatusChangeEvent): void => {
@@ -1319,10 +1395,7 @@ app.whenReady().then(() => {
   // Wipe any leftover notch panels from a previous / crashed session in this process.
   purgeNotchOverlays()
   store = new VibeBoardStore()
-  const recoveredCount = store.recoverInterruptedProcessingTasks()
-  if (recoveredCount > 0) {
-    console.info('[VibeBoard] Recovered interrupted processing tasks:', recoveredCount)
-  }
+  store.recoverInterruptedProcessingTasks()
   store.setTaskStatusListener(handleTaskStatusChange)
   bindNotchOverlayDeps({
     getSettings: () => store.getNotchOverlaySettings(),
@@ -1410,7 +1483,7 @@ const reapStaleDevElectronProcesses = (): void => {
       // Already gone.
     }
   }
-  // Ghost mains often ignore SIGTERM (quit prompt / hung renderer) — force them.
+  // Ghost mains often ignore SIGTERM (quit prompt / hung renderer); force them.
   if (stalePids.length > 0) {
     setTimeout(() => {
       for (const pid of stalePids) {

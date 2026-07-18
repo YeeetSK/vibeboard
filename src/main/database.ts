@@ -18,6 +18,7 @@ import type {
   MoveTaskInput,
   NotificationSettings,
   NotchOverlaySettings,
+  AppearanceSettings,
   Project,
   RecordSearchOpenInput,
   ReorderTabsInput,
@@ -104,6 +105,27 @@ const mergeNotificationSettings = (settings: Partial<NotificationSettings>): Not
     }
   },
   playFinishSound: settings.playFinishSound ?? defaultNotificationSettings.playFinishSound
+})
+
+export const defaultAppearanceSettings: AppearanceSettings = {
+  uiFontSize: 14,
+  codeFontSize: 13,
+  fontSmoothing: true,
+  reduceMotion: 'system'
+}
+
+const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value))
+
+export const mergeAppearanceSettings = (
+  settings: Partial<AppearanceSettings> | null | undefined
+): AppearanceSettings => ({
+  uiFontSize: clamp(Math.round(settings?.uiFontSize ?? defaultAppearanceSettings.uiFontSize), 12, 18),
+  codeFontSize: clamp(Math.round(settings?.codeFontSize ?? defaultAppearanceSettings.codeFontSize), 11, 16),
+  fontSmoothing: settings?.fontSmoothing ?? defaultAppearanceSettings.fontSmoothing,
+  reduceMotion:
+    settings?.reduceMotion === 'reduce' || settings?.reduceMotion === 'no-preference'
+      ? settings.reduceMotion
+      : 'system'
 })
 
 const normalizeRunMode = (value: string | null | undefined): RunMode => {
@@ -205,6 +227,24 @@ export class VibeBoardStore {
   updateNotchOverlaySettings(settings: NotchOverlaySettings): NotchOverlaySettings {
     const nextSettings = mergeNotchOverlaySettings(settings)
     this.setSetting('notchOverlaySettings', JSON.stringify(nextSettings))
+    return nextSettings
+  }
+
+  getAppearanceSettings(): AppearanceSettings {
+    const raw = this.getSetting('appearanceSettings')
+    if (!raw) return defaultAppearanceSettings
+
+    try {
+      const parsed = JSON.parse(raw) as Partial<AppearanceSettings>
+      return mergeAppearanceSettings(parsed)
+    } catch {
+      return defaultAppearanceSettings
+    }
+  }
+
+  updateAppearanceSettings(settings: AppearanceSettings): AppearanceSettings {
+    const nextSettings = mergeAppearanceSettings(settings)
+    this.setSetting('appearanceSettings', JSON.stringify(nextSettings))
     return nextSettings
   }
 
@@ -313,7 +353,7 @@ export class VibeBoardStore {
             )
             .all(input.taskId, oldestCreatedAt) as Array<Record<string, unknown>>)
     } else if (!input.beforeCreatedAt) {
-      // No user turns yet (e.g. only live system / orphan assistant) — still return recent chat rows.
+      // No user turns yet (e.g. only live system / orphan assistant) ; still return recent chat rows.
       pageChatRows = (
         this.db
           .prepare(
@@ -808,6 +848,13 @@ export class VibeBoardStore {
     content: string,
     attachments: ConversationAttachment[] = []
   ): void {
+    const task = this.db.prepare('SELECT id FROM tasks WHERE id = ?').get(taskId) as
+      | { id: string }
+      | undefined
+    if (!task) {
+      throw new Error('Task no longer exists.')
+    }
+
     const timestamp = now()
     const transaction = this.db.transaction(() => {
       this.db
@@ -843,7 +890,7 @@ export class VibeBoardStore {
       this.appendConversation(
         task.id,
         'system',
-        'This run was interrupted when VibeBoard closed or restarted. Progress so far is saved in this chat — open the task and hit Retry or Retry prompt to continue.'
+        'This run was interrupted when VibeBoard closed or restarted. Progress so far is saved in this chat. Open the task and hit Retry or Retry prompt to continue.'
       )
     }
 
@@ -858,6 +905,13 @@ export class VibeBoardStore {
     const content = input.content.trim()
     const attachments = input.attachments ?? []
     if (!content && attachments.length === 0) return
+
+    const task = this.db.prepare('SELECT id FROM tasks WHERE id = ?').get(input.taskId) as
+      | { id: string }
+      | undefined
+    if (!task) {
+      throw new Error('Task no longer exists.')
+    }
 
     const transaction = this.db.transaction(() => {
       this.appendConversation(input.taskId, 'user', content, attachments)
