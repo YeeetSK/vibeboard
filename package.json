@@ -28,6 +28,8 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
+    "@fontsource/geist-mono": "^5.2.8",
+    "@fontsource/geist-sans": "^5.2.5",
     "better-sqlite3": "^12.2.0",
     "canvas-confetti": "^1.9.4",
     "electron-updater": "^6.8.9",
