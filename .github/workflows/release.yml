@@ -29,13 +29,25 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-${{ runner.os }}-
 
       - name: Install dependencies
         run: npm ci
@@ -43,6 +55,8 @@ jobs:
       - name: Build installer
         run: ${{ matrix.build-command }}
         env:
+          # Normal compression is much faster than maximum; installers stay small enough.
+          ELECTRON_BUILDER_COMPRESSION: normal
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
@@ -56,6 +70,7 @@ jobs:
           name: vibeboard-${{ matrix.artifact-name }}
           path: ${{ matrix.artifact-path }}
           if-no-files-found: error
+          compression-level: 0
 
   release:
     name: Publish release
@@ -67,13 +82,24 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Cache git-cliff
+        id: cache-git-cliff
+        uses: actions/cache@v4
+        with:
+          path: .git-cliff
+          key: git-cliff-2.13.1-linux
+
+      - name: Install git-cliff
+        if: steps.cache-git-cliff.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .git-cliff
+          curl -LsSf https://github.com/orhun/git-cliff/releases/download/v2.13.1/git-cliff-2.13.1-x86_64-unknown-linux-gnu.tar.gz -o git-cliff.tar.gz
+          tar xzf git-cliff.tar.gz -C .git-cliff --strip-components=1
+          chmod +x .git-cliff/git-cliff
+
       - name: Generate changelog
         run: |
-          curl -LsSf https://github.com/orhun/git-cliff/releases/download/v2.13.1/git-cliff-2.13.1-x86_64-unknown-linux-gnu.tar.gz -o git-cliff.tar.gz
-          tar xzf git-cliff.tar.gz
-          CLIFF_BIN="$(find . -maxdepth 2 -type f -name git-cliff | head -1)"
-          chmod +x "$CLIFF_BIN"
-          "$CLIFF_BIN" --config cliff.toml --latest --strip header --output CHANGELOG.md
+          .git-cliff/git-cliff --config cliff.toml --latest --strip header --output CHANGELOG.md
           test -s CHANGELOG.md
 
       - name: Download installers

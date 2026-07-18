@@ -74,7 +74,8 @@ function trimSqliteBuildFiles(appOutDir) {
 module.exports = {
   appId: 'com.yeeetsk.vibeboard',
   productName: 'VibeBoard',
-  compression: 'maximum',
+  // `normal` is much faster in CI; keep `maximum` locally / when explicitly requested.
+  compression: process.env.ELECTRON_BUILDER_COMPRESSION || 'maximum',
   artifactName: '${productName}-${version}-${arch}.${ext}',
   directories: {
     output: 'release'
