@@ -268,7 +268,13 @@ export async function runCursorTask({
     }
   })
 
-  child.stdout.on('data', (chunk: Buffer) => {
+  const childStdout = child.stdout
+  const childStderr = child.stderr
+  if (!childStdout || !childStderr) {
+    throw new Error('Agent process stdout/stderr pipes were not created.')
+  }
+
+  childStdout.on('data', (chunk: Buffer) => {
     stdoutBuffer += chunk.toString()
     const lines = stdoutBuffer.split(/\r?\n/)
     stdoutBuffer = lines.pop() ?? ''
@@ -279,7 +285,7 @@ export async function runCursorTask({
     }
   })
 
-  child.stderr.on('data', (chunk: Buffer) => {
+  childStderr.on('data', (chunk: Buffer) => {
     const text = chunk.toString()
     stderrBuffer += text
     // Codex streams human progress on stderr; surface useful lines live.
@@ -1398,7 +1404,7 @@ function summarizeProviderRun(providerId: AgentCliId, lines: string[], stderr: s
     const cursorStyle = summarizeCursorRun(lines)
     if (cursorStyle) return cursorStyle
   }
-  const stderrText = extractPlainStderrFromStderr(stderr)
+  const stderrText = extractPlainReplyFromStderr(stderr)
   if (stderrText) return stderrText
   return ''
 }
