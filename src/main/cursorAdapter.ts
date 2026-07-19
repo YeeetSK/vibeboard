@@ -6,7 +6,10 @@ import { promisify } from 'node:util'
 import type { AgentModel, CursorDebugInfo, CursorStatus, RunTaskResult } from '../shared/types'
 
 const execFileAsync = promisify(execFile)
-const cursorAgentVersion = '2026.07.09-a3815c0'
+const cursorAgentVersion = '2026.07.16-899851b'
+const isWindows = process.platform === 'win32'
+
+/** Unix install script (macOS / Linux). */
 export const cursorInstallCommand = [
   'set -e',
   'OS="$(uname -s)"',
@@ -26,6 +29,11 @@ export const cursorInstallCommand = [
   'ln -sf "$FINAL_DIR/cursor-agent" "$HOME/.local/bin/cursor-agent"',
   'echo "Cursor Agent installed."'
 ].join(' && ')
+
+/** Official Windows installer from cursor.com. */
+export const windowsCursorInstallCommand =
+  "irm 'https://cursor.com/install?win32=true' | iex"
+
 let lastInstallOutput = ''
 
 export interface CursorAdapter {
@@ -49,25 +57,49 @@ export class PlaceholderCursorAdapter implements CursorAdapter {
   }
 }
 
+export function windowsCursorAgentDir(): string {
+  const localAppData =
+    process.env.LOCALAPPDATA?.trim() || path.join(os.homedir(), 'AppData', 'Local')
+  return path.join(localAppData, 'cursor-agent')
+}
+
+/** Keep the current Electron process able to find a just-installed agent. */
+export function ensureWindowsAgentPath(): void {
+  if (!isWindows) return
+  const agentDir = windowsCursorAgentDir()
+  const current = process.env.PATH ?? ''
+  const parts = current.split(path.delimiter).filter(Boolean)
+  if (parts.some((part) => path.resolve(part) === path.resolve(agentDir))) return
+  process.env.PATH = `${agentDir}${path.delimiter}${current}`
+}
+
+export function processEnvWithAgentPath(): NodeJS.ProcessEnv {
+  if (isWindows) ensureWindowsAgentPath()
+  return { ...process.env }
+}
+
 export async function resolveAgentCommand(): Promise<string | null> {
+  if (isWindows) ensureWindowsAgentPath()
+
+  for (const candidate of agentCandidates()) {
+    if (await canRun(candidate)) return candidate
+  }
+
   const fromShell = await resolveFromShell('agent')
   if (fromShell) return fromShell
 
-  for (const candidate of agentCandidates()) {
+  for (const candidate of legacyCursorAgentCandidates()) {
     if (await canRun(candidate)) return candidate
   }
 
   const legacyFromShell = await resolveFromShell('cursor-agent')
   if (legacyFromShell) return legacyFromShell
 
-  for (const candidate of legacyCursorAgentCandidates()) {
-    if (await canRun(candidate)) return candidate
-  }
-
   return null
 }
 
 export async function getCursorDebugInfo(): Promise<CursorDebugInfo> {
+  if (isWindows) ensureWindowsAgentPath()
   const agentCommand = await resolveAgentCommand()
   return {
     cursorCommand: await resolveCursorCommand(),
@@ -75,7 +107,7 @@ export async function getCursorDebugInfo(): Promise<CursorDebugInfo> {
     authStatus: agentCommand ? await getAgentAuthStatus(agentCommand) : 'agent not installed',
     checkedCursorCommands: cursorCommandCandidates(),
     checkedAgentCommands: [...agentCandidates(), ...legacyCursorAgentCandidates()],
-    installCommand: cursorInstallCommand,
+    installCommand: isWindows ? windowsCursorInstallCommand : cursorInstallCommand,
     lastInstallOutput,
     processPath: process.env.PATH ?? '',
     shellPath: await getShellPath()
@@ -100,7 +132,8 @@ export async function listAgentModels(): Promise<AgentModel[]> {
   try {
     const { stdout, stderr } = await execFileAsync(agentCommand, ['models'], {
       timeout: 20000,
-      maxBuffer: 1024 * 1024
+      maxBuffer: 1024 * 1024,
+      env: processEnvWithAgentPath()
     })
     const models = parseAgentModelsOutput([stdout, stderr].join('\n'))
     if (models.length === 0) {
@@ -151,7 +184,10 @@ function parseAgentModelsOutput(output: string): AgentModel[] {
 
 async function getAgentAuthStatus(command: string): Promise<string> {
   try {
-    const { stdout, stderr } = await execFileAsync(command, ['status'], { timeout: 5000 })
+    const { stdout, stderr } = await execFileAsync(command, ['status'], {
+      timeout: 8000,
+      env: processEnvWithAgentPath()
+    })
     return [stdout, stderr].join('').trim() || 'status unavailable'
   } catch (error) {
     const output = error instanceof Error ? error.message : String(error)
@@ -160,12 +196,39 @@ async function getAgentAuthStatus(command: string): Promise<string> {
 }
 
 function isAuthenticatedStatus(status: string): boolean {
-  return !/not logged in|authentication required|login required|run 'agent login'|run `agent login`|status failed|status unavailable/i.test(status)
+  return !/not logged in|authentication required|login required|run 'agent login'|run `agent login`|status failed|status unavailable/i.test(
+    status
+  )
 }
 
 async function resolveFromShell(command: string): Promise<string | null> {
+  if (isWindows) {
+    try {
+      const { stdout } = await execFileAsync('where.exe', [command], {
+        timeout: 5000,
+        env: processEnvWithAgentPath()
+      })
+      const lines = stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+      const ordered = [
+        ...lines.filter((line) => /\.exe$/i.test(line)),
+        ...lines.filter((line) => !/\.exe$/i.test(line))
+      ]
+      for (const candidate of ordered) {
+        if (await canRun(candidate)) return candidate
+      }
+    } catch {
+      return null
+    }
+    return null
+  }
+
   try {
-    const { stdout } = await execFileAsync('/bin/zsh', ['-lc', `command -v ${command}`])
+    const { stdout } = await execFileAsync('/bin/zsh', ['-lc', `command -v ${command}`], {
+      timeout: 5000
+    })
     return stdout.trim() || null
   } catch {
     return null
@@ -173,8 +236,23 @@ async function resolveFromShell(command: string): Promise<string | null> {
 }
 
 async function getShellPath(): Promise<string> {
+  if (isWindows) {
+    try {
+      const { stdout } = await execFileAsync(
+        'powershell.exe',
+        ['-NoProfile', '-Command', '[Environment]::GetEnvironmentVariable("PATH","User")'],
+        { timeout: 5000 }
+      )
+      return stdout.trim()
+    } catch {
+      return process.env.PATH ?? ''
+    }
+  }
+
   try {
-    const { stdout } = await execFileAsync('/bin/zsh', ['-lc', 'printf "%s" "$PATH"'])
+    const { stdout } = await execFileAsync('/bin/zsh', ['-lc', 'printf "%s" "$PATH"'], {
+      timeout: 5000
+    })
     return stdout.trim()
   } catch {
     return ''
@@ -182,8 +260,17 @@ async function getShellPath(): Promise<string> {
 }
 
 async function canRun(command: string): Promise<boolean> {
+  if (!command || (path.isAbsolute(command) && !existsSync(command))) {
+    return false
+  }
+
   try {
-    await execFileAsync(command, ['--version'], { timeout: 5000 })
+    await execFileAsync(command, ['--version'], {
+      timeout: 8000,
+      env: processEnvWithAgentPath(),
+      // .cmd / .bat need a shell on Windows; prefer .exe when available.
+      shell: isWindows && /\.(cmd|bat)$/i.test(command)
+    })
     return true
   } catch {
     return false
@@ -192,6 +279,16 @@ async function canRun(command: string): Promise<boolean> {
 
 function agentCandidates(): string[] {
   const home = os.homedir()
+  if (isWindows) {
+    const agentDir = windowsCursorAgentDir()
+    return [
+      path.join(agentDir, 'agent.exe'),
+      path.join(agentDir, 'cursor-agent.exe'),
+      path.join(agentDir, 'agent.cmd'),
+      path.join(agentDir, 'cursor-agent.cmd')
+    ]
+  }
+
   return [
     path.join(home, '.local', 'bin', 'agent'),
     path.join(home, '.cursor', 'bin', 'agent'),
@@ -202,6 +299,11 @@ function agentCandidates(): string[] {
 
 function legacyCursorAgentCandidates(): string[] {
   const home = os.homedir()
+  if (isWindows) {
+    const agentDir = windowsCursorAgentDir()
+    return [path.join(agentDir, 'cursor-agent.exe'), path.join(agentDir, 'cursor-agent.cmd')]
+  }
+
   return [
     path.join(home, '.local', 'bin', 'cursor-agent'),
     path.join(home, '.cursor', 'bin', 'cursor-agent'),
@@ -211,8 +313,12 @@ function legacyCursorAgentCandidates(): string[] {
 }
 
 async function installCursorCli(): Promise<RunTaskResult> {
+  if (isWindows) {
+    return installCursorCliWindows()
+  }
+
   lastInstallOutput = `Running: ${cursorInstallCommand}`
-  const result = await runInstallCommand('/bin/zsh', ['-lc', cursorInstallCommand])
+  const result = await runInstallCommand('/bin/zsh', ['-lc', cursorInstallCommand], 120_000)
   const command = await resolveAgentCommand()
 
   if (command) {
@@ -222,6 +328,37 @@ async function installCursorCli(): Promise<RunTaskResult> {
   return {
     started: false,
     message: result.message || 'Cursor CLI install did not finish. Check your network, then try Connect again.'
+  }
+}
+
+async function installCursorCliWindows(): Promise<RunTaskResult> {
+  ensureWindowsAgentPath()
+  lastInstallOutput = `Running: ${windowsCursorInstallCommand}`
+
+  const result = await runInstallCommand(
+    'powershell.exe',
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', windowsCursorInstallCommand],
+    180_000
+  )
+
+  ensureWindowsAgentPath()
+  const command = await resolveAgentCommand()
+
+  if (command) {
+    const authenticated = await isAgentAuthenticated(command)
+    return {
+      started: true,
+      message: authenticated
+        ? 'Connected to Cursor CLI.'
+        : 'Cursor CLI installed. Sign in to finish setup.'
+    }
+  }
+
+  return {
+    started: false,
+    message:
+      result.message ||
+      'Cursor CLI install did not finish. Check your network, then try Fix again.'
   }
 }
 
@@ -237,6 +374,15 @@ async function resolveCursorCommand(): Promise<string | null> {
 }
 
 function cursorCommandCandidates(): string[] {
+  if (isWindows) {
+    const localAppData =
+      process.env.LOCALAPPDATA?.trim() || path.join(os.homedir(), 'AppData', 'Local')
+    return [
+      path.join(localAppData, 'Programs', 'cursor', 'Cursor.exe'),
+      path.join(localAppData, 'Programs', 'Cursor', 'Cursor.exe')
+    ]
+  }
+
   return [
     '/Applications/Cursor.app/Contents/Resources/app/bin/cursor',
     '/opt/homebrew/bin/cursor',
@@ -244,10 +390,11 @@ function cursorCommandCandidates(): string[] {
   ]
 }
 
-function runInstallCommand(command: string, args: string[]): Promise<RunTaskResult> {
+function runInstallCommand(command: string, args: string[], timeoutMs: number): Promise<RunTaskResult> {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
-      env: process.env
+      env: processEnvWithAgentPath(),
+      windowsHide: true
     })
     let output = ''
     let finished = false
@@ -260,13 +407,15 @@ function runInstallCommand(command: string, args: string[]): Promise<RunTaskResu
     }
 
     const timeout = setTimeout(() => {
-      child.kill('SIGTERM')
+      child.kill()
       lastInstallOutput = output.trim() || lastInstallOutput
       finish({
         started: false,
-        message: 'No installer output yet. Use Terminal install to see the Cursor installer directly.'
+        message: isWindows
+          ? 'Installer is taking too long. Use Sign in / Fix to open PowerShell and finish there.'
+          : 'No installer output yet. Use Terminal install to see the Cursor installer directly.'
       })
-    }, 30000)
+    }, timeoutMs)
 
     child.stdout.on('data', (chunk: Buffer) => {
       output += chunk.toString()

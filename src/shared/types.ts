@@ -247,6 +247,47 @@ export interface CursorStatus {
 
 export type CursorSetupPhase = 'checking' | 'preparing' | 'ready' | 'failed'
 
+/** Global agent CLI used for task runs (sidebar picker). */
+export type AgentCliId = 'cursor' | 'claude' | 'codex'
+
+/** Last known install/login state, persisted so launch UI is instant. */
+export interface AgentCliRememberedProvider {
+  installed: boolean
+  authenticated: boolean
+  available: boolean
+  command: string | null
+  detail: string
+  checkedAt: string
+}
+
+export interface AgentCliSettings {
+  activeCli: AgentCliId
+  rememberedProviders?: Partial<Record<AgentCliId, AgentCliRememberedProvider>>
+}
+
+export interface AgentCliProviderStatus {
+  id: AgentCliId
+  label: string
+  installed: boolean
+  authenticated: boolean
+  available: boolean
+  command: string | null
+  detail: string
+}
+
+export interface AgentCliSnapshotOptions {
+  /** Return DB-remembered status only (instant, no CLI probes). */
+  source?: 'remembered' | 'live'
+  /** Force live probes and rewrite remembered status. */
+  fresh?: boolean
+}
+
+export interface AgentCliSnapshot {
+  activeCli: AgentCliId
+  providers: AgentCliProviderStatus[]
+  active: AgentCliProviderStatus
+}
+
 export interface QuitRequest {
   hasRunningTasks: boolean
 }
@@ -306,7 +347,38 @@ export interface NotchOverlayCapability {
   reason: string | null
 }
 
+/** macOS backlit-keyboard flash alerts (CoreBrightness helper). */
+export interface KeyboardAlertSettings {
+  enabled: boolean
+  /** Flash when a task needs attention (failed / blocked). */
+  flashOnTaskFailed: boolean
+  /** Flash when a task completes successfully. */
+  flashOnTaskCompleted: boolean
+  /** Flash when the last running task stops. */
+  flashOnAllFinished: boolean
+  /** Stop flashing when the main VibeBoard window is focused. */
+  stopOnAppFocus: boolean
+  /** Stop flashing when the related task is opened or marked read. */
+  stopOnOpenTask: boolean
+}
+
+export interface KeyboardAlertCapability {
+  supported: boolean
+  platform: string
+  hasBacklight: boolean
+  reason: string | null
+}
+
 export type NotchOverlayMode = 'compact' | 'expanded'
+
+/** One processing task shown in the notch running overview. */
+export interface NotchRunningAgent {
+  taskId: string
+  title: string
+  projectName: string | null
+  runStartedAt: string | null
+  queuedCount: number
+}
 
 export interface NotchOverlaySnapshot {
   mode: NotchOverlayMode
@@ -319,18 +391,52 @@ export interface NotchOverlaySnapshot {
   detail: string | null
   taskId: string | null
   taskTitle: string | null
+  /** Tab / project name for the finished task. */
+  projectName: string | null
   /** Latest assistant reply when showing the finish-chat panel. */
   answer: string | null
   /** Show the chat reply field in the expanded notch. */
   showReply: boolean
+  /** Expanded live overview of processing agents (click compact Running). */
+  showRunningOverview: boolean
+  /**
+   * Which status list the overview is showing.
+   * null when the overview is closed.
+   */
+  overviewKind: 'running' | 'done' | null
+  /** Agents/tasks for the status overview (running or done unread). */
+  runningAgents: NotchRunningAgent[]
+  /** Selected agent in the running overview (system tail + queue). */
+  selectedRunningTaskId: string | null
+  /** True while a task detail page is open inside the running overview. */
+  runningDetailOpen: boolean
+  /**
+   * Status of the pinned detail task (may stay open after processing ends).
+   * null when no detail is open.
+   */
+  selectedRunningStatus: 'processing' | 'done' | 'attention' | null
+  /** Recent system/progress lines for the selected running task. */
+  systemLines: string[]
+  /** Queued follow-up messages waiting for the selected running task. */
+  queuedMessages: Array<{ id: string; content: string }>
   /** Ask the overlay to focus the reply input. */
   focusInput: boolean
   /** Whether the island surface is revealed (animates in/out of the hardware notch). */
   surfaceVisible: boolean
   /** Remaining seconds shown for hold-Esc-to-close (finish chat only). */
   escapeCloseRemainingSec: number | null
-  /** Finish chat temporarily parked after click-away (mid size, click to expand). */
+  /** Finish chat / Running-Done detail temporarily parked after click-away (mid size, click to expand). */
   parked: boolean
+  /**
+   * Finish chat at compact status-bar height during appear/disappear.
+   * Vertical phase uses this size; side tuck/reveal happens while it is true.
+   */
+  compactSize: boolean
+  /**
+   * Finish appear only: start at compact island width before CSS widens.
+   * Dismiss stays full width (vertical-only shrink).
+   */
+  narrowSize: boolean
   /** Other finished tasks waiting behind the current finish panel. */
   finishQueueRemaining: number
 }
@@ -361,6 +467,8 @@ export interface UpdateInfo {
 export interface VibeBoardApi {
   getState: () => Promise<AppState>
   getTaskDetail: (input: GetTaskDetailInput) => Promise<TaskDetail>
+  /** Read a workspace file for a task (worktree first, then project root). */
+  readTaskWorkspaceFile: (input: { taskId: string; filePath: string }) => Promise<string | null>
   searchWorkspace: (input: SearchWorkspaceInput) => Promise<SearchResult[]>
   recordSearchOpen: (input: RecordSearchOpenInput) => Promise<void>
   onStateChanged: (callback: () => void) => () => void
@@ -379,6 +487,10 @@ export interface VibeBoardApi {
   getNotchOverlayCapability: () => Promise<NotchOverlayCapability>
   getNotchOverlaySettings: () => Promise<NotchOverlaySettings>
   updateNotchOverlaySettings: (settings: NotchOverlaySettings) => Promise<NotchOverlaySettings>
+  getKeyboardAlertCapability: () => Promise<KeyboardAlertCapability>
+  getKeyboardAlertSettings: () => Promise<KeyboardAlertSettings>
+  updateKeyboardAlertSettings: (settings: KeyboardAlertSettings) => Promise<KeyboardAlertSettings>
+  testKeyboardAlertFlash: () => Promise<{ ok: boolean; reason?: string }>
   getNotchOverlaySnapshot: () => Promise<NotchOverlaySnapshot>
   onNotchOverlaySnapshot: (callback: (snapshot: NotchOverlaySnapshot) => void) => () => void
   openTaskFromNotch: (taskId: string) => Promise<void>
@@ -386,15 +498,30 @@ export interface VibeBoardApi {
   peekNotchOverlay: () => Promise<void>
   dismissNotchFinishChat: (options?: { force?: boolean }) => Promise<boolean>
   reopenNotchFinishChat: () => Promise<boolean>
+  openNotchRunningOverview: () => Promise<boolean>
+  openNotchDoneOverview: () => Promise<boolean>
+  closeNotchRunningOverview: () => Promise<boolean>
+  selectNotchRunningTask: (taskId: string) => Promise<boolean>
+  closeNotchRunningDetail: () => Promise<boolean>
   unparkNotchFinishChat: () => Promise<boolean>
   parkNotchFinishChat: () => Promise<boolean>
   scheduleDevNotchFinishTest: (delayMs?: number) => Promise<{ ok: boolean; delayMs?: number; reason?: string }>
-  startNotchMarketingDemo: () => Promise<{ ok: boolean; reason?: string }>
-  stopNotchMarketingDemo: () => Promise<{ ok: boolean }>
+  scheduleDevNotchRunningTest: (delayMs?: number) => Promise<{ ok: boolean; delayMs?: number; reason?: string }>
   setNotchMousePassthrough: (passthrough: boolean) => void
   sendNotchReply: (input: { taskId: string; content: string }) => Promise<void>
+  updateQueuedTaskMessage: (input: {
+    taskId: string
+    messageId: string
+    content: string
+  }) => Promise<boolean>
+  removeQueuedTaskMessage: (input: { taskId: string; messageId: string }) => Promise<boolean>
   getOnboardingComplete: () => Promise<boolean>
   markOnboardingComplete: () => Promise<void>
+  windowMinimize: () => Promise<void>
+  windowMaximize: () => Promise<boolean>
+  windowClose: () => Promise<void>
+  windowIsMaximized: () => Promise<boolean>
+  onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => () => void
   reportUserActivity: () => void
   createProject: (input: CreateProjectInput) => Promise<Project | null>
   relocateProject: (projectId: string) => Promise<Project | null>
@@ -425,10 +552,14 @@ export interface VibeBoardApi {
   updateTaskStatus: (input: UpdateTaskStatusInput) => Promise<void>
   markTaskRead: (taskId: string) => Promise<void>
   getCursorAdapterStatus: () => Promise<CursorStatus>
+  getAgentCliSettings: () => Promise<AgentCliSettings>
+  updateAgentCliSettings: (settings: Partial<AgentCliSettings>) => Promise<AgentCliSettings>
+  getAgentCliSnapshot: (options?: AgentCliSnapshotOptions) => Promise<AgentCliSnapshot>
   listAgentModels: () => Promise<AgentModel[]>
   installCursorCli: () => Promise<RunTaskResult>
   openCursorInstallTerminal: () => Promise<void>
   openCursorSetup: () => Promise<void>
+  openAgentCliSetup: (id: AgentCliId) => Promise<void>
   confirmQuit: () => Promise<void>
   cancelQuit: () => Promise<void>
 }

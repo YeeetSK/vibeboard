@@ -1,9 +1,24 @@
 import { app } from 'electron'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { rmSync } from 'node:fs'
 import path from 'node:path'
-import type { CodeChange, ConversationAttachment, Project, RunMode, Task } from '../shared/types'
-import { isAgentAuthenticated, resolveAgentCommand } from './cursorAdapter'
+import type {
+  AgentCliId,
+  CodeChange,
+  ConversationAttachment,
+  Project,
+  RunMode,
+  Task
+} from '../shared/types'
+import {
+  agentCliDisplayName,
+  buildProviderSpawn,
+  isProviderAuthenticated,
+  processEnvWithProviderPath,
+  resolveProviderCommand,
+  windowsCommandNeedsShell
+} from './agentCli'
 import { VibeBoardStore } from './database'
 
 const protectedBranchNames = new Set(['main', 'master', 'develop', 'development', 'trunk', 'dev', 'release'])
@@ -35,6 +50,45 @@ interface ActiveCursorRun {
 
 const activeCursorRuns = new Map<string, ActiveCursorRun>()
 
+function quoteWindowsCmdArg(value: string): string {
+  if (!value) return '""'
+  if (!/[\s"]/g.test(value)) return value
+  return `"${value.replace(/"/g, '\\"')}"`
+}
+
+/** Spawn Claude/Codex/Cursor with Windows .cmd shim support and safe argv quoting. */
+function spawnProviderProcess(
+  command: string,
+  args: string[],
+  options: { cwd: string; hooksPath: string }
+): ChildProcess {
+  const env = {
+    ...processEnvWithProviderPath(),
+    // Force agent git commits through our hooks so Co-authored-by / Cursor trailers are stripped.
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'core.hooksPath',
+    GIT_CONFIG_VALUE_0: options.hooksPath
+  }
+  const base = {
+    cwd: options.cwd,
+    // Ignore stdin. Codex/Claude treat an open pipe as "wait for more prompt input"
+    // and hang forever even when the prompt was passed as an argv argument.
+    stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'],
+    env
+  }
+
+  if (windowsCommandNeedsShell(command)) {
+    const cmdline = [quoteWindowsCmdArg(command), ...args.map(quoteWindowsCmdArg)].join(' ')
+    return spawn(cmdline, {
+      ...base,
+      shell: true,
+      windowsVerbatimArguments: true
+    })
+  }
+
+  return spawn(command, args, base)
+}
+
 export function stopCursorTask(taskId: string): boolean {
   const active = activeCursorRuns.get(taskId)
   if (!active) return false
@@ -56,6 +110,37 @@ export function stopAllCursorTasks(): string[] {
   return taskIds
 }
 
+/** Read a relative file from the task worktree (preferred) or project checkout. */
+export async function readTaskWorkspaceFile(
+  store: VibeBoardStore,
+  taskId: string,
+  relativePath: string
+): Promise<string | null> {
+  const context = store.getTaskRunContext(taskId)
+  if (!context?.project) return null
+
+  const cleaned = relativePath.trim().replace(/\\/g, '/')
+  if (!cleaned || cleaned.startsWith('/') || cleaned.includes('\0')) return null
+  if (cleaned.split('/').some((part) => part === '..')) return null
+
+  const roots = [context.task.worktreePath, context.project.path]
+    .filter((root): root is string => Boolean(root?.trim()))
+    .map((root) => path.resolve(root))
+
+  for (const root of roots) {
+    const fullPath = path.resolve(root, cleaned)
+    const rootWithSep = root.endsWith(path.sep) ? root : `${root}${path.sep}`
+    if (fullPath !== root && !fullPath.startsWith(rootWithSep)) continue
+    try {
+      return await readFile(fullPath, 'utf8')
+    } catch {
+      // try next root
+    }
+  }
+
+  return null
+}
+
 export async function runCursorTask({
   taskId,
   store,
@@ -69,28 +154,38 @@ export async function runCursorTask({
 
   if (!context.project) {
     store.updateTaskStatus({ taskId, status: 'attention' })
-    store.appendConversation(taskId, 'system', 'Select a project before running this task with Cursor.')
+    store.appendConversation(taskId, 'system', 'Select a project before running this task.')
     onStateChanged()
     return
   }
   const isRevertRun = context.prompt.includes('Revert the code changes made for this specific task only.')
   const isCommitToMainRun = /Push the commit to (main|the default branch) on origin/i.test(context.prompt)
+  const providerId: AgentCliId = store.getAgentCliSettings().activeCli
+  const providerLabel = agentCliDisplayName(providerId)
 
   store.updateTaskStatus({ taskId, status: 'processing' })
-  store.appendConversation(taskId, 'system', 'Starting Cursor CLI agent in the project folder.')
+  store.appendConversation(taskId, 'system', `Starting ${providerLabel} CLI in the project folder.`)
   onStateChanged()
 
-  const agentCommand = await resolveAgentCommand()
+  const agentCommand = await resolveProviderCommand(providerId)
   if (!agentCommand) {
     store.updateTaskStatus({ taskId, status: 'attention' })
-    store.appendConversation(taskId, 'system', 'Cursor CLI command `agent` is not installed or is not available on PATH.')
+    store.appendConversation(
+      taskId,
+      'system',
+      `${providerLabel} CLI is not installed. Use Install & sign in in the sidebar, then run this task again.`
+    )
     onStateChanged()
     return
   }
 
-  if (!(await isAgentAuthenticated(agentCommand))) {
+  if (!(await isProviderAuthenticated(providerId, agentCommand))) {
     store.updateTaskStatus({ taskId, status: 'attention' })
-    store.appendConversation(taskId, 'system', 'Cursor Agent is installed but not signed in. Use the sidebar login action, then run this task again.')
+    store.appendConversation(
+      taskId,
+      'system',
+      `${providerLabel} is installed but not signed in. Use Sign in in the sidebar, then run this task again.`
+    )
     onStateChanged()
     return
   }
@@ -117,6 +212,8 @@ export async function runCursorTask({
     }
   }
 
+  await ensureProjectMemoryGitignoredForRoots(context.project.path, runTarget.cwd, runTarget.worktreePath)
+
   const baselineDiff = await collectGitDiffText(runTarget.cwd)
   const optimizedPrompt = await buildFocusedPrompt(
     runTarget.cwd,
@@ -127,28 +224,26 @@ export async function runCursorTask({
   )
   onStateChanged()
 
-  const agentArgs = ['--print', '--force', '--trust', '--output-format', 'stream-json']
-  const selectedModel = context.task.model?.trim()
-  if (selectedModel && selectedModel.toLowerCase() !== 'auto') {
-    agentArgs.push('--model', selectedModel)
-  }
-  agentArgs.push(optimizedPrompt)
+  const spawnPlan = buildProviderSpawn(providerId, agentCommand, optimizedPrompt, context.task.model)
 
-  const child = spawn(agentCommand, agentArgs, {
+  const hooksPath = await ensureVibeBoardGitHooks()
+  const child = spawnProviderProcess(spawnPlan.command, spawnPlan.args, {
     cwd: runTarget.cwd,
-    env: process.env
+    hooksPath
   })
 
   let stdoutBuffer = ''
   let stderrBuffer = ''
+  let stderrLineBuffer = ''
   let aborted = false
   const stdoutLines: string[] = []
   const progressPublisher = createLiveProgressPublisher({
     taskId,
     store,
-    onStateChanged
+    onStateChanged,
+    providerId
   })
-  store.appendConversation(taskId, 'system', 'Agent is running. Tool activity and thinking will appear here.')
+  store.appendConversation(taskId, 'system', `${providerLabel} is running. Tool activity and thinking will appear here.`)
   onStateChanged()
 
   const abort = (): void => {
@@ -185,7 +280,17 @@ export async function runCursorTask({
   })
 
   child.stderr.on('data', (chunk: Buffer) => {
-    stderrBuffer += chunk.toString()
+    const text = chunk.toString()
+    stderrBuffer += text
+    // Codex streams human progress on stderr; surface useful lines live.
+    if (providerId === 'codex' || providerId === 'claude') {
+      stderrLineBuffer += text
+      const lines = stderrLineBuffer.split(/\r?\n/)
+      stderrLineBuffer = lines.pop() ?? ''
+      for (const line of lines) {
+        progressPublisher.handleStderrLine(line)
+      }
+    }
   })
 
   await new Promise<void>((resolve) => {
@@ -225,9 +330,52 @@ export async function runCursorTask({
         progressPublisher.handleLine(stdoutBuffer)
       }
 
-      const assistantMessage = summarizeCursorRun(stdoutLines)
+      let assistantMessage = summarizeProviderRun(providerId, stdoutLines, stderrBuffer)
+      let lastMessageFileChars = 0
+      let lastMessageFilePresent = false
+      if (!assistantMessage && spawnPlan.lastMessagePath) {
+        try {
+          const fromFile = (await readFile(spawnPlan.lastMessagePath, 'utf8')).trim()
+          lastMessageFilePresent = true
+          lastMessageFileChars = fromFile.length
+          if (fromFile) assistantMessage = normalizeAssistantReply(fromFile)
+        } catch {
+          // file missing when the run failed before writing a final message
+        }
+      }
+      if (spawnPlan.lastMessagePath) {
+        try {
+          rmSync(path.dirname(spawnPlan.lastMessagePath), { recursive: true, force: true })
+        } catch {
+          // ignore cleanup failures
+        }
+      }
       if (assistantMessage) {
         store.appendConversation(taskId, 'assistant', assistantMessage)
+      } else if (code === 0 && !aborted) {
+        store.appendConversation(
+          taskId,
+          'system',
+          `${providerLabel} finished without a chat reply. Retry the prompt if you expected an answer.`
+        )
+      }
+
+      if (providerId === 'codex' && (!assistantMessage || process.env.VIBEBOARD_DEBUG_CODEX === '1')) {
+        const debug = buildCodexRunDebug({
+          taskId,
+          exitCode: code,
+          aborted,
+          stdoutLines,
+          stderr: stderrBuffer,
+          assistantPreview: assistantMessage,
+          lastMessageFilePresent,
+          lastMessageFileChars,
+          lastMessagePath: spawnPlan.lastMessagePath ?? null
+        })
+        void writeCodexRunDebugLog(debug)
+        if (!assistantMessage && !aborted) {
+          store.appendConversation(taskId, 'system', formatCodexDebugSystemMessage(debug))
+        }
       }
 
       if (aborted) {
@@ -285,7 +433,7 @@ export async function runCursorTask({
         if (!continueQueue) {
           store.updateTaskStatus({ taskId, status: 'attention' })
         }
-        const failureText = stderrBuffer.trim() || `Cursor CLI agent exited with code ${code ?? 'unknown'}.`
+        const failureText = stderrBuffer.trim() || `${providerLabel} CLI exited with code ${code ?? 'unknown'}.`
         const recoveryText = assistantMessage
           ? 'Recovered partial agent output above. Retry keeps the saved conversation and focused project context.'
           : 'Retry keeps the saved conversation and focused project context.'
@@ -349,7 +497,13 @@ function createLiveProgressPublisher(input: {
   taskId: string
   store: VibeBoardStore
   onStateChanged: () => void
-}): { handleLine: (line: string) => void; flush: () => void; stop: () => void } {
+  providerId: AgentCliId
+}): {
+  handleLine: (line: string) => void
+  handleStderrLine: (line: string) => void
+  flush: () => void
+  stop: () => void
+} {
   let lastPublishedAt = 0
   let lastPublishedText = ''
   let pendingText: string | null = null
@@ -421,6 +575,13 @@ function createLiveProgressPublisher(input: {
 
   return {
     handleLine: (line: string) => {
+      const providerUpdate = extractProviderProgress(input.providerId, line)
+      if (providerUpdate) {
+        thinkingBuffer = ''
+        queue(providerUpdate)
+        return
+      }
+
       const toolUpdate = extractLiveToolProgress(line)
       if (toolUpdate) {
         thinkingBuffer = ''
@@ -435,6 +596,12 @@ function createLiveProgressPublisher(input: {
       const preview = formatThinkingProgress(thinkingBuffer)
       if (!preview) return
       queue(preview)
+    },
+    handleStderrLine: (line: string) => {
+      const update = extractStderrProgress(input.providerId, line)
+      if (!update) return
+      thinkingBuffer = ''
+      queue(update)
     },
     flush: () => {
       if (stopped) return
@@ -454,6 +621,34 @@ function createLiveProgressPublisher(input: {
       thinkingBuffer = ''
     }
   }
+}
+
+function extractStderrProgress(providerId: AgentCliId, line: string): string | null {
+  const trimmed = line.trim()
+  if (!trimmed) return null
+  // Skip noisy launcher warnings.
+  if (/^WARNING:/i.test(trimmed)) return null
+  if (/operation not permitted/i.test(trimmed)) return null
+  if (/^\s*at\s+/i.test(trimmed)) return null
+
+  if (providerId === 'codex') {
+    if (/^(thinking|working|running|reading|editing|searching|planning|executing)\b/i.test(trimmed)) {
+      return clampLiveProgress(trimmed)
+    }
+    if (/error:|failed|not logged in|unauthorized/i.test(trimmed)) {
+      return clampLiveProgress(trimmed)
+    }
+    // Short status-y lines from the TUI-ish stderr progress stream.
+    if (trimmed.length <= 180 && !trimmed.startsWith('{') && !/^\[/.test(trimmed)) {
+      return clampLiveProgress(trimmed)
+    }
+  }
+
+  if (providerId === 'claude' && /error:|failed|not logged in|authentication/i.test(trimmed)) {
+    return clampLiveProgress(trimmed)
+  }
+
+  return null
 }
 
 function extractLiveToolProgress(line: string): string | null {
@@ -822,6 +1017,33 @@ async function resolveDefaultBranch(cwd: string): Promise<string | null> {
   return null
 }
 
+/**
+ * Hooks used for agent runs: strip Co-authored-by / Cursor attribution from commit messages.
+ * Wired via GIT_CONFIG core.hooksPath so we rewrite the message even if the agent passes --trailer.
+ */
+async function ensureVibeBoardGitHooks(): Promise<string> {
+  const hooksPath = path.join(app.getPath('userData'), 'git-hooks')
+  await mkdir(hooksPath, { recursive: true })
+
+  const stripScript = `#!/bin/sh
+# VibeBoard: leave commit authorship to the user. Strip agent attribution trailers.
+msg_file="$1"
+[ -n "$msg_file" ] && [ -f "$msg_file" ] || exit 0
+tmp="$(mktemp)"
+# Drop Co-authored-by and Made-with / Made with Cursor style trailers (case-insensitive).
+grep -viE '^[[:space:]]*(Co-authored-by:|Made-with:|Made-with[[:space:]]|Made with )' "$msg_file" > "$tmp" || cp "$msg_file" "$tmp"
+mv "$tmp" "$msg_file"
+exit 0
+`
+
+  for (const hookName of ['prepare-commit-msg', 'commit-msg'] as const) {
+    const hookPath = path.join(hooksPath, hookName)
+    await writeFile(hookPath, stripScript, { encoding: 'utf8', mode: 0o755 })
+  }
+
+  return hooksPath
+}
+
 async function buildFocusedPrompt(
   projectPath: string,
   prompt: string,
@@ -852,6 +1074,12 @@ async function buildFocusedPrompt(
   return [
     'You are running inside VibeBoard as a background coding agent.',
     '',
+    'Git authorship rules (mandatory for every commit):',
+    '- Never add Co-authored-by, Made-with, Made with Cursor, or any agent/tool attribution trailer.',
+    '- Do not pass --trailer, Co-authored-by, or similar attribution flags on git commit.',
+    '- Leave authorship entirely to the user (normal git user.name / user.email only).',
+    '- If a suggested commit command includes co-author attribution, rewrite it without that attribution and run the cleaned command.',
+    '',
     'Token and exploration rules:',
     '- Do not scan the whole repository unless the task explicitly requires it.',
     '- Start from the focused file candidates below.',
@@ -861,6 +1089,8 @@ async function buildFocusedPrompt(
     `- Use ${projectMemoryFileName} for durable project context before re-discovering basics.`,
     `- Update ${projectMemoryFileName} only when you learn stable project facts, setup steps, conventions, or standing user preferences.`,
     `- Keep ${projectMemoryFileName} concise and never store secrets, tokens, credentials, or temporary task logs.`,
+    `- Never stage or commit ${projectMemoryFileName}. It must stay local (listed in .gitignore).`,
+    `- You may commit a .gitignore entry for ${projectMemoryFileName} if needed so it stays ignored.`,
     `- When you are ready to give the final user-facing answer, write ${actualMessageMarker} exactly once on its own line as the first line of that final answer.`,
     `- Never mention ${actualMessageMarker} again after that first marker line.`,
     `- Put only the final answer after that first marker line. Do not put tool logs, stream metadata, progress narration, prompt text, or internal reasoning after it.`,
@@ -893,7 +1123,7 @@ async function buildFocusedPrompt(
 }
 
 async function prepareProjectMemory(projectPath: string): Promise<string> {
-  await ensureProjectMemoryIgnored(projectPath)
+  await ensureProjectMemoryGitignored(projectPath)
 
   const memoryPath = path.join(projectPath, projectMemoryFileName)
   let content = ''
@@ -935,27 +1165,73 @@ function initialProjectMemoryContent(): string {
   ].join('\n')
 }
 
-async function ensureProjectMemoryIgnored(projectPath: string): Promise<void> {
-  const gitDir = await resolveGitDir(projectPath)
-  if (!gitDir) return
-
-  const infoDir = path.join(gitDir, 'info')
-  const excludePath = path.join(infoDir, 'exclude')
-
-  try {
-    await mkdir(infoDir, { recursive: true })
-    const existing = await readFile(excludePath, 'utf8').catch(() => '')
-    if (existing.split(/\r?\n/).some((line) => line.trim() === projectMemoryFileName)) return
-
-    const prefix = existing && !existing.endsWith('\n') ? '\n' : ''
-    await writeFile(
-      excludePath,
-      `${existing}${prefix}\n# VibeBoard local project memory\n${projectMemoryFileName}\n`,
-      'utf8'
+function gitignoreAlreadyHasMemoryEntry(content: string): boolean {
+  return content.split(/\r?\n/).some((line) => {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) return false
+    return (
+      trimmed === projectMemoryFileName ||
+      trimmed === `/${projectMemoryFileName}` ||
+      trimmed === `**/${projectMemoryFileName}` ||
+      trimmed === '*.vibeboard-memory.md'
     )
+  })
+}
+
+function appendMemoryIgnoreBlock(existing: string): string {
+  const normalized = existing.replace(/\s+$/u, '')
+  const block = `# VibeBoard local project memory\n${projectMemoryFileName}\n`
+  if (!normalized) return block
+  return `${normalized}\n\n${block}`
+}
+
+/**
+ * Ensure `.vibeboard-memory.md` is listed in `.gitignore` (append-only) and unstaged if needed.
+ * Safe to call on task open and before agent runs.
+ */
+export async function ensureProjectMemoryGitignored(projectPath: string): Promise<void> {
+  if (!projectPath.trim()) return
+
+  const gitignorePath = path.join(projectPath, '.gitignore')
+  try {
+    const existing = await readFile(gitignorePath, 'utf8').catch(() => '')
+    if (!gitignoreAlreadyHasMemoryEntry(existing)) {
+      await writeFile(gitignorePath, appendMemoryIgnoreBlock(existing), 'utf8')
+    }
   } catch {
-    // Ignoring is best-effort. The prompt still tells the agent not to commit this file.
+    // Best-effort. Prompt still tells the agent not to commit this file.
   }
+
+  // Also keep a local exclude entry (shared common dir when possible).
+  try {
+    const commonDir = await resolveGitCommonDir(projectPath)
+    if (commonDir) {
+      const infoDir = path.join(commonDir, 'info')
+      const excludePath = path.join(infoDir, 'exclude')
+      await mkdir(infoDir, { recursive: true })
+      const existing = await readFile(excludePath, 'utf8').catch(() => '')
+      if (!gitignoreAlreadyHasMemoryEntry(existing)) {
+        await writeFile(excludePath, appendMemoryIgnoreBlock(existing), 'utf8')
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // If it was already staged/tracked, drop it from the index without deleting the file.
+  try {
+    await runCommand('git', ['rm', '--cached', '-f', '--ignore-unmatch', '--', projectMemoryFileName], projectPath)
+  } catch {
+    // ignore
+  }
+}
+
+/** Ensure ignore rules in the project checkout and any task worktree. */
+export async function ensureProjectMemoryGitignoredForRoots(
+  ...roots: Array<string | null | undefined>
+): Promise<void> {
+  const unique = [...new Set(roots.map((root) => root?.trim()).filter(Boolean))] as string[]
+  await Promise.all(unique.map((root) => ensureProjectMemoryGitignored(root)))
 }
 
 async function resolveGitDir(projectPath: string): Promise<string | null> {
@@ -974,6 +1250,16 @@ async function resolveGitDir(projectPath: string): Promise<string | null> {
   } catch {
     return null
   }
+}
+
+async function resolveGitCommonDir(projectPath: string): Promise<string | null> {
+  try {
+    const common = (await runCommand('git', ['rev-parse', '--git-common-dir'], projectPath)).trim()
+    if (common) return path.resolve(projectPath, common)
+  } catch {
+    // fall through
+  }
+  return resolveGitDir(projectPath)
 }
 
 function listTrackedFiles(cwd: string): Promise<string[]> {
@@ -1096,6 +1382,283 @@ function scoreFile(file: string, promptTerms: Set<string>, isChanged: boolean): 
 
 function isIgnoredForContext(file: string): boolean {
   return /(^|\/)(node_modules|dist|out|release|\.git)\//.test(file) || /\.(png|jpg|jpeg|gif|webp|dmg|exe|zip)$/i.test(file)
+}
+
+function summarizeProviderRun(providerId: AgentCliId, lines: string[], stderr: string): string {
+  if (providerId === 'claude') {
+    const fromStream = summarizeClaudeRun(lines)
+    if (fromStream) return fromStream
+  }
+  if (providerId === 'codex') {
+    const fromStream = summarizeCodexRun(lines)
+    if (fromStream) return fromStream
+  }
+  // Cursor stream dumps need the aggressive filter; Claude/Codex already returned above.
+  if (providerId === 'cursor') {
+    const cursorStyle = summarizeCursorRun(lines)
+    if (cursorStyle) return cursorStyle
+  }
+  const stderrText = extractPlainStderrFromStderr(stderr)
+  if (stderrText) return stderrText
+  return ''
+}
+
+function summarizeClaudeRun(lines: string[]): string {
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const trimmed = lines[i]?.trim()
+    if (!trimmed) continue
+    try {
+      const event = JSON.parse(trimmed) as Record<string, unknown>
+      if (event.type === 'result' && typeof event.result === 'string' && event.result.trim()) {
+        return normalizeAssistantReply(event.result)
+      }
+    } catch {
+      // keep scanning
+    }
+  }
+  return ''
+}
+
+function summarizeCodexRun(lines: string[]): string {
+  const messages: string[] = []
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      const event = JSON.parse(trimmed) as Record<string, unknown>
+      // Prefer completed agent_message items; skip outer event text that can be tool/status noise.
+      const item = event.item as Record<string, unknown> | undefined
+      if (item) {
+        const fromItem = extractCodexMessageText(item)
+        if (
+          fromItem &&
+          (event.type === 'item.completed' ||
+            event.type === 'item.updated' ||
+            event.type === 'item.done' ||
+            item.type === 'agent_message')
+        ) {
+          messages.push(fromItem)
+          continue
+        }
+      }
+      if (event.type === 'agent_message' || event.type === 'message') {
+        const direct = extractCodexMessageText(event)
+        if (direct) messages.push(direct)
+      }
+    } catch {
+      // ignore
+    }
+  }
+  if (messages.length > 0) return normalizeAssistantReply(messages[messages.length - 1])
+  return ''
+}
+
+interface CodexRunDebug {
+  taskId: string
+  at: string
+  exitCode: number | null
+  aborted: boolean
+  stdoutLineCount: number
+  stderrChars: number
+  stderrHead: string
+  eventTypes: string[]
+  itemTypes: string[]
+  assistantPreview: string
+  lastMessageFilePresent: boolean
+  lastMessageFileChars: number
+  lastMessagePath: string | null
+  sampleLines: string[]
+}
+
+function buildCodexRunDebug(input: {
+  taskId: string
+  exitCode: number | null
+  aborted: boolean
+  stdoutLines: string[]
+  stderr: string
+  assistantPreview: string
+  lastMessageFilePresent: boolean
+  lastMessageFileChars: number
+  lastMessagePath: string | null
+}): CodexRunDebug {
+  const eventTypes: string[] = []
+  const itemTypes: string[] = []
+  const sampleLines: string[] = []
+  for (const line of input.stdoutLines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    if (sampleLines.length < 8) {
+      sampleLines.push(trimmed.length > 240 ? `${trimmed.slice(0, 240)}…` : trimmed)
+    }
+    try {
+      const event = JSON.parse(trimmed) as Record<string, unknown>
+      if (typeof event.type === 'string') eventTypes.push(event.type)
+      const item = event.item as Record<string, unknown> | undefined
+      if (item && typeof item.type === 'string') itemTypes.push(item.type)
+    } catch {
+      eventTypes.push('non-json')
+    }
+  }
+  return {
+    taskId: input.taskId,
+    at: new Date().toISOString(),
+    exitCode: input.exitCode,
+    aborted: input.aborted,
+    stdoutLineCount: input.stdoutLines.length,
+    stderrChars: input.stderr.length,
+    stderrHead: input.stderr.trim().slice(0, 400),
+    eventTypes: uniqueTail(eventTypes, 24),
+    itemTypes: uniqueTail(itemTypes, 24),
+    assistantPreview: input.assistantPreview.slice(0, 200),
+    lastMessageFilePresent: input.lastMessageFilePresent,
+    lastMessageFileChars: input.lastMessageFileChars,
+    lastMessagePath: input.lastMessagePath,
+    sampleLines
+  }
+}
+
+function uniqueTail(values: string[], max: number): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (let i = values.length - 1; i >= 0 && out.length < max; i -= 1) {
+    const value = values[i]
+    if (seen.has(value)) continue
+    seen.add(value)
+    out.push(value)
+  }
+  return out.reverse()
+}
+
+function formatCodexDebugSystemMessage(debug: CodexRunDebug): string {
+  const parts = [
+    'Codex debug:',
+    `exit=${debug.exitCode ?? 'null'}`,
+    `stdoutLines=${debug.stdoutLineCount}`,
+    `events=${debug.eventTypes.join(',') || '(none)'}`,
+    `items=${debug.itemTypes.join(',') || '(none)'}`,
+    `lastMessageFile=${debug.lastMessageFilePresent ? `${debug.lastMessageFileChars} chars` : 'missing'}`,
+    `stderrChars=${debug.stderrChars}`
+  ]
+  if (debug.stderrHead) parts.push(`stderr=${debug.stderrHead.replace(/\s+/g, ' ')}`)
+  if (debug.sampleLines[0]) parts.push(`sample=${debug.sampleLines[0]}`)
+  return parts.join(' ')
+}
+
+async function writeCodexRunDebugLog(debug: CodexRunDebug): Promise<void> {
+  try {
+    const dir = path.join(app.getPath('userData'), 'logs')
+    await mkdir(dir, { recursive: true })
+    await writeFile(path.join(dir, 'codex-last-run.json'), `${JSON.stringify(debug, null, 2)}\n`, 'utf8')
+  } catch {
+    // best-effort debug only
+  }
+}
+
+/** Codex/Claude replies often start with "I'm…" - never treat that as Cursor progress noise. */
+function normalizeAssistantReply(text: string): string {
+  return normalizeCursorText(text).replace(/[—–]/g, '-').trim()
+}
+
+function extractCodexMessageText(value: Record<string, unknown>): string | null {
+  if (typeof value.text === 'string' && value.text.trim()) return value.text.trim()
+  if (typeof value.message === 'string' && value.message.trim()) {
+    // Skip non-reply informational items.
+    if (value.type === 'error') return null
+    return value.message.trim()
+  }
+  if (typeof value.content === 'string' && value.content.trim()) return value.content.trim()
+  if (value.type === 'agent_message' && typeof value.text === 'string' && value.text.trim()) {
+    return value.text.trim()
+  }
+  return null
+}
+
+function extractPlainReplyFromStderr(stderr: string): string {
+  const trimmed = stderr.trim()
+  if (!trimmed || trimmed.length > 4000) return ''
+  if (/^WARNING:|error:|failed|not logged|Reading additional input/i.test(trimmed)) return ''
+  // Prefer the last non-empty paragraph that looks like prose.
+  const paragraphs = trimmed
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+  for (let i = paragraphs.length - 1; i >= 0; i -= 1) {
+    const part = paragraphs[i]
+    if (part.startsWith('{') || part.startsWith('[')) continue
+    if (/^(thinking|working|running|reading|editing)\b/i.test(part)) continue
+    if (part.length < 2) continue
+    return normalizeAssistantReply(part)
+  }
+  return ''
+}
+
+function extractProviderProgress(providerId: AgentCliId, line: string): string | null {
+  const trimmed = line.trim()
+  if (!trimmed) return null
+  try {
+    const event = JSON.parse(trimmed) as Record<string, unknown>
+    if (providerId === 'claude') {
+      if (event.type === 'assistant') {
+        const message = event.message as Record<string, unknown> | undefined
+        const content = message?.content
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (!block || typeof block !== 'object') continue
+            const record = block as Record<string, unknown>
+            if (record.type === 'tool_use' && typeof record.name === 'string') {
+              return clampLiveProgress(`Using ${record.name}`)
+            }
+          }
+        }
+      }
+      if (event.type === 'stream_event') {
+        const nested = event.event as Record<string, unknown> | undefined
+        const delta = nested?.delta as Record<string, unknown> | undefined
+        if (delta?.type === 'text_delta' && typeof delta.text === 'string' && delta.text.trim()) {
+          return null
+        }
+      }
+    }
+    if (providerId === 'codex') {
+      if (event.type === 'thread.started' || event.type === 'turn.started') {
+        return clampLiveProgress('Codex started working…')
+      }
+      if (event.type === 'turn.completed') {
+        return clampLiveProgress('Codex finished a turn…')
+      }
+      if (event.type === 'turn.failed' || event.type === 'error') {
+        const message =
+          typeof event.message === 'string'
+            ? event.message
+            : typeof event.error === 'string'
+              ? event.error
+              : 'Codex reported an error'
+        return clampLiveProgress(message)
+      }
+      const item = event.item as Record<string, unknown> | undefined
+      if (event.type === 'item.started' && item?.type === 'command_execution' && typeof item.command === 'string') {
+        return clampLiveProgress(`Running ${item.command}`)
+      }
+      if (event.type === 'item.started' && item?.type === 'file_change') {
+        return clampLiveProgress('Editing files…')
+      }
+      if (
+        (event.type === 'item.started' || event.type === 'item.completed') &&
+        item?.type === 'reasoning' &&
+        typeof item.text === 'string' &&
+        item.text.trim()
+      ) {
+        return clampLiveProgress(item.text.trim())
+      }
+      if (event.type === 'item.completed' && item?.type === 'agent_message' && typeof item.text === 'string') {
+        const preview = item.text.trim().slice(0, liveProgressMaxLength)
+        return preview ? clampLiveProgress(preview) : null
+      }
+    }
+  } catch {
+    return null
+  }
+  return null
 }
 
 function summarizeCursorRun(lines: string[]): string {
