@@ -94,6 +94,9 @@ module.exports = {
     '!node_modules/better-sqlite3/build/deps/**/*',
     '!node_modules/better-sqlite3/build/Release/test_extension.node'
   ],
+  extraResources: fs.existsSync(path.join(__dirname, 'build', 'kblight'))
+    ? [{ from: 'build/kblight', to: 'kblight' }]
+    : [],
   asarUnpack: ['node_modules/better-sqlite3/build/Release/better_sqlite3.node'],
   afterPack: async (context) => {
     trimElectronLocales(context.appOutDir)
