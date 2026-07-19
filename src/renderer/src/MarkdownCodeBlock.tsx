@@ -48,3 +48,32 @@ export function MarkdownCodeBlock({
     </div>
   )
 }
+
+/** Wrap each source line; mark lines that appear in the added-diff set. */
+export function buildCodeHtmlWithAddedHighlights(
+  code: string,
+  language: string,
+  addedLines: ReadonlySet<string>,
+  highlightLine: (line: string, language: string) => string
+): string {
+  if (addedLines.size === 0) return highlightLine(code, language)
+
+  const lines = code.split('\n')
+  const hasHighlightInBlock = lines.some(
+    (line) => addedLines.has(line) || addedLines.has(line.trim())
+  )
+  // Avoid per-line wrappers when this fence has no additions (they only add noise).
+  if (!hasHighlightInBlock) return highlightLine(code, language)
+
+  // Use display:block spans for line breaks - do not also join with \n or pre-wrap doubles the gaps.
+  return lines
+    .map((line) => {
+      const highlighted = highlightLine(line, language)
+      const isAdded = addedLines.has(line) || addedLines.has(line.trim())
+      if (!isAdded) {
+        return `<span class="md-diff-line">${highlighted || '&nbsp;'}</span>`
+      }
+      return `<span class="md-diff-added-line">${highlighted || '&nbsp;'}</span>`
+    })
+    .join('')
+}

@@ -13,6 +13,7 @@ import type {
   NotchOverlayCapability,
   NotchOverlaySettings,
   NotchOverlaySnapshot,
+  KeyboardAlertSettings,
   RecordSearchOpenInput,
   ReorderTabsInput,
   RenameInput,
@@ -31,6 +32,8 @@ import type {
 const api: VibeBoardApi = {
   getState: () => ipcRenderer.invoke('state:get'),
   getTaskDetail: (input: GetTaskDetailInput) => ipcRenderer.invoke('task:detail', input),
+  readTaskWorkspaceFile: (input: { taskId: string; filePath: string }) =>
+    ipcRenderer.invoke('task:readWorkspaceFile', input),
   searchWorkspace: (input: SearchWorkspaceInput) => ipcRenderer.invoke('search:workspace', input),
   recordSearchOpen: (input: RecordSearchOpenInput) => ipcRenderer.invoke('search:recordOpen', input),
   onStateChanged: (callback: () => void) => {
@@ -68,6 +71,11 @@ const api: VibeBoardApi = {
   getNotchOverlayCapability: () => ipcRenderer.invoke('notch:capability'),
   getNotchOverlaySettings: () => ipcRenderer.invoke('notch:getSettings'),
   updateNotchOverlaySettings: (settings: NotchOverlaySettings) => ipcRenderer.invoke('notch:updateSettings', settings),
+  getKeyboardAlertCapability: () => ipcRenderer.invoke('keyboardAlert:capability'),
+  getKeyboardAlertSettings: () => ipcRenderer.invoke('keyboardAlert:getSettings'),
+  updateKeyboardAlertSettings: (settings: KeyboardAlertSettings) =>
+    ipcRenderer.invoke('keyboardAlert:updateSettings', settings),
+  testKeyboardAlertFlash: () => ipcRenderer.invoke('keyboardAlert:test'),
   getNotchOverlaySnapshot: () => ipcRenderer.invoke('notch:getSnapshot'),
   onNotchOverlaySnapshot: (callback: (snapshot: NotchOverlaySnapshot) => void) => {
     const listener = (_event: IpcRendererEvent, snapshot: NotchOverlaySnapshot): void => callback(snapshot)
@@ -80,19 +88,37 @@ const api: VibeBoardApi = {
   dismissNotchFinishChat: (options?: { force?: boolean }) =>
     ipcRenderer.invoke('notch:dismiss', options),
   reopenNotchFinishChat: () => ipcRenderer.invoke('notch:reopen'),
+  openNotchRunningOverview: () => ipcRenderer.invoke('notch:openRunningOverview'),
+  openNotchDoneOverview: () => ipcRenderer.invoke('notch:openDoneOverview'),
+  closeNotchRunningOverview: () => ipcRenderer.invoke('notch:closeRunningOverview'),
+  selectNotchRunningTask: (taskId: string) => ipcRenderer.invoke('notch:selectRunningTask', taskId),
+  closeNotchRunningDetail: () => ipcRenderer.invoke('notch:closeRunningDetail'),
   unparkNotchFinishChat: () => ipcRenderer.invoke('notch:unpark'),
   parkNotchFinishChat: () => ipcRenderer.invoke('notch:park'),
   scheduleDevNotchFinishTest: (delayMs?: number) =>
     ipcRenderer.invoke('notch:devFinishTest', delayMs),
-  startNotchMarketingDemo: () => ipcRenderer.invoke('notch:marketingDemoStart'),
-  stopNotchMarketingDemo: () => ipcRenderer.invoke('notch:marketingDemoStop'),
+  scheduleDevNotchRunningTest: (delayMs?: number) =>
+    ipcRenderer.invoke('notch:devRunningTest', delayMs),
   setNotchMousePassthrough: (passthrough: boolean) => {
     ipcRenderer.send('notch:mousePassthrough', passthrough)
   },
   sendNotchReply: (input: { taskId: string; content: string }) =>
     ipcRenderer.invoke('notch:sendReply', input),
+  updateQueuedTaskMessage: (input: { taskId: string; messageId: string; content: string }) =>
+    ipcRenderer.invoke('task:queuedUpdate', input),
+  removeQueuedTaskMessage: (input: { taskId: string; messageId: string }) =>
+    ipcRenderer.invoke('task:queuedDelete', input),
   getOnboardingComplete: () => ipcRenderer.invoke('onboarding:getComplete'),
   markOnboardingComplete: () => ipcRenderer.invoke('onboarding:markComplete'),
+  windowMinimize: () => ipcRenderer.invoke('window:minimize'),
+  windowMaximize: () => ipcRenderer.invoke('window:maximize'),
+  windowClose: () => ipcRenderer.invoke('window:close'),
+  windowIsMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+  onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => {
+    const listener = (_event: IpcRendererEvent, isMaximized: boolean): void => callback(isMaximized)
+    ipcRenderer.on('window:maximized-changed', listener)
+    return () => ipcRenderer.removeListener('window:maximized-changed', listener)
+  },
   reportUserActivity: () => ipcRenderer.send('app:userActivity'),
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke('project:create', input),
   relocateProject: (projectId: string) => ipcRenderer.invoke('project:relocate', projectId),
@@ -123,10 +149,14 @@ const api: VibeBoardApi = {
   updateTaskStatus: (input: UpdateTaskStatusInput) => ipcRenderer.invoke('task:status', input),
   markTaskRead: (taskId: string) => ipcRenderer.invoke('task:read', taskId),
   getCursorAdapterStatus: () => ipcRenderer.invoke('cursor:status'),
+  getAgentCliSettings: () => ipcRenderer.invoke('agentCli:getSettings'),
+  updateAgentCliSettings: (settings) => ipcRenderer.invoke('agentCli:updateSettings', settings),
+  getAgentCliSnapshot: (options) => ipcRenderer.invoke('agentCli:snapshot', options),
   listAgentModels: () => ipcRenderer.invoke('cursor:listModels'),
   installCursorCli: () => ipcRenderer.invoke('cursor:installCli'),
   openCursorInstallTerminal: () => ipcRenderer.invoke('cursor:installTerminal'),
   openCursorSetup: () => ipcRenderer.invoke('cursor:setup'),
+  openAgentCliSetup: (id) => ipcRenderer.invoke('agentCli:openSetup', id),
   confirmQuit: () => ipcRenderer.invoke('app:confirmQuit'),
   cancelQuit: () => ipcRenderer.invoke('app:cancelQuit')
 }

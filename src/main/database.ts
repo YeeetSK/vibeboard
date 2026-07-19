@@ -18,7 +18,11 @@ import type {
   MoveTaskInput,
   NotificationSettings,
   NotchOverlaySettings,
+  KeyboardAlertSettings,
   AppearanceSettings,
+  AgentCliId,
+  AgentCliRememberedProvider,
+  AgentCliSettings,
   Project,
   RecordSearchOpenInput,
   ReorderTabsInput,
@@ -32,7 +36,12 @@ import type {
   UpdateTabMetaInput,
   UpdateTaskStatusInput
 } from '../shared/types'
-import { defaultNotchOverlaySettings, mergeNotchOverlaySettings } from './notchOverlay'
+import { defaultNotchOverlaySettings, mergeNotchOverlaySettings } from '../shared/notch'
+import {
+  defaultKeyboardAlertSettings,
+  mergeKeyboardAlertSettings
+} from './keyboardBacklight'
+import { defaultAgentCliSettings, mergeAgentCliSettings } from './agentCli'
 
 const now = (): string => new Date().toISOString()
 const id = (): string => crypto.randomUUID()
@@ -187,7 +196,7 @@ export class VibeBoardStore {
     this.db.pragma('journal_mode = WAL')
     this.migrate()
     this.replaceOldDemoSeed()
-    this.seed()
+    this.clearStarterDemoSeed()
   }
 
   setTaskStatusListener(listener: (event: TaskStatusChangeEvent) => void): void {
@@ -230,6 +239,24 @@ export class VibeBoardStore {
     return nextSettings
   }
 
+  getKeyboardAlertSettings(): KeyboardAlertSettings {
+    const raw = this.getSetting('keyboardAlertSettings')
+    if (!raw) return defaultKeyboardAlertSettings
+
+    try {
+      const parsed = JSON.parse(raw) as Partial<KeyboardAlertSettings>
+      return mergeKeyboardAlertSettings(parsed)
+    } catch {
+      return defaultKeyboardAlertSettings
+    }
+  }
+
+  updateKeyboardAlertSettings(settings: KeyboardAlertSettings): KeyboardAlertSettings {
+    const nextSettings = mergeKeyboardAlertSettings(settings)
+    this.setSetting('keyboardAlertSettings', JSON.stringify(nextSettings))
+    return nextSettings
+  }
+
   getAppearanceSettings(): AppearanceSettings {
     const raw = this.getSetting('appearanceSettings')
     if (!raw) return defaultAppearanceSettings
@@ -248,31 +275,98 @@ export class VibeBoardStore {
     return nextSettings
   }
 
-  getAttentionTaskCount(): number {
-    const row = this.db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'attention'").get() as {
-      count: number
+  getAgentCliSettings(): AgentCliSettings {
+    const raw = this.getSetting('agentCliSettings')
+    if (!raw) return defaultAgentCliSettings
+    try {
+      const parsed = JSON.parse(raw) as Partial<AgentCliSettings>
+      return mergeAgentCliSettings(parsed)
+    } catch {
+      return defaultAgentCliSettings
     }
+  }
+
+  updateAgentCliSettings(settings: Partial<AgentCliSettings>): AgentCliSettings {
+    const current = this.getAgentCliSettings()
+    const nextSettings = mergeAgentCliSettings(settings, current)
+    this.setSetting('agentCliSettings', JSON.stringify(nextSettings))
+    return nextSettings
+  }
+
+  rememberAgentCliProviders(
+    providers: Partial<Record<AgentCliId, AgentCliRememberedProvider>>
+  ): AgentCliSettings {
+    return this.updateAgentCliSettings({ rememberedProviders: providers })
+  }
+
+  /** Counts only tasks on open (non-closed) tabs - closed tabs stay out of the notch. */
+  getAttentionTaskCount(): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) as count
+         FROM tasks
+         INNER JOIN tabs ON tabs.id = tasks.tabId
+         WHERE tabs.isClosed = 0 AND tasks.status = 'attention'`
+      )
+      .get() as { count: number }
     return row.count
+  }
+
+  /** Open-tab task ids that should drive keyboard backlight alerts. */
+  getKeyboardAlertTaskIds(options: {
+    includeAttention: boolean
+    includeDoneUnread: boolean
+  }): string[] {
+    const statuses: string[] = []
+    if (options.includeAttention) statuses.push('attention')
+    if (options.includeDoneUnread) statuses.push('done_unread')
+    if (statuses.length === 0) return []
+
+    const placeholders = statuses.map(() => '?').join(', ')
+    const rows = this.db
+      .prepare(
+        `SELECT tasks.id as id
+         FROM tasks
+         INNER JOIN tabs ON tabs.id = tasks.tabId
+         WHERE tabs.isClosed = 0 AND tasks.status IN (${placeholders})`
+      )
+      .all(...statuses) as Array<{ id: string }>
+    return rows.map((row) => row.id)
   }
 
   getDoneTaskCount(): number {
     const row = this.db
-      .prepare("SELECT COUNT(*) as count FROM tasks WHERE status IN ('done_unread', 'done_read')")
+      .prepare(
+        `SELECT COUNT(*) as count
+         FROM tasks
+         INNER JOIN tabs ON tabs.id = tasks.tabId
+         WHERE tabs.isClosed = 0 AND tasks.status IN ('done_unread', 'done_read')`
+      )
       .get() as { count: number }
     return row.count
   }
 
   getDoneUnreadTaskCount(): number {
-    const row = this.db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'done_unread'").get() as {
-      count: number
-    }
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) as count
+         FROM tasks
+         INNER JOIN tabs ON tabs.id = tasks.tabId
+         WHERE tabs.isClosed = 0 AND tasks.status = 'done_unread'`
+      )
+      .get() as { count: number }
     return row.count
   }
 
   getDoneReadTaskCount(): number {
-    const row = this.db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'done_read'").get() as {
-      count: number
-    }
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) as count
+         FROM tasks
+         INNER JOIN tabs ON tabs.id = tasks.tabId
+         WHERE tabs.isClosed = 0 AND tasks.status = 'done_read'`
+      )
+      .get() as { count: number }
     return row.count
   }
 
@@ -282,6 +376,7 @@ export class VibeBoardStore {
 
   markOnboardingComplete(): void {
     this.setSetting('onboarding.v1', 'done')
+    this.clearStarterDemoSeed()
   }
 
   getState(): AppState {
@@ -808,6 +903,20 @@ export class VibeBoardStore {
     return project ? withPathState(project) : null
   }
 
+  /** Label shown next to a task title (project name, else tab name). */
+  getBoardLabelForTask(task: Task): string | null {
+    if (task.projectId) {
+      const project = this.getProject(task.projectId)
+      const projectName = project?.name?.trim()
+      if (projectName) return projectName
+    }
+    const tab = this.db.prepare('SELECT name FROM tabs WHERE id = ?').get(task.tabId) as
+      | { name: string }
+      | undefined
+    const tabName = tab?.name?.trim()
+    return tabName || null
+  }
+
   updateProjectRunMode(projectId: string, runMode: RunMode): void {
     const normalizedRunMode = normalizeRunMode(runMode)
     this.db.prepare('UPDATE projects SET runMode = ? WHERE id = ?').run(normalizedRunMode, projectId)
@@ -818,10 +927,111 @@ export class VibeBoardStore {
   }
 
   getRunningTaskCount(): number {
-    const row = this.db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'processing'").get() as {
-      count: number
-    }
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) as count
+         FROM tasks
+         INNER JOIN tabs ON tabs.id = tasks.tabId
+         WHERE tabs.isClosed = 0 AND tasks.status = 'processing'`
+      )
+      .get() as { count: number }
     return row.count
+  }
+
+  /** Processing tasks on open tabs for the notch running overview. */
+  listRunningTasksForNotch(): Array<{
+    id: string
+    title: string
+    runStartedAt: string | null
+    projectName: string | null
+  }> {
+    return this.db
+      .prepare(
+        `SELECT tasks.id as id,
+                tasks.title as title,
+                tasks.runStartedAt as runStartedAt,
+                projects.name as projectName
+         FROM tasks
+         INNER JOIN tabs ON tabs.id = tasks.tabId
+         LEFT JOIN projects ON projects.id = tasks.projectId
+         WHERE tabs.isClosed = 0 AND tasks.status = 'processing'
+         ORDER BY COALESCE(tasks.runStartedAt, tasks.updatedAt) ASC`
+      )
+      .all() as Array<{
+      id: string
+      title: string
+      runStartedAt: string | null
+      projectName: string | null
+    }>
+  }
+
+  /** Unread finished tasks on open tabs for the notch Done overview. */
+  listDoneTasksForNotch(): Array<{
+    id: string
+    title: string
+    runStartedAt: string | null
+    projectName: string | null
+  }> {
+    return this.db
+      .prepare(
+        `SELECT tasks.id as id,
+                tasks.title as title,
+                tasks.updatedAt as runStartedAt,
+                projects.name as projectName
+         FROM tasks
+         INNER JOIN tabs ON tabs.id = tasks.tabId
+         LEFT JOIN projects ON projects.id = tasks.projectId
+         WHERE tabs.isClosed = 0 AND tasks.status = 'done_unread'
+         ORDER BY tasks.updatedAt DESC`
+      )
+      .all() as Array<{
+      id: string
+      title: string
+      runStartedAt: string | null
+      projectName: string | null
+    }>
+  }
+
+  /** Recent system/progress lines for a running task (oldest → newest). */
+  getRecentSystemMessages(taskId: string, limit = 14): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT content FROM conversations
+         WHERE taskId = ? AND role = 'system'
+         ORDER BY createdAt DESC
+         LIMIT ?`
+      )
+      .all(taskId, Math.min(Math.max(limit, 1), 40)) as Array<{ content: string }>
+    return rows
+      .map((row) => row.content.trim())
+      .filter(Boolean)
+      .reverse()
+  }
+
+  /** True when the task belongs to a currently open tab. */
+  isTaskOnOpenTab(taskId: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 as ok
+         FROM tasks
+         INNER JOIN tabs ON tabs.id = tasks.tabId
+         WHERE tasks.id = ? AND tabs.isClosed = 0`
+      )
+      .get(taskId) as { ok: number } | undefined
+    return Boolean(row)
+  }
+
+  /** True when finish-chat should still nudge for this task (unread done on an open tab). */
+  isTaskFinishPending(taskId: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 as ok
+         FROM tasks
+         INNER JOIN tabs ON tabs.id = tasks.tabId
+         WHERE tasks.id = ? AND tabs.isClosed = 0 AND tasks.status = 'done_unread'`
+      )
+      .get(taskId) as { ok: number } | undefined
+    return Boolean(row)
   }
 
   async relocateProject(projectId: string): Promise<Project | null> {
@@ -1638,128 +1848,50 @@ export class VibeBoardStore {
     this.db.prepare("UPDATE tabs SET lastUsedAt = createdAt WHERE lastUsedAt = ''").run()
   }
 
-  private seed(): void {
-    const tabCount = this.db.prepare('SELECT COUNT(*) as count FROM tabs').get() as { count: number }
-    if (tabCount.count > 0) {
-      return
-    }
-
-    const project: Project = {
-      id: id(),
-      name: 'VibeBoard',
-      path: app.getAppPath(),
-      runMode: 'worktree',
-      autoMoveTasks: 1,
-      pathMissing: false,
-      createdAt: now()
-    }
-    this.db
-      .prepare('INSERT INTO projects (id, name, path, runMode, autoMoveTasks, createdAt) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(project.id, project.name, project.path, project.runMode, project.autoMoveTasks, project.createdAt)
-
-    const productTab = this.createTab({ name: 'VibeBoard', projectId: project.id })
-    this.updateTabMeta({ id: productTab.id, isPinned: true, color: '#ff7a1a' })
-    const releaseTab = this.createTab({ name: 'Release', projectId: project.id })
-    this.updateTabMeta({ id: releaseTab.id, color: '#9b8cff' })
-
-    const productLanes = this.getLanesForTab(productTab.id)
-    const releaseLanes = this.getLanesForTab(releaseTab.id)
-
-    const runningTask = this.createTask({
-      tabId: productTab.id,
-      laneId: productLanes[0].id,
-      projectId: project.id,
-      title: 'Run Cursor in the background',
-      prompt: 'Wire the task Run button so Cursor runs headlessly in the selected project folder and captured diffs appear on the right.'
-    })
-    this.updateTaskStatus({ taskId: runningTask.id, status: 'processing' })
-    this.appendConversation(runningTask.id, 'system', 'Starting Cursor CLI agent in the project folder.')
-    this.appendConversation(runningTask.id, 'assistant', 'Reading the task prompt and preparing a headless run.')
-
-    const doneTask = this.createTask({
-      tabId: productTab.id,
-      laneId: productLanes[1].id,
-      projectId: project.id,
-      title: 'Render real code diffs',
-      prompt: 'Replace the summary-only code changes card with actual unified diffs and language-aware formatting.'
-    })
-    this.updateTaskStatus({ taskId: doneTask.id, status: 'done_unread' })
-    this.appendConversation(doneTask.id, 'assistant', 'Added a diff model and renderer for file-level changes.')
-    this.replaceCodeChanges(doneTask.id, [
-      {
-        filePath: 'src/renderer/src/App.tsx',
-        summary: '12 additions, 3 deletions',
-        changeType: 'modified',
-        language: 'typescript',
-        diffText: `@@ -650,9 +650,13 @@ function TaskDetailModal({
--              {changes.map((change) => (
--                <div className="change-row">{change.summary}</div>
--              ))}
-+              {changes.map((change) => (
-+                <DiffViewer key={change.id} change={change} />
-+              ))}
-             </div>
-           </section>
-         </div>`
-      },
-      {
-        filePath: 'src/renderer/src/styles.css',
-        summary: '20 additions, 0 deletions',
-        changeType: 'modified',
-        language: 'css',
-        diffText: `@@ -705,0 +706,20 @@
-+.diff-file {
-+  overflow: hidden;
-+  border: 1px solid var(--line);
-+  border-radius: 8px;
-+  background: #151515;
-+}
-+
-+.diff-line.added {
-+  background: rgba(47, 207, 117, 0.12);
-+}
-+
-+.diff-line.removed {
-+  background: rgba(255, 95, 87, 0.12);
-+}`
-      }
+  /** Wipe the old first-launch demo board if it is still untouched. */
+  clearStarterDemoSeed(): boolean {
+    const starterTaskTitles = new Set([
+      'Run Cursor in the background',
+      'Render real code diffs',
+      'Select a project before running',
+      'Add accept and discard controls',
+      'Write release notes',
+      'Check packaged installers'
     ])
 
-    const attentionTask = this.createTask({
-      tabId: productTab.id,
-      laneId: productLanes[1].id,
-      projectId: null,
-      title: 'Select a project before running',
-      prompt: 'Make the Run button explain what is missing when a task has no project selected.'
-    })
-    this.updateTaskStatus({ taskId: attentionTask.id, status: 'attention' })
-    this.appendConversation(attentionTask.id, 'system', 'Select a project before running this task with Cursor.')
+    const projects = this.db.prepare('SELECT id, name, path FROM projects').all() as Array<{
+      id: string
+      name: string
+      path: string
+    }>
+    const tabs = this.db.prepare('SELECT id, name FROM tabs').all() as Array<{ id: string; name: string }>
+    const tasks = this.db.prepare('SELECT id, title FROM tasks').all() as Array<{ id: string; title: string }>
 
-    this.createTask({
-      tabId: productTab.id,
-      laneId: productLanes[0].id,
-      projectId: project.id,
-      title: 'Add accept and discard controls',
-      prompt: 'Design controls for accepting or discarding code changes from a completed task.'
-    })
+    if (projects.length !== 1 || tabs.length !== 2 || tasks.length !== 6) {
+      return false
+    }
 
-    this.createTask({
-      tabId: releaseTab.id,
-      laneId: releaseLanes[0].id,
-      projectId: project.id,
-      title: 'Write release notes',
-      prompt: 'Generate concise release notes from completed VibeBoard tasks and changed files.'
-    })
+    const project = projects[0]
+    if (project.name !== 'VibeBoard' || project.path !== app.getAppPath()) {
+      return false
+    }
 
-    this.createTask({
-      tabId: releaseTab.id,
-      laneId: releaseLanes[1].id,
-      projectId: project.id,
-      title: 'Check packaged installers',
-      prompt: 'Run the local packaging checks and list the installer artifacts.'
-    })
+    const tabNames = new Set(tabs.map((tab) => tab.name))
+    if (!tabNames.has('VibeBoard') || !tabNames.has('Release')) {
+      return false
+    }
 
-    this.setSetting('activeTabId', productTab.id)
+    if (!tasks.every((task) => starterTaskTitles.has(task.title))) {
+      return false
+    }
+
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM tabs').run()
+      this.db.prepare('DELETE FROM projects').run()
+      this.setSetting('activeTabId', '')
+    })()
+
+    return true
   }
 
   private replaceOldDemoSeed(): void {

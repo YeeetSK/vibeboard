@@ -3,6 +3,7 @@ import {
   CSSProperties,
   ReactElement,
   ReactNode,
+  cloneElement,
   isValidElement,
   MouseEvent as ReactMouseEvent,
   useEffect,
@@ -66,14 +67,12 @@ import xml from 'highlight.js/lib/languages/xml'
 import yaml from 'highlight.js/lib/languages/yaml'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { MarkdownCodeBlock } from './MarkdownCodeBlock'
+import { buildCodeHtmlWithAddedHighlights, MarkdownCodeBlock } from './MarkdownCodeBlock'
 import {
   MARKETING_DEMO_AGENT_REPLY,
   MARKETING_DEMO_AGENT_STATUS,
   MARKETING_DEMO_COUNTDOWN_MS,
   MARKETING_DEMO_FOLLOW_UP,
-  MARKETING_NATURE_BACKDROP_URL,
-  MARKETING_NOTCH_DEMO_MS,
   MARKETING_PRODUCT_DEMO_MS,
   groupMarketingDemoTasksByLane,
   marketingDemoChanges,
@@ -104,14 +103,15 @@ import {
   GitPullRequestDraft,
   Heart,
   History,
+  Keyboard,
   LayoutDashboard,
   ListTodo,
   Loader2,
   MessageSquare,
   MoreHorizontal,
-  Mountain,
   PanelLeftClose,
   PanelLeftOpen,
+  Copy,
   Minus,
   Palette,
   Paperclip,
@@ -121,7 +121,6 @@ import {
   Pin,
   RotateCcw,
   Scan,
-  ScanFace,
   Search,
   Send,
   Settings,
@@ -133,6 +132,9 @@ import {
   X
 } from 'lucide-react'
 import type {
+  AgentCliId,
+  AgentCliProviderStatus,
+  AgentCliSnapshot,
   AgentModel,
   AppState,
   BoardTab,
@@ -155,7 +157,19 @@ import type {
   AppearanceSettings,
   NotchOverlayCapability,
   NotchOverlaySettings,
+  KeyboardAlertCapability,
+  KeyboardAlertSettings,
 } from '../../shared/types'
+import {
+  defaultNotchOverlaySettings,
+  emptyNotchOverlayCapability
+} from '../../shared/notch'
+import { AgentCliIcon } from './AgentCliIcons'
+import {
+  DevNotchFinishLauncher,
+  DevNotchRunningLauncher,
+  SettingsNotchPane
+} from './notch'
 
 const ICON_STROKE = 1.75
 const ICON_SM = 14
@@ -237,6 +251,48 @@ const emptyCursorStatus: CursorStatus = {
     shellPath: ''
   }
 }
+
+const emptyAgentCliSnapshot: AgentCliSnapshot = {
+  activeCli: 'cursor',
+  providers: [
+    {
+      id: 'cursor',
+      label: 'Cursor',
+      installed: false,
+      authenticated: false,
+      available: false,
+      command: null,
+      detail: 'Checking…'
+    },
+    {
+      id: 'claude',
+      label: 'Claude',
+      installed: false,
+      authenticated: false,
+      available: false,
+      command: null,
+      detail: 'Checking…'
+    },
+    {
+      id: 'codex',
+      label: 'Codex',
+      installed: false,
+      authenticated: false,
+      available: false,
+      command: null,
+      detail: 'Checking…'
+    }
+  ],
+  active: {
+    id: 'cursor',
+    label: 'Cursor',
+    installed: false,
+    authenticated: false,
+    available: false,
+    command: null,
+    detail: 'Checking…'
+  }
+}
 const emptyUpdateInfo: UpdateInfo = {
   status: 'idle',
   mode: 'auto',
@@ -268,14 +324,6 @@ const emptyNotificationSettings: NotificationSettings = {
   playFinishSound: true
 }
 
-const emptyNotchOverlaySettings: NotchOverlaySettings = {
-  enabled: false,
-  expandOnTaskCompleted: true,
-  showFinishChat: true,
-  expandOnAttention: true,
-  expandOnAllFinished: false
-}
-
 const emptyAppearanceSettings: AppearanceSettings = {
   uiFontSize: 14,
   codeFontSize: 13,
@@ -283,10 +331,19 @@ const emptyAppearanceSettings: AppearanceSettings = {
   reduceMotion: 'system'
 }
 
-const emptyNotchCapability: NotchOverlayCapability = {
+const emptyKeyboardAlertSettings: KeyboardAlertSettings = {
+  enabled: false,
+  flashOnTaskFailed: true,
+  flashOnTaskCompleted: false,
+  flashOnAllFinished: false,
+  stopOnAppFocus: true,
+  stopOnOpenTask: true
+}
+
+const emptyKeyboardAlertCapability: KeyboardAlertCapability = {
   supported: false,
   platform: 'unknown',
-  hasNotch: false,
+  hasBacklight: false,
   reason: null
 }
 
@@ -456,6 +513,13 @@ const commitTaskPrompt = [
   'Stage only files that belong to this task.',
   'Choose a concise conventional commit message yourself.',
   'Create the commit locally.',
+  '',
+  'Authorship rules (mandatory):',
+  '- Never add Co-authored-by, Made-with, Made with Cursor, or any agent/tool attribution trailer to the commit.',
+  '- Do not pass --trailer, Co-authored-by, or similar attribution flags on git commit.',
+  '- Leave authorship entirely to the user (normal git user.name / user.email only).',
+  '- If a tool tries to inject co-author attribution, rewrite the commit command without it.',
+  '',
   'Push the commit to the default branch on origin without checking out that branch.',
   'If main/master is already checked out in another worktree, use `git push origin HEAD:main` (or HEAD:master).',
   'Do not try to update the project main checkout yourself; VibeBoard syncs it after this run.',
@@ -465,6 +529,7 @@ const draftPrPrompt = [
   'Create a draft pull request for the current task changes.',
   'Inspect git status, current branch, and remote first.',
   'If needed, create a focused local commit with a concise conventional commit message.',
+  'Authorship rules (mandatory): never add Co-authored-by, Made-with, Made with Cursor, or any agent attribution trailer; do not pass --trailer / Co-authored-by on git commit; leave authorship to the user.',
   'Push the branch to origin.',
   'Open a draft PR with a clear title and useful body.',
   'Return the PR URL when it is created.',
@@ -476,6 +541,7 @@ const promptTemplates = [
     prompt: [
       'Review the current task changes and prepare a draft pull request.',
       'Check git status, summarize the changes, create a focused commit if needed, and draft a clear PR description.',
+      'Never add Co-authored-by or any agent attribution trailer; leave authorship to the user.',
       'Do not merge anything.'
     ].join('\n')
   },
@@ -563,6 +629,7 @@ export function App(): ReactElement {
   const [dragOverlayWidth, setDragOverlayWidth] = useState<number | null>(null)
   const [dragPreviewTarget, setDragPreviewTarget] = useState<{ laneId: string; position: number } | null>(null)
   const [cursorStatus, setCursorStatus] = useState<CursorStatus>(emptyCursorStatus)
+  const [agentCliSnapshot, setAgentCliSnapshot] = useState<AgentCliSnapshot>(emptyAgentCliSnapshot)
   const [isInstallingCursorCli, setInstallingCursorCli] = useState(false)
   const [cursorSetupPhase, setCursorSetupPhase] = useState<CursorSetupPhase>('checking')
   const [cursorFeedback, setCursorFeedback] = useState('')
@@ -572,10 +639,9 @@ export function App(): ReactElement {
   const [deleteTaskId, setDeleteTaskId] = useState<string | null>(null)
   const [boardNotice, setBoardNotice] = useState<string | null>(null)
   const boardNoticeTimerRef = useRef<number | null>(null)
-  const [marketingDemoMode, setMarketingDemoMode] = useState<'product' | 'notch' | null>(null)
+  const [marketingDemoMode, setMarketingDemoMode] = useState<'product' | null>(null)
   const marketingDemoTimersRef = useRef<number[]>([])
   const [productDemoCountdown, setProductDemoCountdown] = useState<number | null>(null)
-  const [notchDemoCountdown, setNotchDemoCountdown] = useState<number | null>(null)
   const [productDemoDraft, setProductDemoDraft] = useState<string | null>(null)
   const [productDemoTasks, setProductDemoTasks] = useState<Task[]>(() =>
     marketingDemoTasks.map((task) => ({ ...task }))
@@ -597,13 +663,19 @@ export function App(): ReactElement {
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(emptyNotificationSettings)
   const [isSettingsOpen, setSettingsOpen] = useState(false)
   const [settingsCategory, setSettingsCategory] = useState<
-    'appearance' | 'notifications' | 'notch' | 'updates'
+    'appearance' | 'notifications' | 'notch' | 'keyboard' | 'updates'
   >('appearance')
   const [notificationFeedback, setNotificationFeedback] = useState('')
-  const [notchOverlaySettings, setNotchOverlaySettings] = useState<NotchOverlaySettings>(emptyNotchOverlaySettings)
+  const [notchOverlaySettings, setNotchOverlaySettings] = useState<NotchOverlaySettings>(defaultNotchOverlaySettings)
   const [appearanceSettings, setAppearanceSettings] = useState<AppearanceSettings>(emptyAppearanceSettings)
-  const [notchCapability, setNotchCapability] = useState<NotchOverlayCapability>(emptyNotchCapability)
+  const [notchCapability, setNotchCapability] = useState<NotchOverlayCapability>(emptyNotchOverlayCapability)
   const [notchFeedback, setNotchFeedback] = useState('')
+  const [keyboardAlertSettings, setKeyboardAlertSettings] = useState<KeyboardAlertSettings>(
+    emptyKeyboardAlertSettings
+  )
+  const [keyboardAlertCapability, setKeyboardAlertCapability] =
+    useState<KeyboardAlertCapability>(emptyKeyboardAlertCapability)
+  const [keyboardAlertFeedback, setKeyboardAlertFeedback] = useState('')
   const [releaseNotesModal, setReleaseNotesModal] = useState<PendingReleaseNotes | null>(null)
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<TaskDetail>(emptyTaskDetail)
   const [isLoadingOlderConversations, setLoadingOlderConversations] = useState(false)
@@ -621,7 +693,6 @@ export function App(): ReactElement {
     navigator.userAgent.includes('Windows') ? 'Explorer' : navigator.userAgent.includes('Mac') ? 'Finder' : 'Folder'
   const isTutorialActive = tutorialStep !== null || isTutorialWelcomeOpen
   const isProductDemo = marketingDemoMode === 'product'
-  const isNotchDemo = marketingDemoMode === 'notch'
   const isShowcaseBoard = isTutorialActive || isProductDemo
   const marketingDemoTasksByLaneId = useMemo(
     () => groupMarketingDemoTasksByLane(productDemoTasks),
@@ -662,16 +733,17 @@ export function App(): ReactElement {
       : tasksByLaneId
   const tabStatuses = useMemo(() => buildTabStatusMap(state.tasks), [state.tasks])
   const boardStats = useMemo(() => {
+    // Only the active board - other tabs (including closed ones still in state) must not inflate Issues.
     const tasks = isProductDemo
       ? productDemoTasks
       : isTutorialActive
         ? tutorialShowcaseTasks
-        : state.tasks
+        : activeTasks
     const running = tasks.filter((task) => task.status === 'processing').length
     const attention = tasks.filter((task) => task.status === 'attention').length
     const done = tasks.filter((task) => task.status === 'done_read' || task.status === 'done_unread').length
     return { running, attention, done, total: tasks.length }
-  }, [isProductDemo, isTutorialActive, productDemoTasks, state.tasks])
+  }, [isProductDemo, isTutorialActive, productDemoTasks, activeTasks])
   const selectedTask = isProductDemo
     ? productDemoTasks.find((task) => task.id === selectedTaskId) ?? null
     : state.tasks.find((task) => task.id === selectedTaskId) ?? null
@@ -727,6 +799,8 @@ export function App(): ReactElement {
     })
     void window.vibeboard.getNotchOverlayCapability().then(setNotchCapability)
     void window.vibeboard.getNotchOverlaySettings().then(setNotchOverlaySettings)
+    void window.vibeboard.getKeyboardAlertCapability().then(setKeyboardAlertCapability)
+    void window.vibeboard.getKeyboardAlertSettings().then(setKeyboardAlertSettings)
     return () => {
       stopStateListener()
       stopQuitListener()
@@ -806,13 +880,13 @@ export function App(): ReactElement {
   }, [updateInfo])
 
   useEffect(() => {
-    if (cursorSetupPhase !== 'failed') return
+    if (agentCliSnapshot.active.available) return
     const intervalId = window.setInterval(() => {
       if (document.hidden) return
-      refreshCursorStatus({ quiet: true })
+      void refreshAgentCliSnapshot({ quiet: true, source: 'live' })
     }, 15000)
     return () => window.clearInterval(intervalId)
-  }, [cursorSetupPhase])
+  }, [agentCliSnapshot.active.available, agentCliSnapshot.activeCli])
 
   useEffect(() => {
     const query = globalSearchQuery.trim()
@@ -892,7 +966,10 @@ export function App(): ReactElement {
                   ...merged.filter((entry) => entry.role !== 'system'),
                   ...detail.conversations.filter((entry) => entry.role === 'system')
                 ].sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-              : merged.filter((entry) => entry.role !== 'system')
+              : merged.filter(
+                  (entry) =>
+                    entry.role !== 'system' || isAgentCliDiagnosticMessage(entry.content)
+                )
 
           return {
             conversations,
@@ -907,15 +984,28 @@ export function App(): ReactElement {
     }
   }, [selectedTask?.id, selectedTask?.status, selectedTask?.updatedAt])
 
-  // If a task finishes while its detail is open, treat it as already viewed (dashed done border).
+  // If a task finishes while its detail is open *and the app is focused*, treat it as viewed.
+  // Background / notch-only viewing must not consume the unread finish nudge.
   useEffect(() => {
     if (!selectedTask || selectedTask.status !== 'done_unread') return
     if (selectedTask.id.startsWith('md-task-') || selectedTask.id.startsWith('tutorial-')) return
     const taskId = selectedTask.id
-    void runAction(`task:read:${taskId}`, async () => {
-      await window.vibeboard.markTaskRead(taskId)
-      await refresh()
-    })
+
+    const markReadIfAppFocused = (): void => {
+      if (document.visibilityState !== 'visible' || !document.hasFocus()) return
+      void runAction(`task:read:${taskId}`, async () => {
+        await window.vibeboard.markTaskRead(taskId)
+        await refresh()
+      })
+    }
+
+    markReadIfAppFocused()
+    window.addEventListener('focus', markReadIfAppFocused)
+    document.addEventListener('visibilitychange', markReadIfAppFocused)
+    return () => {
+      window.removeEventListener('focus', markReadIfAppFocused)
+      document.removeEventListener('visibilitychange', markReadIfAppFocused)
+    }
   }, [selectedTask?.id, selectedTask?.status])
 
   const loadOlderSelectedTaskConversations = async (): Promise<void> => {
@@ -945,56 +1035,161 @@ export function App(): ReactElement {
     }
   }
 
-  const prepareCursorOnLaunch = async (): Promise<void> => {
-    const nextStatus = await window.vibeboard.getCursorAdapterStatus()
-    setCursorStatus(nextStatus)
-    if (nextStatus.available) {
+  const applyAgentCliSnapshot = (
+    snapshot: AgentCliSnapshot,
+    options: { quiet?: boolean } = {}
+  ): void => {
+    setAgentCliSnapshot(snapshot)
+    if (snapshot.active.available) {
       setCursorSetupPhase('ready')
       setCursorFeedback('')
       return
     }
-    if (nextStatus.debug.agentCommand) {
-      setCursorSetupPhase('failed')
-      setCursorFeedback('Cursor Agent needs login.')
-      return
-    }
-
-    setCursorSetupPhase('preparing')
-    setCursorFeedback('')
-    const result = await window.vibeboard.installCursorCli()
-    const statusAfterInstall = await window.vibeboard.getCursorAdapterStatus()
-    setCursorStatus(statusAfterInstall)
-    if (statusAfterInstall.available) {
-      setCursorSetupPhase('ready')
-      setCursorFeedback('')
-      return
-    }
-
     setCursorSetupPhase('failed')
-    setCursorFeedback(result.message || 'Cursor CLI setup needs attention.')
+    if (!options.quiet) {
+      setCursorFeedback(snapshot.active.detail)
+    }
+  }
+
+  const refreshAgentCliSnapshot = async (
+    options: { quiet?: boolean; fresh?: boolean; source?: 'remembered' | 'live' } = {}
+  ): Promise<AgentCliSnapshot> => {
+    const snapshot = await window.vibeboard.getAgentCliSnapshot({
+      source: options.source,
+      fresh: options.fresh
+    })
+    applyAgentCliSnapshot(snapshot, options)
+    // Cursor adapter debug is only needed when Cursor is the active CLI.
+    if (snapshot.activeCli === 'cursor' && options.source !== 'remembered') {
+      const nextCursor = await window.vibeboard.getCursorAdapterStatus()
+      setCursorStatus(nextCursor)
+    }
+    return snapshot
+  }
+
+  const prepareCursorOnLaunch = async (): Promise<void> => {
+    // Instant paint from DB-remembered install/login state.
+    const remembered = await refreshAgentCliSnapshot({ quiet: true, source: 'remembered' })
+
+    // Verify in the background; update UI + DB if something changed.
+    void (async () => {
+      const live = await refreshAgentCliSnapshot({ quiet: true, source: 'live', fresh: true })
+
+      // Auto-install Cursor only after a live probe confirms it's missing.
+      if (live.activeCli === 'cursor' && !live.active.installed) {
+        setCursorSetupPhase('preparing')
+        setCursorFeedback('Downloading Cursor CLI…')
+        const result = await window.vibeboard.installCursorCli()
+        const after = await refreshAgentCliSnapshot({ quiet: true, source: 'live', fresh: true })
+        if (after.active.available) return
+        if (after.active.installed && !after.active.authenticated) {
+          setCursorSetupPhase('failed')
+          setCursorFeedback('Cursor CLI installed. Complete sign-in in the window that opened.')
+          await window.vibeboard.openCursorInstallTerminal()
+          return
+        }
+        setCursorSetupPhase('failed')
+        setCursorFeedback(result.message || after.active.detail)
+        return
+      }
+
+      if (live.activeCli === 'cursor' && live.active.installed && !live.active.authenticated) {
+        setCursorSetupPhase('failed')
+        setCursorFeedback('Cursor CLI is installed. Click Sign in to finish setup.')
+        return
+      }
+
+      if (!live.active.available && !remembered.active.available) {
+        setCursorSetupPhase('failed')
+        setCursorFeedback(live.active.detail)
+      }
+    })()
+  }
+
+  const selectAgentCli = (id: AgentCliId): void => {
+    if (agentCliSnapshot.activeCli === id) return
+    const provider =
+      agentCliSnapshot.providers.find((item) => item.id === id) ?? null
+    if (!provider) return
+
+    // Swap instantly from the already-loaded provider list; do not wait on
+    // slow --version / auth probes before the picker updates.
+    setAgentCliSnapshot({
+      activeCli: id,
+      providers: agentCliSnapshot.providers,
+      active: provider
+    })
+    if (provider.available) {
+      setCursorSetupPhase('ready')
+      setCursorFeedback('')
+    } else {
+      setCursorSetupPhase('failed')
+      setCursorFeedback(
+        provider.installed
+          ? `${provider.label} is installed. Sign in to start using it.`
+          : `${provider.label} is not installed yet.`
+      )
+    }
+
+    void runAction('agentCli:select', async () => {
+      await window.vibeboard.updateAgentCliSettings({ activeCli: id })
+      // Background live check; remembered DB row updates when probe finishes.
+      await refreshAgentCliSnapshot({ quiet: true, source: 'live' })
+    })
   }
 
   const refreshCursorStatus = async (options: { quiet?: boolean } = {}): Promise<void> => {
-    const nextStatus = await window.vibeboard.getCursorAdapterStatus()
-    setCursorStatus(nextStatus)
-    if (nextStatus.available) {
-      setCursorSetupPhase('ready')
-      setCursorFeedback('')
-      return
-    }
-
-    setCursorSetupPhase('failed')
-    if (!options.quiet) {
-      setCursorFeedback(nextStatus.debug.agentCommand ? 'Cursor Agent needs login.' : 'Cursor Agent is missing.')
-    }
+    await refreshAgentCliSnapshot(options)
   }
 
-  const openCursorRepair = async (): Promise<void> => {
-    await runAction('cursor:repair', async () => {
+  const openAgentCliSetup = async (): Promise<void> => {
+    await runAction('agentCli:setup', async () => {
+      const active = agentCliSnapshot.active
+      const needsInstall = !active.installed
       setInstallingCursorCli(true)
-      setCursorFeedback('Terminal install opened. VibeBoard will recheck automatically.')
+      setCursorSetupPhase('preparing')
+      setCursorFeedback(
+        needsInstall
+          ? `Installing ${active.label} and opening sign-in. Return here when the setup window finishes.`
+          : `Sign-in opened for ${active.label}. Return here when the setup window finishes.`
+      )
       try {
-        await window.vibeboard.openCursorInstallTerminal()
+        if (active.id === 'cursor' && needsInstall) {
+          const result = await window.vibeboard.installCursorCli()
+          const after = await window.vibeboard.getAgentCliSnapshot({ fresh: true })
+          setAgentCliSnapshot(after)
+          if (after.active.available) {
+            setCursorSetupPhase('ready')
+            setCursorFeedback('')
+            return
+          }
+          if (!after.active.installed) {
+            setCursorSetupPhase('failed')
+            setCursorFeedback(result.message || after.active.detail)
+            return
+          }
+        }
+
+        await window.vibeboard.openAgentCliSetup(active.id)
+        setCursorSetupPhase('failed')
+        setCursorFeedback(
+          `Finish install/sign-in for ${active.label} in the setup window. VibeBoard will mark it Signed in when ready.`
+        )
+        setInstallingCursorCli(false)
+        // Poll in the background after Terminal opens.
+        for (let attempt = 0; attempt < 36; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 2500))
+          const after = await window.vibeboard.getAgentCliSnapshot({ fresh: true })
+          setAgentCliSnapshot(after)
+          if (after.activeCli === active.id && after.active.available) {
+            setCursorSetupPhase('ready')
+            setCursorFeedback('')
+            return
+          }
+        }
+        setCursorFeedback(
+          `${active.label} setup still pending. Finish install/sign-in in the setup window, then click Sign in again if needed.`
+        )
       } finally {
         setInstallingCursorCli(false)
       }
@@ -1174,9 +1369,7 @@ export function App(): ReactElement {
 
   const stopMarketingDemo = (): void => {
     clearMarketingDemoTimers()
-    void window.vibeboard.stopNotchMarketingDemo()
     setProductDemoCountdown(null)
-    setNotchDemoCountdown(null)
     setProductDemoDraft(null)
     setProductDemoCursor(null)
     setProductDemoAiming(false)
@@ -1190,7 +1383,6 @@ export function App(): ReactElement {
   const startProductMarketingDemo = (): void => {
     if (!isDevMode) return
     clearMarketingDemoTimers()
-    void window.vibeboard.stopNotchMarketingDemo()
     setTutorialStep(null)
     setTutorialWelcomeOpen(false)
     setTutorialCompleteOpen(false)
@@ -1403,38 +1595,6 @@ export function App(): ReactElement {
     })
   }
 
-  const startNotchMarketingDemo = (): void => {
-    if (!isDevMode) return
-    clearMarketingDemoTimers()
-    void window.vibeboard.stopNotchMarketingDemo()
-    setTutorialStep(null)
-    setTutorialWelcomeOpen(false)
-    setTutorialCompleteOpen(false)
-    setSelectedTaskId(null)
-    setSelectedTaskDetail(emptyTaskDetail)
-    setProductDemoCountdown(null)
-    setProductDemoDraft(null)
-    setTaskDetailExiting(false)
-    setMarketingDemoMode('notch')
-    setNotchDemoCountdown(3)
-
-    const schedule = (ms: number, fn: () => void): void => {
-      marketingDemoTimersRef.current.push(window.setTimeout(fn, ms))
-    }
-
-    schedule(900, () => setNotchDemoCountdown(2))
-    schedule(1800, () => setNotchDemoCountdown(1))
-    schedule(MARKETING_DEMO_COUNTDOWN_MS, () => {
-      setNotchDemoCountdown(null)
-      void window.vibeboard.startNotchMarketingDemo()
-    })
-    schedule(MARKETING_DEMO_COUNTDOWN_MS + MARKETING_NOTCH_DEMO_MS, () => {
-      setMarketingDemoMode(null)
-      setNotchDemoCountdown(null)
-      marketingDemoTimersRef.current = []
-    })
-  }
-
   const replayTutorial = (): void => {
     stopMarketingDemo()
     setTutorialCompleteOpen(false)
@@ -1566,7 +1726,7 @@ export function App(): ReactElement {
     attachments: TaskMessageAttachmentInput[] = []
   ): Promise<void> => {
     const task = state.tasks.find((item) => item.id === taskId)
-    if (!cursorStatus.available || !task?.projectId) return
+    if (!agentCliSnapshot.active.available || !task?.projectId) return
     const trimmed = content.trim()
     if (!trimmed && attachments.length === 0) return
     await runAction(`task:message:${taskId}`, async () => {
@@ -1610,7 +1770,7 @@ export function App(): ReactElement {
 
   const retryTask = async (taskId: string): Promise<void> => {
     const task = state.tasks.find((item) => item.id === taskId)
-    if (!cursorStatus.available || !task?.projectId || task.status === 'processing') return
+    if (!agentCliSnapshot.active.available || !task?.projectId || task.status === 'processing') return
     await runAction(`task:retry:${taskId}`, async () => {
       await window.vibeboard.runTaskWithCursor(taskId)
       await refresh()
@@ -1619,7 +1779,7 @@ export function App(): ReactElement {
 
   const retryTaskPrompt = async (taskId: string): Promise<void> => {
     const task = state.tasks.find((item) => item.id === taskId)
-    if (!cursorStatus.available || !task?.projectId) return
+    if (!agentCliSnapshot.active.available || !task?.projectId) return
 
     const detailConversations =
       selectedTaskId === taskId ? selectedTaskDetail.conversations : []
@@ -1733,6 +1893,30 @@ export function App(): ReactElement {
           ? (capability.reason ?? 'This display is not supported.')
           : ''
       )
+    })
+  }
+
+  const saveKeyboardAlertSettings = async (settings: KeyboardAlertSettings): Promise<void> => {
+    await runAction('keyboardAlert:save', async () => {
+      const nextSettings = await window.vibeboard.updateKeyboardAlertSettings(settings)
+      setKeyboardAlertSettings(nextSettings)
+      const capability = await window.vibeboard.getKeyboardAlertCapability()
+      setKeyboardAlertCapability(capability)
+      setKeyboardAlertFeedback(
+        nextSettings.enabled && !capability.supported
+          ? (capability.reason ?? 'Keyboard backlight is not available on this Mac.')
+          : ''
+      )
+    })
+  }
+
+  const testKeyboardAlert = async (): Promise<void> => {
+    await runAction('keyboardAlert:test', async () => {
+      const result = await window.vibeboard.testKeyboardAlertFlash()
+      setKeyboardAlertFeedback(result.ok ? 'Flashing keyboard…' : (result.reason ?? 'Test failed'))
+      if (result.ok) {
+        window.setTimeout(() => setKeyboardAlertFeedback(''), 3600)
+      }
     })
   }
 
@@ -1964,8 +2148,8 @@ export function App(): ReactElement {
 
       <main
         className={`${isSidebarCollapsed ? 'workspace sidebar-collapsed' : 'workspace'}${
-          isNotchDemo ? ' marketing-notch-demo' : ''
-        }${isProductDemo ? ' marketing-product-demo' : ''}${
+          isProductDemo ? ' marketing-product-demo' : ''
+        }${
           isProductDemo && productDemoCountdown == null ? ' marketing-product-demo-live' : ''
         }${productDemoAiming ? ' marketing-product-demo-aiming' : ''}${
           productDemoCursor?.pressing ? ' marketing-product-demo-clicking' : ''
@@ -1996,7 +2180,7 @@ export function App(): ReactElement {
               className="sidebar-nav-item sidebar-nav-primary"
               type="button"
               onClick={createProject}
-              disabled={isActionPending('project:create') || isShowcaseBoard || isNotchDemo}
+              disabled={isActionPending('project:create') || isShowcaseBoard}
               title="Add project"
             >
               <FolderPlus size={16} strokeWidth={1.75} />
@@ -2008,31 +2192,33 @@ export function App(): ReactElement {
               onOpen={() => {
                 setNotificationFeedback('')
                 setNotchFeedback('')
+                setKeyboardAlertFeedback('')
                 setSettingsCategory('appearance')
                 void window.vibeboard.getAppearanceSettings().then((settings) => {
                   setAppearanceSettings(settings)
                   applyAppearanceSettings(settings)
                 })
-                if (notchCapability.platform === 'darwin') {
+                if (navigator.userAgent.includes('Mac')) {
                   void window.vibeboard.getNotchOverlayCapability().then(setNotchCapability)
                   void window.vibeboard.getNotchOverlaySettings().then(setNotchOverlaySettings)
+                  void window.vibeboard.getKeyboardAlertCapability().then(setKeyboardAlertCapability)
+                  void window.vibeboard.getKeyboardAlertSettings().then(setKeyboardAlertSettings)
                 }
                 void window.vibeboard.getUpdateInfo().then(setUpdateInfo)
                 setSettingsOpen(true)
               }}
             />
-            {isDevMode && !isShowcaseBoard && !isNotchDemo && (
+            {isDevMode && !isShowcaseBoard && (
               <DevTutorialLauncher onOpen={replayTutorial} />
             )}
             {isDevMode &&
               !isShowcaseBoard &&
-              !isNotchDemo &&
               notchCapability.platform === 'darwin' && <DevNotchFinishLauncher />}
-            {isDevMode && !isProductDemo && !isNotchDemo && (
+            {isDevMode &&
+              !isShowcaseBoard &&
+              notchCapability.platform === 'darwin' && <DevNotchRunningLauncher />}
+            {isDevMode && !isProductDemo && (
               <DevProductDemoLauncher onStart={startProductMarketingDemo} />
-            )}
-            {isDevMode && !isProductDemo && !isNotchDemo && (
-              <DevNotchDemoLauncher onStart={startNotchMarketingDemo} />
             )}
           </nav>
 
@@ -2046,30 +2232,52 @@ export function App(): ReactElement {
             </div>
           </section>
 
-          {cursorSetupPhase === 'failed' && !isShowcaseBoard && !isNotchDemo && (
+          {!isShowcaseBoard && (
             <section className="sidebar-section integration-panel">
-              <div className="sidebar-section-label">Cursor</div>
-              <CursorConnection
-                feedback={cursorFeedback}
-                isInstalling={isInstallingCursorCli}
-                status={cursorStatus}
-                onRepair={openCursorRepair}
+              <div className="sidebar-section-label">Agent CLI</div>
+              <AgentCliPicker
+                snapshot={agentCliSnapshot}
+                onSelect={selectAgentCli}
               />
+              {!agentCliSnapshot.active.available && (
+                <AgentCliSetupCard
+                  provider={agentCliSnapshot.active}
+                  feedback={cursorFeedback}
+                  isWorking={isInstallingCursorCli || cursorSetupPhase === 'preparing'}
+                  onSetup={() => void openAgentCliSetup()}
+                />
+              )}
             </section>
           )}
 
-          <button
-            className="sidebar-nav-item sidebar-support"
-            type="button"
-            data-tour="sidebar-support"
-            title="Support me on Buy Me a Coffee"
-            onClick={() => {
-              void window.vibeboard.openExternalUrl('https://buymeacoffee.com/yeeet')
-            }}
-          >
-            <Heart size={16} strokeWidth={1.75} />
-            <span>Support me</span>
-          </button>
+          <div className="sidebar-cta-stack">
+            <button
+              className="sidebar-nav-item sidebar-feedback"
+              type="button"
+              data-tour="sidebar-feedback"
+              title="Send feedback on GitHub"
+              onClick={() => {
+                void window.vibeboard.openExternalUrl(
+                  'https://github.com/YeeetSK/vibeboard/issues/new/choose'
+                )
+              }}
+            >
+              <MessageSquare size={16} strokeWidth={1.75} />
+              <span>Feedback</span>
+            </button>
+            <button
+              className="sidebar-nav-item sidebar-support"
+              type="button"
+              data-tour="sidebar-support"
+              title="Support me on Buy Me a Coffee"
+              onClick={() => {
+                void window.vibeboard.openExternalUrl('https://buymeacoffee.com/yeeet')
+              }}
+            >
+              <Heart size={16} strokeWidth={1.75} />
+              <span>Support me</span>
+            </button>
+          </div>
         </aside>
 
         <section className="board-area" data-tour="board">
@@ -2226,7 +2434,9 @@ export function App(): ReactElement {
           changes={selectedTaskDetail.changes}
           hasOlderConversations={selectedTaskDetail.hasOlderConversations}
           isLoadingOlderConversations={isLoadingOlderConversations}
-          canUseCursor={isProductDemo || cursorStatus.available}
+          canUseCursor={isProductDemo || agentCliSnapshot.active.available}
+          activeAgentLabel={agentCliSnapshot.active.label}
+          activeAgentCli={agentCliSnapshot.activeCli}
           forcedDraft={isProductDemo ? productDemoDraft ?? '' : undefined}
           isExiting={taskDetailExiting}
           onLoadOlderConversations={loadOlderSelectedTaskConversations}
@@ -2270,13 +2480,10 @@ export function App(): ReactElement {
         />
       )}
 
-      {(productDemoCountdown ?? notchDemoCountdown) != null && (
+      {productDemoCountdown != null && (
         <div className="marketing-countdown" aria-live="assertive">
-          <span
-            key={productDemoCountdown ?? notchDemoCountdown}
-            className="marketing-countdown-digit"
-          >
-            {productDemoCountdown ?? notchDemoCountdown}
+          <span key={productDemoCountdown} className="marketing-countdown-digit">
+            {productDemoCountdown}
           </span>
         </div>
       )}
@@ -2303,16 +2510,6 @@ export function App(): ReactElement {
             </svg>
             <span className="marketing-demo-cursor-ripple" />
           </div>
-        </div>
-      )}
-
-      {isNotchDemo && (
-        <div
-          className="marketing-nature-backdrop"
-          style={{ backgroundImage: `url(${MARKETING_NATURE_BACKDROP_URL})` }}
-          aria-hidden="true"
-        >
-          <div className="marketing-nature-scrim" />
         </div>
       )}
 
@@ -2384,12 +2581,18 @@ export function App(): ReactElement {
           notchSettings={notchOverlaySettings}
           notchCapability={notchCapability}
           notchFeedback={notchFeedback}
+          keyboardSettings={keyboardAlertSettings}
+          keyboardCapability={keyboardAlertCapability}
+          keyboardFeedback={keyboardAlertFeedback}
           updateInfo={updateInfo}
           isSavingAppearance={isActionPending('appearance:save')}
           isSavingNotifications={
             isActionPending('notifications:save') || isActionPending('notifications:test')
           }
           isSavingNotch={isActionPending('notch:save')}
+          isSavingKeyboard={
+            isActionPending('keyboardAlert:save') || isActionPending('keyboardAlert:test')
+          }
           isUpdating={
             isActionPending('update:download') || isActionPending('update:install')
           }
@@ -2398,6 +2601,8 @@ export function App(): ReactElement {
           onSaveNotifications={saveNotificationSettings}
           onTestNotifications={testNotificationSettings}
           onSaveNotch={saveNotchOverlaySettings}
+          onSaveKeyboard={saveKeyboardAlertSettings}
+          onTestKeyboard={testKeyboardAlert}
           onDownloadUpdate={downloadUpdate}
           onInstallUpdate={installUpdate}
         />
@@ -3027,34 +3232,6 @@ function DevTutorialLauncher({ onOpen }: { onOpen: () => void }): ReactElement {
   )
 }
 
-function DevNotchFinishLauncher(): ReactElement {
-  const [pending, setPending] = useState(false)
-  const [label, setLabel] = useState('Test notch finish')
-
-  return (
-    <button
-      className="sidebar-nav-item"
-      type="button"
-      disabled={pending}
-      title="Arm finish-chat test: leave VibeBoard, notch appears, then expands after 1.5s"
-      onClick={() => {
-        setPending(true)
-        setLabel('Leave app…')
-        void window.vibeboard.scheduleDevNotchFinishTest().finally(() => {
-          // Stay armed until notch expand would have fired; UI just hints to leave.
-          window.setTimeout(() => {
-            setPending(false)
-            setLabel('Test notch finish')
-          }, 8000)
-        })
-      }}
-    >
-      <ScanFace size={16} strokeWidth={1.75} />
-      <span>{label}</span>
-    </button>
-  )
-}
-
 function DevProductDemoLauncher({ onStart }: { onStart: () => void }): ReactElement {
   return (
     <button
@@ -3069,21 +3246,7 @@ function DevProductDemoLauncher({ onStart }: { onStart: () => void }): ReactElem
   )
 }
 
-function DevNotchDemoLauncher({ onStart }: { onStart: () => void }): ReactElement {
-  return (
-    <button
-      className="sidebar-nav-item"
-      type="button"
-      title="Auto-play notch marketing demo over nature backdrop"
-      onClick={onStart}
-    >
-      <Mountain size={16} strokeWidth={1.75} />
-      <span>Notch demo</span>
-    </button>
-  )
-}
-
-type SettingsCategory = 'appearance' | 'notifications' | 'notch' | 'updates'
+type SettingsCategory = 'appearance' | 'notifications' | 'notch' | 'keyboard' | 'updates'
 
 function SettingsSwitch({
   checked,
@@ -3119,7 +3282,7 @@ function SettingsRow({
   nested
 }: {
   title: string
-  description?: string
+  description?: ReactNode
   disabled?: boolean
   control: ReactElement
   nested?: boolean
@@ -3144,16 +3307,22 @@ function SettingsModal({
   notchSettings,
   notchCapability,
   notchFeedback,
+  keyboardSettings,
+  keyboardCapability,
+  keyboardFeedback,
   updateInfo,
   isSavingAppearance,
   isSavingNotifications,
   isSavingNotch,
+  isSavingKeyboard,
   isUpdating,
   onClose,
   onSaveAppearance,
   onSaveNotifications,
   onTestNotifications,
   onSaveNotch,
+  onSaveKeyboard,
+  onTestKeyboard,
   onDownloadUpdate,
   onInstallUpdate
 }: {
@@ -3165,31 +3334,42 @@ function SettingsModal({
   notchSettings: NotchOverlaySettings
   notchCapability: NotchOverlayCapability
   notchFeedback: string
+  keyboardSettings: KeyboardAlertSettings
+  keyboardCapability: KeyboardAlertCapability
+  keyboardFeedback: string
   updateInfo: UpdateInfo
   isSavingAppearance: boolean
   isSavingNotifications: boolean
   isSavingNotch: boolean
+  isSavingKeyboard: boolean
   isUpdating: boolean
   onClose: () => void
   onSaveAppearance: (settings: AppearanceSettings) => Promise<void>
   onSaveNotifications: (settings: NotificationSettings) => Promise<void>
   onTestNotifications: (settings: NotificationSettings) => Promise<void>
   onSaveNotch: (settings: NotchOverlaySettings) => Promise<void>
+  onSaveKeyboard: (settings: KeyboardAlertSettings) => Promise<void>
+  onTestKeyboard: () => Promise<void>
   onDownloadUpdate: () => void
   onInstallUpdate: () => void
 }): ReactElement {
   const showNotch = notchCapability.platform === 'darwin'
+  const showKeyboard = keyboardCapability.platform === 'darwin'
   useModalEscape(onClose)
 
   useEffect(() => {
     if (category === 'notch' && !showNotch) onCategoryChange('appearance')
-  }, [category, showNotch, onCategoryChange])
+    if (category === 'keyboard' && !showKeyboard) onCategoryChange('appearance')
+  }, [category, showNotch, showKeyboard, onCategoryChange])
 
   const navItems: Array<{ id: SettingsCategory; label: string; icon: ReactElement }> = [
     { id: 'appearance', label: 'Appearance', icon: <Palette size={16} strokeWidth={1.75} /> },
     { id: 'notifications', label: 'Notifications', icon: <Bell size={16} strokeWidth={1.75} /> },
     ...(showNotch
       ? [{ id: 'notch' as const, label: 'Notch', icon: <Scan size={16} strokeWidth={1.75} /> }]
+      : []),
+    ...(showKeyboard
+      ? [{ id: 'keyboard' as const, label: 'Keyboard', icon: <Keyboard size={16} strokeWidth={1.75} /> }]
       : []),
     { id: 'updates', label: 'Updates', icon: <Download size={16} strokeWidth={1.75} /> }
   ]
@@ -3243,6 +3423,16 @@ function SettingsModal({
                 feedback={notchFeedback}
                 isSaving={isSavingNotch}
                 onSave={onSaveNotch}
+              />
+            )}
+            {category === 'keyboard' && showKeyboard && (
+              <SettingsKeyboardPane
+                settings={keyboardSettings}
+                capability={keyboardCapability}
+                feedback={keyboardFeedback}
+                isSaving={isSavingKeyboard}
+                onSave={onSaveKeyboard}
+                onTest={onTestKeyboard}
               />
             )}
             {category === 'updates' && (
@@ -3429,6 +3619,10 @@ function SettingsAppearancePane({
     persist({ ...latestDraftRef.current, ...partial })
   }
 
+  const typographyIsCustom =
+    draft.uiFontSize !== emptyAppearanceSettings.uiFontSize ||
+    draft.codeFontSize !== emptyAppearanceSettings.codeFontSize
+
   return (
     <div className="settings-pane-body">
       <header className="settings-pane-intro">
@@ -3465,6 +3659,27 @@ function SettingsAppearancePane({
               />
             }
           />
+          {typographyIsCustom ? (
+            <SettingsRow
+              title="Custom sizes"
+              description="UI or code size differs from the defaults"
+              control={
+                <button
+                  className="settings-preview-button"
+                  type="button"
+                  title="Reset UI and code font sizes to defaults"
+                  onClick={() =>
+                    patch({
+                      uiFontSize: emptyAppearanceSettings.uiFontSize,
+                      codeFontSize: emptyAppearanceSettings.codeFontSize
+                    })
+                  }
+                >
+                  <span>Reset to default</span>
+                </button>
+              }
+            />
+          ) : null}
           <AppearanceTypographyPreview />
           <SettingsRow
             title="Font smoothing"
@@ -3665,24 +3880,36 @@ function SettingsNotificationsPane({
         </div>
 
         <div className="settings-block">
-          <h4 className="settings-block-label">ntfy.sh</h4>
+          <h4 className="settings-block-label">Phone (ntfy.sh)</h4>
           <div className="settings-list">
             <SettingsRow
-              title="Push notifications"
-              description="Send alerts to your phone or other devices"
+              title="Phone notifications"
+              description={
+                <>
+                  Push alerts to your phone with the ntfy app. Install it and subscribe to a topic at{' '}
+                  <button
+                    type="button"
+                    className="settings-text-link"
+                    onClick={() => void window.vibeboard.openExternalUrl('https://ntfy.sh')}
+                  >
+                    ntfy.sh
+                  </button>
+                  .
+                </>
+              }
               control={
                 <div className="settings-row-actions">
                   <button
                     className="settings-preview-button"
                     type="button"
-                    title="Send a test ntfy notification"
+                    title="Send a test phone notification"
                     disabled={isSaving || !draft.ntfy.enabled || !draft.ntfy.topic.trim()}
                     onClick={() => void onTest(draft)}
                   >
                     <span>Test</span>
                   </button>
                   <SettingsSwitch
-                    label="ntfy.sh notifications"
+                    label="Phone notifications via ntfy.sh"
                     checked={draft.ntfy.enabled}
                     onChange={(checked) => {
                       const current = latestDraftRef.current
@@ -3778,21 +4005,29 @@ function SettingsNotificationsPane({
   )
 }
 
-function SettingsNotchPane({
+function SettingsKeyboardPane({
   settings,
   capability,
   feedback,
-  onSave
+  isSaving,
+  onSave,
+  onTest
 }: {
-  settings: NotchOverlaySettings
-  capability: NotchOverlayCapability
+  settings: KeyboardAlertSettings
+  capability: KeyboardAlertCapability
   feedback: string
   isSaving: boolean
-  onSave: (settings: NotchOverlaySettings) => Promise<void>
+  onSave: (settings: KeyboardAlertSettings) => Promise<void>
+  onTest: () => Promise<void>
 }): ReactElement {
   const [draft, setDraft] = useState(settings)
   const saveTimerRef = useRef<number | null>(null)
   const latestDraftRef = useRef(settings)
+
+  useEffect(() => {
+    setDraft(settings)
+    latestDraftRef.current = settings
+  }, [settings])
 
   useEffect(() => {
     return () => {
@@ -3804,7 +4039,7 @@ function SettingsNotchPane({
     }
   }, [onSave])
 
-  const persist = (next: NotchOverlaySettings): void => {
+  const persist = (next: KeyboardAlertSettings): void => {
     latestDraftRef.current = next
     setDraft(next)
     if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current)
@@ -3814,34 +4049,104 @@ function SettingsNotchPane({
     }, 280)
   }
 
-  const expandDisabled = !capability.supported || !draft.enabled
+  const flashDisabled = !capability.supported || !draft.enabled
 
   return (
     <div className="settings-pane-body">
       <header className="settings-pane-intro">
-        <h3>Notch</h3>
-        <p>Live status at the camera notch when VibeBoard is in the background.</p>
+        <h3>Keyboard</h3>
+        <p>
+          Hard on/off flashes on the backlit keyboard when work needs you, until you open VibeBoard
+          or the task.
+        </p>
       </header>
 
       {(capability.reason || !capability.supported || feedback) && (
         <p className={`settings-note${!capability.supported ? ' warn' : ''}`}>
-          {feedback || capability.reason || 'Notch overlay needs a notched Mac display.'}
+          {feedback ||
+            capability.reason ||
+            'Needs a Mac with a controllable keyboard backlight.'}
         </p>
       )}
 
       <div className="settings-block">
-        <h4 className="settings-block-label">Overlay</h4>
+        <h4 className="settings-block-label">Alert</h4>
         <div className="settings-list">
           <SettingsRow
-            title="Show overlay"
-            description="Compact island with running, done, and inactive status"
+            title="Flash keyboard backlight"
+            description="Hard on/off flashes as a warning"
             disabled={!capability.supported}
             control={
               <SettingsSwitch
-                label="Show overlay"
+                label="Flash keyboard backlight"
                 checked={draft.enabled}
                 disabled={!capability.supported}
                 onChange={(checked) => persist({ ...latestDraftRef.current, enabled: checked })}
+              />
+            }
+          />
+          <SettingsRow
+            title="Test flash"
+            description="Hard on/off for a few seconds, then restores brightness"
+            disabled={!capability.supported}
+            control={
+              <button
+                className="settings-preview-button"
+                type="button"
+                title="Test keyboard flash"
+                disabled={!capability.supported || isSaving}
+                onClick={() => void onTest()}
+              >
+                <span>Test</span>
+              </button>
+            }
+          />
+        </div>
+      </div>
+
+      <div className="settings-block">
+        <h4 className="settings-block-label">Flash when</h4>
+        <div className="settings-list">
+          <SettingsRow
+            title="Needs attention"
+            description="Task failed or is waiting for you"
+            disabled={flashDisabled}
+            control={
+              <SettingsSwitch
+                label="Flash when a task needs attention"
+                checked={draft.flashOnTaskFailed}
+                disabled={flashDisabled}
+                onChange={(checked) =>
+                  persist({ ...latestDraftRef.current, flashOnTaskFailed: checked })
+                }
+              />
+            }
+          />
+          <SettingsRow
+            title="Task completed"
+            disabled={flashDisabled}
+            control={
+              <SettingsSwitch
+                label="Flash when a task completes"
+                checked={draft.flashOnTaskCompleted}
+                disabled={flashDisabled}
+                onChange={(checked) =>
+                  persist({ ...latestDraftRef.current, flashOnTaskCompleted: checked })
+                }
+              />
+            }
+          />
+          <SettingsRow
+            title="All tasks finished"
+            disabled={flashDisabled}
+            control={
+              <SettingsSwitch
+                label="Flash when all tasks finish"
+                checked={draft.flashOnAllFinished}
+                disabled={flashDisabled}
+                onChange={(checked) =>
+                  persist({ ...latestDraftRef.current, flashOnAllFinished: checked })
+                }
               />
             }
           />
@@ -3849,61 +4154,34 @@ function SettingsNotchPane({
       </div>
 
       <div className="settings-block">
-        <h4 className="settings-block-label">Expand when</h4>
+        <h4 className="settings-block-label">Pause when</h4>
         <div className="settings-list">
           <SettingsRow
-            title="Task completed"
-            disabled={expandDisabled}
+            title="App focused"
+            description="Pause while VibeBoard is forward; resumes when you leave if it still needs you"
+            disabled={flashDisabled}
             control={
               <SettingsSwitch
-                label="Expand when a task completes"
-                checked={draft.expandOnTaskCompleted}
-                disabled={expandDisabled}
+                label="Pause when app is focused"
+                checked={draft.stopOnAppFocus}
+                disabled={flashDisabled}
                 onChange={(checked) =>
-                  persist({ ...latestDraftRef.current, expandOnTaskCompleted: checked })
+                  persist({ ...latestDraftRef.current, stopOnAppFocus: checked })
                 }
               />
             }
           />
           <SettingsRow
-            title="Show answer and reply"
-            description="Only expands for completed tasks"
-            nested
-            disabled={expandDisabled || !draft.expandOnTaskCompleted}
+            title="Task opened"
+            description="Pause while that task is open; resumes when you leave if it still needs you"
+            disabled={flashDisabled}
             control={
               <SettingsSwitch
-                label="Show answer and reply field"
-                checked={draft.showFinishChat}
-                disabled={expandDisabled || !draft.expandOnTaskCompleted}
-                onChange={(checked) => persist({ ...latestDraftRef.current, showFinishChat: checked })}
-              />
-            }
-          />
-          <SettingsRow
-            title="Needs attention"
-            description="Stays compact and opens the task on click"
-            disabled={expandDisabled}
-            control={
-              <SettingsSwitch
-                label="Expand when a task needs attention"
-                checked={draft.expandOnAttention}
-                disabled={expandDisabled}
+                label="Pause when task is opened"
+                checked={draft.stopOnOpenTask}
+                disabled={flashDisabled}
                 onChange={(checked) =>
-                  persist({ ...latestDraftRef.current, expandOnAttention: checked })
-                }
-              />
-            }
-          />
-          <SettingsRow
-            title="All tasks finished"
-            disabled={expandDisabled}
-            control={
-              <SettingsSwitch
-                label="Expand when all tasks finish"
-                checked={draft.expandOnAllFinished}
-                disabled={expandDisabled}
-                onChange={(checked) =>
-                  persist({ ...latestDraftRef.current, expandOnAllFinished: checked })
+                  persist({ ...latestDraftRef.current, stopOnOpenTask: checked })
                 }
               />
             }
@@ -4130,34 +4408,124 @@ function CommandSearchPalette({
   )
 }
 
-function CursorConnection({
-  feedback,
-  isInstalling,
-  status,
-  onRepair
+function AgentCliPicker({
+  snapshot,
+  onSelect
 }: {
-  feedback: string
-  isInstalling: boolean
-  status: CursorStatus
-  onRepair: () => void
+  snapshot: AgentCliSnapshot
+  onSelect: (id: AgentCliId) => void
 }): ReactElement {
-  const hasAgent = Boolean(status.debug.agentCommand)
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const active = snapshot.active
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (event: MouseEvent): void => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('mousedown', onPointerDown)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('mousedown', onPointerDown)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
   return (
-    <div className="cursor-card missing">
+    <div className={`agent-cli-dropdown${open ? ' is-open' : ''}`} ref={rootRef}>
+      <button
+        type="button"
+        className="agent-cli-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title={`${active.label}: ${active.detail}`}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <AgentCliIcon id={active.id} size={18} className="agent-cli-trigger-icon" />
+        <span className="agent-cli-trigger-copy">
+          <span className="agent-cli-trigger-name">{active.label}</span>
+          <span className={`agent-cli-trigger-status${active.available ? ' ready' : ''}`}>
+            {agentCliStatusLabel(active)}
+          </span>
+        </span>
+        <ChevronDown size={14} strokeWidth={ICON_STROKE} className="agent-cli-trigger-chevron" />
+      </button>
+
+      {open && (
+        <div className="agent-cli-menu" role="listbox" aria-label="Choose agent CLI">
+          {snapshot.providers.map((provider) => {
+            const selected = snapshot.activeCli === provider.id
+            return (
+              <button
+                key={provider.id}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                className={`agent-cli-menu-item${selected ? ' is-selected' : ''}${provider.available ? '' : ' is-unavailable'}`}
+                onClick={() => {
+                  onSelect(provider.id)
+                  setOpen(false)
+                }}
+              >
+                <AgentCliIcon id={provider.id} size={18} className="agent-cli-menu-icon" />
+                <span className="agent-cli-menu-copy">
+                  <span className="agent-cli-menu-name">{provider.label}</span>
+                  <span className={`agent-cli-menu-status${provider.available ? ' ready' : ''}`}>
+                    {agentCliStatusLabel(provider)}
+                  </span>
+                </span>
+                {selected ? <Check size={14} strokeWidth={ICON_STROKE} className="agent-cli-menu-check" /> : null}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function agentCliStatusLabel(provider: AgentCliProviderStatus): string {
+  // Ready means signed in and usable, not merely installed.
+  if (provider.detail === 'Checking…') return 'Checking…'
+  if (provider.available) return 'Signed in'
+  if (provider.installed) return 'Login needed'
+  return 'Not installed'
+}
+
+function AgentCliSetupCard({
+  provider,
+  feedback,
+  isWorking,
+  onSetup
+}: {
+  provider: AgentCliProviderStatus
+  feedback: string
+  isWorking: boolean
+  onSetup: () => void
+}): ReactElement {
+  const needsInstall = !provider.installed
+  return (
+    <div className="cursor-card missing agent-cli-setup-card">
       <div className="cursor-status-row">
         <div>
-          <Code2 size={15} />
-          <span>Needs setup</span>
+          <AgentCliIcon id={provider.id} size={15} />
+          <span>{needsInstall ? 'Install required' : 'Sign in required'}</span>
         </div>
-        <span className="connection-pill missing">{hasAgent ? 'Login' : 'Missing'}</span>
+        <span className="connection-pill missing">{needsInstall ? 'Missing' : 'Login'}</span>
       </div>
       <div className="cursor-actions">
-        <button className="primary-action setup-button" type="button" onClick={onRepair} disabled={isInstalling}>
+        <button className="primary-action setup-button" type="button" onClick={onSetup} disabled={isWorking}>
           <ExternalLink size={15} />
-          <span>{isInstalling ? 'Opening' : hasAgent ? 'Login in Terminal' : 'Fix in Terminal'}</span>
+          <span>
+            {isWorking ? 'Working…' : needsInstall ? 'Install & sign in' : 'Sign in'}
+          </span>
         </button>
       </div>
-      {feedback && <div className="cursor-feedback">{feedback}</div>}
+      {feedback ? <div className="cursor-feedback">{feedback}</div> : null}
     </div>
   )
 }
@@ -4440,6 +4808,8 @@ function TopBar({
   onUpdateTabMeta: (input: { id: string; isPinned?: boolean; color?: string | null }) => void
   isCreatingProject: boolean
 }): ReactElement {
+  const showWindowControls = platformClass !== 'platform-mac'
+  const [isWindowMaximized, setIsWindowMaximized] = useState(false)
   const [menuState, setMenuState] = useState<{ tabId: string; x: number; y: number } | null>(null)
   const [closedMenuOpen, setClosedMenuOpen] = useState(false)
   const [closedSearch, setClosedSearch] = useState('')
@@ -4476,6 +4846,12 @@ function TopBar({
     return () => window.removeEventListener('click', close)
   }, [menuState, closedMenuOpen])
 
+  useEffect(() => {
+    if (!showWindowControls) return
+    void window.vibeboard.windowIsMaximized().then(setIsWindowMaximized)
+    return window.vibeboard.onWindowMaximizedChanged(setIsWindowMaximized)
+  }, [showWindowControls])
+
   const handleTabDragStart = (event: DragStartEvent): void => {
     const tabId = String(event.active.id)
     setDraggedTabId(tabId)
@@ -4504,7 +4880,15 @@ function TopBar({
   }
 
   return (
-    <div className="tabs-bar">
+    <div
+      className="tabs-bar"
+      onDoubleClick={(event) => {
+        if (!showWindowControls) return
+        const target = event.target as HTMLElement
+        if (target.closest('.tabs, .tabs-actions, .window-controls, .tab-menu, .closed-tabs-wrap')) return
+        void window.vibeboard.windowMaximize().then(setIsWindowMaximized)
+      }}
+    >
       <DndContext
         sensors={tabSensors}
         onDragStart={handleTabDragStart}
@@ -4679,6 +5063,41 @@ function TopBar({
             }}
           >
             Delete project tab
+          </button>
+        </div>
+      )}
+      {showWindowControls && (
+        <div className="window-controls">
+          <button
+            className="window-control"
+            type="button"
+            title="Minimize"
+            aria-label="Minimize"
+            onClick={() => void window.vibeboard.windowMinimize()}
+          >
+            <Minus size={14} strokeWidth={ICON_STROKE} />
+          </button>
+          <button
+            className="window-control"
+            type="button"
+            title={isWindowMaximized ? 'Restore' : 'Maximize'}
+            aria-label={isWindowMaximized ? 'Restore' : 'Maximize'}
+            onClick={() => void window.vibeboard.windowMaximize().then(setIsWindowMaximized)}
+          >
+            {isWindowMaximized ? (
+              <Copy size={12} strokeWidth={ICON_STROKE} />
+            ) : (
+              <Square size={12} strokeWidth={ICON_STROKE} />
+            )}
+          </button>
+          <button
+            className="window-control window-control-close"
+            type="button"
+            title="Close"
+            aria-label="Close"
+            onClick={() => void window.vibeboard.windowClose()}
+          >
+            <X size={14} strokeWidth={ICON_STROKE} />
           </button>
         </div>
       )}
@@ -5247,18 +5666,6 @@ function formatRelativeTime(iso: string): string {
   return new Date(then).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
-function shortBranchName(branchName: string): string {
-  const parts = branchName.split('/')
-  return parts[parts.length - 1] || branchName
-}
-
-function stripBranchNoise(branchName: string): string {
-  return shortBranchName(branchName)
-    .replace(/-[0-9a-f]{6,}$/i, '')
-    .replace(/[_-]+/g, ' ')
-    .trim()
-}
-
 function normalizeComparableText(value: string): string {
   return value
     .toLowerCase()
@@ -5320,9 +5727,8 @@ function TaskCardContent({ task }: { task: Task }): ReactElement {
   const summary = task.summary.trim()
   const showSummary = Boolean(summary) && !isRedundantWithTitle(summary, task.title)
   const timeLabel = formatRelativeTime(task.updatedAt)
-  const branchLabel = task.branchName ? stripBranchNoise(task.branchName) : null
-  const showBranchIcon = Boolean(task.branchName)
-  const showMeta = Boolean(task.pushedToMain) || showBranchIcon
+  // Branch is provisioned when a run starts; only show git chrome after a real push.
+  const showPushedIcon = Boolean(task.pushedToMain)
 
   return (
     <div className="task-card-content">
@@ -5346,24 +5752,13 @@ function TaskCardContent({ task }: { task: Task }): ReactElement {
             <span className="task-card-footer-time">{timeLabel}</span>
           </>
         ) : null}
-        {showMeta && (
+        {showPushedIcon ? (
           <span className="task-card-footer-meta">
-            {Boolean(task.pushedToMain) && (
-              <span title="Pushed to main">
-                <GitCommitHorizontal size={13} strokeWidth={ICON_STROKE} />
-              </span>
-            )}
-            {showBranchIcon && task.branchName && (
-              <span
-                className="task-card-branch"
-                title={task.branchName}
-                aria-label={branchLabel ? `Branch ${branchLabel}` : `Branch ${task.branchName}`}
-              >
-                <GitPullRequestDraft size={13} strokeWidth={ICON_STROKE} />
-              </span>
-            )}
+            <span title="Pushed to main">
+              <GitCommitHorizontal size={13} strokeWidth={ICON_STROKE} />
+            </span>
           </span>
-        )}
+        ) : null}
       </div>
     </div>
   )
@@ -5743,6 +6138,8 @@ function TaskDetailModal({
   hasOlderConversations,
   isLoadingOlderConversations,
   canUseCursor,
+  activeAgentLabel = 'Cursor',
+  activeAgentCli = 'cursor',
   forcedDraft,
   isExiting = false,
   onLoadOlderConversations,
@@ -5762,6 +6159,8 @@ function TaskDetailModal({
   hasOlderConversations: boolean
   isLoadingOlderConversations: boolean
   canUseCursor: boolean
+  activeAgentLabel?: string
+  activeAgentCli?: AgentCliId
   forcedDraft?: string
   isExiting?: boolean
   onLoadOlderConversations: () => void
@@ -5887,7 +6286,7 @@ function TaskDetailModal({
                   type="button"
                   onClick={requestCommit}
                   disabled={!canChat || isRunning}
-                  title="Ask agent to commit these changes and push to the default branch on origin"
+                  title="Ask agent to commit and push (no Co-authored-by; authorship stays yours)"
                 >
                   <GitCommitHorizontal size={16} />
                   <span>Commit</span>
@@ -5955,8 +6354,15 @@ function TaskDetailModal({
               isLoadingOlderConversations={isLoadingOlderConversations}
               canSend={canChat}
               canRetryPrompt={canRetryPrompt}
+              activeAgentCli={activeAgentCli}
               forcedDraft={forcedDraft}
-              disabledLabel={!canUseCursor ? 'Cursor not connected' : !project ? 'No project selected' : 'Unavailable'}
+              disabledLabel={
+                !canUseCursor
+                  ? `${activeAgentLabel} not connected`
+                  : !project
+                    ? 'No project selected'
+                    : 'Unavailable'
+              }
               onLoadOlderConversations={onLoadOlderConversations}
               onSendMessage={onSendMessage}
               onRetryPrompt={onRetryPrompt}
@@ -5982,7 +6388,9 @@ function TaskDetailModal({
                       <p>Diffs show up here when the agent edits files.</p>
                     </div>
                   ) : (
-                    changes.map((change) => <DiffViewer key={change.id} change={change} />)
+                    changes.map((change) => (
+                      <DiffViewer key={change.id} change={change} taskId={task.id} />
+                    ))
                   )}
                 </div>
               </div>
@@ -6002,6 +6410,7 @@ function AgentThread({
   isLoadingOlderConversations,
   canSend,
   canRetryPrompt,
+  activeAgentCli = 'cursor',
   forcedDraft,
   disabledLabel,
   onLoadOlderConversations,
@@ -6016,6 +6425,7 @@ function AgentThread({
   isLoadingOlderConversations: boolean
   canSend: boolean
   canRetryPrompt: boolean
+  activeAgentCli?: AgentCliId
   forcedDraft?: string
   disabledLabel: string
   onLoadOlderConversations: () => void
@@ -6027,6 +6437,8 @@ function AgentThread({
     forcedDraft !== undefined ? forcedDraft : readTaskComposerDraft(task.id)
   )
   const [pendingAttachments, setPendingAttachments] = useState<PendingComposerAttachment[]>([])
+  const [editingQueuedId, setEditingQueuedId] = useState<string | null>(null)
+  const [editingQueuedDraft, setEditingQueuedDraft] = useState('')
   const streamRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -6046,6 +6458,8 @@ function AgentThread({
       .filter((entry, index) => {
         if (isNoisyConversationEntry(entry)) return false
         if (entry.role !== 'system') return true
+        // Keep CLI debug / empty-reply diagnostics even after Done.
+        if (isAgentCliDiagnosticMessage(entry.content)) return true
         if (isUselessSystemStatusFragment(entry.content)) return false
         if (systemSince && entry.createdAt < systemSince) return false
         // Live status prints are only useful while the agent is still running.
@@ -6210,20 +6624,6 @@ function AgentThread({
             </div>
           ))
         )}
-        {queuedMessages.map((queued, index) => (
-          <div key={queued.id} className="agent-step role-user is-queued">
-            <MessageSquare size={16} />
-            <div>
-              <strong className="agent-step-label">
-                Queued{queuedMessages.length > 1 ? ` · ${index + 1}` : ''}
-              </strong>
-              <div className="user-message-bubble queued-message-bubble">
-                <MessageAttachments attachments={queued.attachments} />
-                {queued.content ? <MessageMarkdown content={queued.content} /> : null}
-              </div>
-            </div>
-          </div>
-        ))}
       </div>
 
       {(canSend || canRetryPrompt) && (
@@ -6232,6 +6632,7 @@ function AgentThread({
             taskId={task.id}
             model={task.model ?? null}
             disabled={!canSend}
+            activeAgentCli={activeAgentCli}
             onChange={onUpdateModel}
           />
           {canRetryPrompt && (
@@ -6261,6 +6662,117 @@ function AgentThread({
             ))}
         </div>
       )}
+
+      <div className="composer-stack">
+      {queuedMessages.length > 0 ? (
+        <div className="queued-tray" aria-label="Queued messages">
+          <div className="queued-tray-header">
+            <span className="queued-tray-count">
+              {queuedMessages.length} Queued
+            </span>
+            <span className="queued-tray-hint">sends after current run</span>
+          </div>
+          <div className="queued-tray-list">
+            {queuedMessages.map((queued) => (
+              <div key={queued.id} className="queued-tray-item">
+                {editingQueuedId === queued.id ? (
+                  <form
+                    className="queued-tray-edit"
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      const trimmed = editingQueuedDraft.trim()
+                      if (!trimmed) return
+                      void window.vibeboard
+                        .updateQueuedTaskMessage({
+                          taskId: task.id,
+                          messageId: queued.id,
+                          content: trimmed
+                        })
+                        .then(() => {
+                          setEditingQueuedId(null)
+                          setEditingQueuedDraft('')
+                        })
+                    }}
+                  >
+                    <textarea
+                      className="queued-tray-edit-input"
+                      value={editingQueuedDraft}
+                      rows={2}
+                      autoFocus
+                      onChange={(event) => setEditingQueuedDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Escape') {
+                          event.preventDefault()
+                          setEditingQueuedId(null)
+                          setEditingQueuedDraft('')
+                        }
+                        if (event.key === 'Enter' && !event.shiftKey) {
+                          event.preventDefault()
+                          event.currentTarget.form?.requestSubmit()
+                        }
+                      }}
+                    />
+                    <div className="queued-tray-edit-actions">
+                      <button type="submit" className="template-chip">
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        className="template-chip"
+                        onClick={() => {
+                          setEditingQueuedId(null)
+                          setEditingQueuedDraft('')
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <>
+                    <div className="queued-tray-preview">
+                      {(queued.attachments?.length ?? 0) > 0 ? (
+                        <MessageAttachments attachments={queued.attachments} />
+                      ) : null}
+                      <span className="queued-tray-text">
+                        {queued.content.trim() || 'Attachment'}
+                      </span>
+                    </div>
+                    <div className="queued-tray-actions">
+                      <button
+                        type="button"
+                        className="queued-tray-action"
+                        title="Edit queued message"
+                        aria-label="Edit queued message"
+                        onClick={() => {
+                          setEditingQueuedId(queued.id)
+                          setEditingQueuedDraft(queued.content)
+                        }}
+                      >
+                        <Pencil size={14} strokeWidth={1.75} />
+                      </button>
+                      <button
+                        type="button"
+                        className="queued-tray-action is-danger"
+                        title="Remove queued message"
+                        aria-label="Remove queued message"
+                        onClick={() => {
+                          void window.vibeboard.removeQueuedTaskMessage({
+                            taskId: task.id,
+                            messageId: queued.id
+                          })
+                        }}
+                      >
+                        <Trash2 size={14} strokeWidth={1.75} />
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {pendingAttachments.length > 0 && (
         <div className="composer-attachments" aria-label="Pending attachments">
@@ -6347,6 +6859,7 @@ function AgentThread({
           <Send size={16} />
         </button>
       </div>
+      </div>
     </div>
   )
 }
@@ -6393,7 +6906,12 @@ const FEATURED_MODELS_PER_PROVIDER = 7
 
 function detectModelProvider(model: AgentModel): ModelProviderId {
   const haystack = `${model.id} ${model.label}`.toLowerCase()
-  if (/\b(gpt|o[1-9]|chatgpt|openai)\b/.test(haystack) || haystack.startsWith('gpt-') || /^o[1-9]/.test(haystack)) {
+  if (
+    /\b(gpt|o[1-9]|chatgpt|openai|codex)\b/.test(haystack) ||
+    haystack.startsWith('gpt-') ||
+    haystack.startsWith('codex-') ||
+    /^o[1-9]/.test(haystack)
+  ) {
     return 'openai'
   }
   if (/\b(claude|anthropic)\b/.test(haystack) || haystack.startsWith('claude-')) return 'anthropic'
@@ -6454,11 +6972,13 @@ function TaskModelPicker({
   taskId,
   model,
   disabled,
+  activeAgentCli = 'cursor',
   onChange
 }: {
   taskId: string
   model: string | null
   disabled: boolean
+  activeAgentCli?: AgentCliId
   onChange: (taskId: string, model: string | null) => void
 }): ReactElement {
   const [models, setModels] = useState<AgentModel[]>([])
@@ -6468,7 +6988,9 @@ function TaskModelPicker({
   const [query, setQuery] = useState('')
   const [hoveredProvider, setHoveredProvider] = useState<ModelProviderId | null>(null)
   const [flyoutStyle, setFlyoutStyle] = useState<CSSProperties | null>(null)
+  const [menuStyle, setMenuStyle] = useState<CSSProperties | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
   const flyoutCloseTimer = useRef<number | null>(null)
 
@@ -6518,20 +7040,46 @@ function TaskModelPicker({
     return () => {
       cancelled = true
     }
-  }, [taskId])
+  }, [taskId, activeAgentCli])
 
   useEffect(() => {
     if (!isOpen) {
       setQuery('')
+      setMenuStyle(null)
       closeProviderFlyout()
       return
     }
 
+    const placeMenu = (): void => {
+      const trigger = triggerRef.current
+      if (!trigger) return
+      const rect = trigger.getBoundingClientRect()
+      const width = Math.min(300, window.innerWidth - 16)
+      const estimatedHeight = 340
+      const gap = 6
+      const openAbove = rect.top > estimatedHeight + 24
+      const left = Math.min(Math.max(8, rect.left), window.innerWidth - width - 8)
+      const top = openAbove
+        ? Math.max(8, rect.top - gap - estimatedHeight)
+        : Math.min(window.innerHeight - 8 - estimatedHeight, rect.bottom + gap)
+      setMenuStyle({
+        position: 'fixed',
+        top: openAbove ? undefined : top,
+        bottom: openAbove ? window.innerHeight - rect.top + gap : undefined,
+        left,
+        width,
+        maxHeight: Math.min(360, window.innerHeight - 16)
+      })
+    }
+
+    placeMenu()
     const focusTimer = window.setTimeout(() => searchRef.current?.focus(), 20)
     const closeOnOutside = (event: PointerEvent): void => {
       const target = event.target as Node
       if (menuRef.current?.contains(target)) return
+      if (triggerRef.current?.contains(target)) return
       if (target instanceof Element && target.closest('.task-model-flyout')) return
+      if (target instanceof Element && target.closest('.task-model-options')) return
       setOpen(false)
     }
     const closeOnEscape = (event: KeyboardEvent): void => {
@@ -6543,11 +7091,13 @@ function TaskModelPicker({
 
     window.addEventListener('pointerdown', closeOnOutside, true)
     window.addEventListener('keydown', closeOnEscape, true)
+    window.addEventListener('resize', placeMenu)
     return () => {
       window.clearTimeout(focusTimer)
       clearFlyoutCloseTimer()
       window.removeEventListener('pointerdown', closeOnOutside, true)
       window.removeEventListener('keydown', closeOnEscape, true)
+      window.removeEventListener('resize', placeMenu)
     }
   }, [isOpen])
 
@@ -6578,11 +7128,13 @@ function TaskModelPicker({
     : []
   const providerGroups = useMemo(() => groupModelsByProvider(catalog), [catalog])
 
+  const agentLabel =
+    activeAgentCli === 'claude' ? 'Claude' : activeAgentCli === 'codex' ? 'Codex' : 'Cursor'
   const title = loadError
     ? loadError
     : isLoading
-      ? 'Loading Cursor models…'
-      : 'Model for this task'
+      ? `Loading ${agentLabel} models…`
+      : `Model for this task (${agentLabel})`
 
   const pickModel = (next: string | null): void => {
     onChange(taskId, next)
@@ -6614,6 +7166,7 @@ function TaskModelPicker({
   return (
     <div className="task-model-menu" ref={menuRef}>
       <button
+        ref={triggerRef}
         className={isOpen ? 'template-chip task-model-trigger open' : 'template-chip task-model-trigger'}
         type="button"
         disabled={disabled || isLoading}
@@ -6629,8 +7182,15 @@ function TaskModelPicker({
         <ChevronDown size={13} />
       </button>
 
-      {isOpen && (
-        <div className="task-model-options" role="listbox" aria-label="Cursor models">
+      {isOpen &&
+        menuStyle &&
+        createPortal(
+          <div
+            className="task-model-options task-model-options-portal"
+            role="listbox"
+            aria-label={`${agentLabel} models`}
+            style={menuStyle}
+          >
           <div className="task-model-search">
             <Search size={14} aria-hidden="true" />
             <input
@@ -6783,8 +7343,9 @@ function TaskModelPicker({
                 )}
             </>
           )}
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
     </div>
   )
 }
@@ -6904,9 +7465,23 @@ function collectClipboardImageFiles(clipboardData: DataTransfer | null): File[] 
   return Array.from(clipboardData.files ?? []).filter((file) => file.type.startsWith('image/'))
 }
 
-function MessageMarkdown({ content }: { content: string }): ReactElement {
+function MessageMarkdown({
+  content,
+  addedLines
+}: {
+  content: string
+  addedLines?: ReadonlySet<string>
+}): ReactElement {
+  const highlightModel = useMemo(
+    () => buildMarkdownDiffHighlightModel(addedLines),
+    [addedLines]
+  )
+  const highlightAdded = highlightModel != null
+  const wrapText = (nodes: ReactNode): ReactNode =>
+    highlightModel ? highlightAddedFragmentsInNodes(nodes, highlightModel.needles) : nodes
+
   return (
-    <div className="message-markdown">
+    <div className={`message-markdown${highlightAdded ? ' has-diff-highlights' : ''}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -6920,9 +7495,33 @@ function MessageMarkdown({ content }: { content: string }): ReactElement {
                   void window.vibeboard.openExternalUrl(href)
                 }}
               >
-                {children}
+                {wrapText(children)}
               </a>
             )
+          },
+          p({ children }) {
+            return <p>{wrapText(children)}</p>
+          },
+          li({ children }) {
+            return <li>{wrapText(children)}</li>
+          },
+          h1({ children }) {
+            return <h1>{wrapText(children)}</h1>
+          },
+          h2({ children }) {
+            return <h2>{wrapText(children)}</h2>
+          },
+          h3({ children }) {
+            return <h3>{wrapText(children)}</h3>
+          },
+          h4({ children }) {
+            return <h4>{wrapText(children)}</h4>
+          },
+          td({ children }) {
+            return <td>{wrapText(children)}</td>
+          },
+          th({ children }) {
+            return <th>{wrapText(children)}</th>
           },
           table({ children }) {
             return (
@@ -6941,12 +7540,14 @@ function MessageMarkdown({ content }: { content: string }): ReactElement {
             ) {
               return (
                 <tr className="markdown-table-note-row">
-                  <td colSpan={cells.length}>{markdownCellChildren(firstCell)}</td>
+                  <td colSpan={cells.length}>{wrapText(markdownCellChildren(firstCell))}</td>
                 </tr>
               )
             }
 
-            return <tr>{children}</tr>
+            const rowAdded =
+              highlightModel != null && isAddedMarkdownTableRow(cells, highlightModel.tableRows)
+            return <tr className={rowAdded ? 'md-diff-added-row' : undefined}>{children}</tr>
           },
           img({ src, alt }) {
             return <MarkdownImage src={src} alt={alt} />
@@ -6960,22 +7561,168 @@ function MessageMarkdown({ content }: { content: string }): ReactElement {
             const isBlock = rawCode.includes('\n') || Boolean(className)
 
             if (!isBlock) {
-              return <code className="inline-code">{children}</code>
+              return <code className="inline-code">{wrapText(children)}</code>
             }
 
-            return (
-              <MarkdownCodeBlock
-                code={rawCode}
-                language={language}
-                html={highlightCode(rawCode, language)}
-              />
-            )
+            const html =
+              highlightModel != null
+                ? buildCodeHtmlWithAddedHighlights(
+                    rawCode,
+                    language,
+                    highlightModel.codeLines,
+                    highlightCode
+                  )
+                : highlightCode(rawCode, language)
+
+            return <MarkdownCodeBlock code={rawCode} language={language} html={html} />
           }
         }}
       >
         {content}
       </ReactMarkdown>
     </div>
+  )
+}
+
+interface MarkdownDiffHighlightModel {
+  /** Substrings to mark inside paragraphs / cells / headings. */
+  needles: string[]
+  /** Normalized cell lists for whole-row table highlighting. */
+  tableRows: string[][]
+  /** Lines to mark inside fenced code blocks. */
+  codeLines: ReadonlySet<string>
+}
+
+function buildMarkdownDiffHighlightModel(
+  addedLines?: ReadonlySet<string>
+): MarkdownDiffHighlightModel | null {
+  if (!addedLines || addedLines.size === 0) return null
+
+  const needles = new Set<string>()
+  const tableRows: string[][] = []
+  const codeLines = new Set<string>()
+
+  for (const rawLine of addedLines) {
+    const line = rawLine.replace(/\r$/, '')
+    if (!line.trim() || isMarkdownTableSeparator(line)) continue
+
+    codeLines.add(line)
+    codeLines.add(line.trim())
+
+    const cells = parseMarkdownTableCells(line)
+    if (cells) {
+      const normalized = cells.map(normalizeMarkdownDiffText)
+      tableRows.push(normalized)
+      for (const cell of cells) {
+        const trimmed = cell.trim()
+        if (!trimmed) continue
+        // Prefer longer / distinctive cell text to avoid painting short labels everywhere.
+        if (trimmed.length >= 6 || /[/\s]/.test(trimmed)) {
+          needles.add(trimmed)
+          needles.add(normalizeMarkdownDiffText(trimmed))
+        }
+      }
+      continue
+    }
+
+    needles.add(line)
+    needles.add(line.trim())
+    const plain = normalizeMarkdownDiffText(line)
+    if (plain) needles.add(plain)
+  }
+
+  return {
+    needles: [...needles]
+      .filter((needle) => needle.length > 0)
+      .sort((left, right) => right.length - left.length),
+    tableRows,
+    codeLines
+  }
+}
+
+function parseMarkdownTableCells(line: string): string[] | null {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith('|') || !trimmed.includes('|', 1)) return null
+  if (isMarkdownTableSeparator(trimmed)) return null
+  return trimmed
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim())
+}
+
+function normalizeMarkdownDiffText(value: string): string {
+  return value
+    .replace(/\r/g, '')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function reactNodePlainText(node: ReactNode): string {
+  if (node == null || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map((child) => reactNodePlainText(child)).join('')
+  if (isValidElement<{ children?: ReactNode }>(node)) {
+    return reactNodePlainText(node.props.children)
+  }
+  return ''
+}
+
+function isAddedMarkdownTableRow(cells: ReactNode[], tableRows: string[][]): boolean {
+  if (tableRows.length === 0 || cells.length === 0) return false
+  const rendered = cells.map((cell) => normalizeMarkdownDiffText(reactNodePlainText(cell)))
+  if (rendered.every((cell) => !cell)) return false
+
+  return tableRows.some((expected) => {
+    if (expected.length !== rendered.length) return false
+    return expected.every((cell, index) => cell === rendered[index])
+  })
+}
+
+function highlightAddedFragmentsInNodes(nodes: ReactNode, needles: string[]): ReactNode {
+  return Children.map(nodes, (child) => {
+    if (typeof child === 'string') return highlightAddedFragmentsInText(child, needles)
+    if (typeof child === 'number') return child
+    if (!isValidElement<{ children?: ReactNode }>(child)) return child
+    if (child.props.children == null) return child
+    return cloneElement(child, {
+      ...child.props,
+      children: highlightAddedFragmentsInNodes(child.props.children, needles)
+    })
+  })
+}
+
+function highlightAddedFragmentsInText(text: string, needles: string[]): ReactNode {
+  if (needles.length === 0 || !text) return text
+
+  let earliestIndex = -1
+  let earliestNeedle = ''
+  for (const needle of needles) {
+    if (!needle) continue
+    const index = text.indexOf(needle)
+    if (index < 0) continue
+    if (earliestIndex < 0 || index < earliestIndex) {
+      earliestIndex = index
+      earliestNeedle = needle
+    }
+  }
+  if (earliestIndex < 0) return text
+
+  const before = text.slice(0, earliestIndex)
+  const match = text.slice(earliestIndex, earliestIndex + earliestNeedle.length)
+  const after = text.slice(earliestIndex + earliestNeedle.length)
+
+  return (
+    <>
+      {before}
+      <mark className="md-diff-added">{match}</mark>
+      {highlightAddedFragmentsInText(after, needles)}
+    </>
   )
 }
 
@@ -7032,10 +7779,15 @@ function isNoisyConversationEntry(entry: ConversationEntry): boolean {
   return false
 }
 
+function isAgentCliDiagnosticMessage(content: string): boolean {
+  return /^(Codex|Claude|Cursor) (debug|finished without|CLI debug)/i.test(content.trim())
+}
+
 function isOperationalSystemMessage(content: string): boolean {
   const text = content.trim()
   return (
-    /^(Agent is running|Still working|Starting Cursor|Select a project|Cursor (CLI|Agent)|This run was interrupted|Project folder|Could not|Retry keeps|This run mode|Git repository)/i.test(
+    isAgentCliDiagnosticMessage(text) ||
+    /^(Agent is running|Still working|Starting Cursor|Starting Codex|Starting Claude|Select a project|Cursor (CLI|Agent)|This run was interrupted|Project folder|Could not|Retry keeps|This run mode|Git repository)/i.test(
       text
     ) ||
     /^(Using |Reading |Read |Editing |Edited |Deleted |Deleting |Searched |Searching |Listed files|Listing files|Ran command|Running command|Fetched |Fetching |Used )/i.test(
@@ -7070,10 +7822,12 @@ function isThinkingSystemStatus(content: string): boolean {
 }
 
 function cleanConversationContent(content: string): string {
+  // Do not strip conversational lines like "I'm fine…" - that hid Codex/Claude replies.
+  // Only remove Cursor stream marker noise / UUID junk via cleanConversationLine.
   return stripLeadingActualMessageMarker(content)
     .split(/\r?\n/)
     .map((line) => cleanConversationLine(line))
-    .filter((line) => line && !isProgressNarrationLine(line))
+    .filter(Boolean)
     .join('\n')
     .trim()
 }
@@ -7113,19 +7867,6 @@ function stripLeadingActualMessageMarker(content: string): string {
 
 function cursorStreamMarkerPattern(): RegExp {
   return /\b(?:call--?\d+|call_\d+|tool--?\d+|tool_\d+|fc_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:_\d+)?)\b/gi
-}
-
-function isProgressNarrationLine(line: string): boolean {
-  return (
-    /^(i('|’)?m|i am|i('|’)?ll|i will|reading|reviewing|examining|checking|running|looking|scanning|opening|inspecting)\b/i.test(
-      line
-    ) ||
-    /^(the user|the request|the context|a modified .+ appears|files to understand|likely about)\b/i.test(line) ||
-    /^the project structure is now clear\b/i.test(line) ||
-    /^the task is unclear\b/i.test(line) ||
-    /^nothing clear to do yet\b/i.test(line) ||
-    /^what do you want next\b/i.test(line)
-  )
 }
 
 function mergeConversationEntries(left: ConversationEntry[], right: ConversationEntry[]): ConversationEntry[] {
@@ -7244,7 +7985,7 @@ function ChangeSummary({ changes }: { changes: CodeChange[] }): ReactElement {
   )
 }
 
-function DiffViewer({ change }: { change: CodeChange }): ReactElement {
+function DiffViewer({ change, taskId }: { change: CodeChange; taskId: string }): ReactElement {
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
   const diffText = useMemo(() => change.diffText.trim() || fallbackDiff(change), [change])
   const rows = useMemo(() => compactDiffRows(parseDiffRows(diffText)), [diffText])
@@ -7254,7 +7995,7 @@ function DiffViewer({ change }: { change: CodeChange }): ReactElement {
   )
   const languageLabel = useMemo(() => displayLanguage(language), [language])
   const markdownPreview = useMemo(() => markdownPreviewFromDiff(diffText), [diffText])
-  const canPreviewMarkdown = language === 'markdown' && Boolean(markdownPreview.trim())
+  const canPreviewMarkdown = language === 'markdown' && Boolean(markdownPreview.content.trim())
 
   return (
     <article className="diff-file">
@@ -7269,7 +8010,7 @@ function DiffViewer({ change }: { change: CodeChange }): ReactElement {
               className="icon-text-button markdown-preview-button"
               type="button"
               onClick={() => setIsPreviewOpen(true)}
-              title="Preview rendered Markdown"
+              title="Preview rendered Markdown with added lines highlighted"
             >
               <Eye size={14} />
               <span>Preview</span>
@@ -7297,8 +8038,10 @@ function DiffViewer({ change }: { change: CodeChange }): ReactElement {
       </div>
       {isPreviewOpen && (
         <MarkdownPreviewModal
+          taskId={taskId}
           filePath={change.filePath}
-          content={markdownPreview}
+          fallbackContent={markdownPreview.content}
+          addedLines={markdownPreview.addedLines}
           onClose={() => setIsPreviewOpen(false)}
         />
       )}
@@ -7307,28 +8050,76 @@ function DiffViewer({ change }: { change: CodeChange }): ReactElement {
 }
 
 function MarkdownPreviewModal({
+  taskId,
   filePath,
-  content,
+  fallbackContent,
+  addedLines,
   onClose
 }: {
+  taskId: string
   filePath: string
-  content: string
+  fallbackContent: string
+  addedLines: ReadonlySet<string>
   onClose: () => void
 }): ReactElement {
+  const [content, setContent] = useState(fallbackContent)
+  const [loadState, setLoadState] = useState<'loading' | 'file' | 'diff'>('loading')
+
+  useModalEscape(onClose)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoadState('loading')
+    void window.vibeboard
+      .readTaskWorkspaceFile({ taskId, filePath })
+      .then((fileContent) => {
+        if (cancelled) return
+        if (fileContent != null && fileContent.length > 0) {
+          setContent(fileContent)
+          setLoadState('file')
+          return
+        }
+        setContent(healMarkdownTablesForPreview(fallbackContent))
+        setLoadState('diff')
+      })
+      .catch(() => {
+        if (cancelled) return
+        setContent(healMarkdownTablesForPreview(fallbackContent))
+        setLoadState('diff')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [taskId, filePath, fallbackContent])
+
   return (
     <div className="modal-backdrop markdown-preview-backdrop" onMouseDown={closeOnBackdropMouseDown(onClose)}>
-      <section className="modal-panel markdown-preview-modal" role="dialog" aria-modal="true" aria-label={`${filePath} preview`}>
+      <section
+        className="modal-panel markdown-preview-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${filePath} preview`}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
         <header className="modal-head">
           <div>
             <h2>Markdown preview</h2>
-            <p>{filePath}</p>
+            <p>
+              {filePath}
+              {addedLines.size > 0 ? ' · green marks new or changed lines' : ''}
+              {loadState === 'diff' ? ' · from diff hunks' : ''}
+            </p>
           </div>
           <button className="icon-button" type="button" onClick={onClose} title="Close preview">
             <X size={18} />
           </button>
         </header>
-        <div className="markdown-preview-body">
-          <MessageMarkdown content={content} />
+        <div className="markdown-preview-body markdown-preview-diff">
+          {loadState === 'loading' ? (
+            <p className="settings-note">Loading file…</p>
+          ) : (
+            <MessageMarkdown content={content} addedLines={addedLines} />
+          )}
         </div>
       </section>
     </div>
@@ -7456,12 +8247,105 @@ function diffGutterLabel(row: DiffRow): string {
   return row.raw[0] ?? ' '
 }
 
-function markdownPreviewFromDiff(diffText: string): string {
-  return parseDiffRows(diffText)
-    .filter((row) => row.kind === 'context' || row.kind === 'added')
-    .map((row) => row.text)
-    .join('\n')
+function markdownPreviewFromDiff(diffText: string): {
+  content: string
+  addedLines: ReadonlySet<string>
+} {
+  const rows = parseDiffRows(diffText).filter(
+    (row) => row.kind === 'context' || row.kind === 'added'
+  )
+  const addedLines = new Set(
+    rows.filter((row) => row.kind === 'added').map((row) => row.text)
+  )
+  return {
+    content: healMarkdownTablesForPreview(
+      rows
+        .map((row) => row.text)
+        .join('\n')
+        .trim()
+    ),
+    addedLines
+  }
+}
+
+function isMarkdownTableRow(line: string): boolean {
+  const trimmed = line.trim()
+  return trimmed.startsWith('|') && trimmed.includes('|', 1)
+}
+
+function isMarkdownTableSeparator(line: string): boolean {
+  const trimmed = line.trim()
+  if (!trimmed.includes('|') || !/-{1,}/.test(trimmed)) return false
+  // GFM delimiter row: pipes + hyphens/colons only.
+  return /^[\s|:\-]+$/.test(trimmed) && /-+/.test(trimmed)
+}
+
+function markdownTableColumnCount(line: string): number {
+  const cells = line
     .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+  return Math.max(1, cells.length)
+}
+
+/**
+ * Diff hunks often omit the table header/separator above a changed row, so remark-gfm
+ * cannot form a table. When we only have hunk text, insert a synthetic delimiter.
+ */
+function healMarkdownTablesForPreview(content: string): string {
+  const lines = content.split('\n')
+  const output: string[] = []
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    const prev = output.length > 0 ? output[output.length - 1] : ''
+    const startsTableBlock =
+      isMarkdownTableRow(line) &&
+      !isMarkdownTableSeparator(line) &&
+      !isMarkdownTableRow(prev) &&
+      !isMarkdownTableSeparator(prev)
+
+    if (startsTableBlock) {
+      // Peek ahead: only heal when the next lines look like more table rows
+      // and there is no delimiter in this run.
+      let hasSeparator = false
+      let rowCount = 0
+      let columns = markdownTableColumnCount(line)
+      for (let look = index; look < lines.length; look += 1) {
+        const candidate = lines[look]
+        if (!candidate.trim()) break
+        if (isMarkdownTableSeparator(candidate)) {
+          hasSeparator = true
+          break
+        }
+        if (!isMarkdownTableRow(candidate)) break
+        rowCount += 1
+        columns = Math.max(columns, markdownTableColumnCount(candidate))
+      }
+
+      if (!hasSeparator && rowCount >= 1) {
+        if (output.length > 0 && output[output.length - 1].trim() !== '') {
+          output.push('')
+        }
+        const delimiter = `| ${Array.from({ length: columns }, () => '---').join(' | ')} |`
+        // Use the first data row as a visible header stand-in only when a single
+        // orphaned row would otherwise never form a table; otherwise invent a blank header.
+        if (rowCount === 1) {
+          output.push(line)
+          output.push(delimiter)
+          continue
+        }
+        const blankHeader = `| ${Array.from({ length: columns }, () => ' ').join(' | ')} |`
+        output.push(blankHeader)
+        output.push(delimiter)
+      }
+    }
+
+    output.push(line)
+  }
+
+  return output.join('\n')
 }
 
 function diffLineKind(line: string): 'added' | 'removed' | 'hunk' | 'context' {

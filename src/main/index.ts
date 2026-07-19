@@ -1,15 +1,35 @@
-import { app, BrowserWindow, ipcMain, Notification, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, Notification, shell } from 'electron'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import path from 'node:path'
-import { existsSync } from 'node:fs'
-import { execFile, execFileSync } from 'node:child_process'
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import os from 'node:os'
 import { promisify } from 'node:util'
 import { VibeBoardStore } from './database'
-import { PlaceholderCursorAdapter, cursorInstallCommand, listAgentModels } from './cursorAdapter'
+import {
+  PlaceholderCursorAdapter,
+  cursorInstallCommand,
+  ensureWindowsAgentPath,
+  windowsCursorAgentDir
+} from './cursorAdapter'
+import {
+  agentCliDocsUrl,
+  claudeUnixInstallCommand,
+  claudeWindowsInstallCommand,
+  codexNpmInstallCommand,
+  getAgentCliSnapshot,
+  invalidateAgentCliStatusCache,
+  listActiveAgentModels,
+  rememberedProvidersFromSnapshot,
+  resolveProviderCommand
+} from './agentCli'
 import {
   bindNotchOverlayDeps,
+  clearNotchFinishForTask,
+  closeNotchRunningDetail,
+  closeNotchRunningOverview,
   collapseNotchOverlay,
   destroyNotchOverlay,
   dismissNotchFinishChat,
@@ -17,22 +37,43 @@ import {
   getNotchOverlaySnapshot,
   handleNotchOverlayStatusChange,
   isNotchOverlayWindow,
+  demoteNotchOverlayForAppActivate,
+  noteMainWindowShown,
+  onMainAppFocused,
+  openNotchDoneOverview,
+  openNotchRunningOverview,
   openTaskFromNotch,
   peekNotchOverlay,
   purgeNotchOverlays,
   reopenNotchFinishChat,
   parkNotchFinishChat,
   scheduleDevNotchFinishTest,
-  startNotchMarketingDemo,
-  stopNotchMarketingDemo,
+  scheduleDevNotchRunningTest,
+  selectNotchRunningTask,
   sendReplyFromNotch,
+  updateNotchQueuedMessage,
+  removeNotchQueuedMessage,
   setNotchOverlayMousePassthrough,
   syncNotchOverlay,
+  syncNotchIfEnabled,
   unparkNotchFinishChat
-} from './notchOverlay'
+} from './notch'
+import {
+  bindKeyboardAlertDeps,
+  clearKeyboardAlertFlashForTask,
+  destroyKeyboardAlertFlash,
+  getKeyboardAlertCapability,
+  handleKeyboardAlertForStatus,
+  pauseKeyboardAlertFlashForTask,
+  resumeKeyboardAlertFlashIfNeeded,
+  stopKeyboardAlertFlashIfNeededOnFocus,
+  testKeyboardAlertFlash
+} from './keyboardBacklight'
 import {
   cleanupTaskGitWorkspace,
+  ensureProjectMemoryGitignoredForRoots,
   flushAllCursorProgress,
+  readTaskWorkspaceFile,
   runCursorTask,
   stopAllCursorTasks,
   stopCursorTask
@@ -48,7 +89,10 @@ import type {
   NotificationEventKey,
   NotificationSettings,
   AppearanceSettings,
+  AgentCliId,
+  AgentCliSettings,
   NotchOverlaySettings,
+  KeyboardAlertSettings,
   Project,
   QueuedTaskMessage,
   RecordSearchOpenInput,
@@ -79,6 +123,8 @@ const execFileAsync = promisify(execFile)
 let isQuitConfirmed = false
 let isQuitPromptOpen = false
 let isShuttingDownAgents = false
+/** Gates notch overlay until the main window has shown at least once. */
+let mainWindowHasShown = false
 let quitPromptFallbackTimer: NodeJS.Timeout | null = null
 let lastRendererActivityAt = Date.now()
 let updateInfo: UpdateInfo = {
@@ -132,6 +178,11 @@ if (process.platform === 'win32') {
   app.setAppUserModelId(appUserModelId)
 }
 
+// Keep Chromium on sRGB so a notch panel doesn't tone-map / mute the whole display.
+if (process.platform === 'darwin') {
+  app.commandLine.appendSwitch('force-color-profile', 'srgb')
+}
+
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) {
   app.quit()
@@ -141,20 +192,57 @@ if (!gotSingleInstanceLock) {
   })
 }
 
-function focusMainWindow(): void {
-  const targetWindow =
-    [...windows].find((window) => !window.isDestroyed()) ??
-    BrowserWindow.getAllWindows().find((window) => !isNotchOverlayWindow(window) && !window.isDestroyed())
-  if (!targetWindow || targetWindow.isDestroyed()) {
-    if (app.isReady()) createWindow()
-    return
+function getMainBrowserWindow(): BrowserWindow | null {
+  for (const window of windows) {
+    if (!window.isDestroyed() && !isNotchOverlayWindow(window)) return window
   }
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed() && !isNotchOverlayWindow(window)) return window
+  }
+  return null
+}
+
+function revealMainWindow(targetWindow: BrowserWindow): void {
+  if (targetWindow.isDestroyed()) return
   if (targetWindow.isMinimized()) targetWindow.restore()
-  targetWindow.show()
+  // Show first, then maximize. Maximize-while-hidden is flaky on macOS and can
+  // leave the board "running" in the dock with nothing on screen.
+  if (!targetWindow.isVisible()) targetWindow.show()
+  if (!targetWindow.isMaximized()) targetWindow.maximize()
+  try {
+    targetWindow.setOpacity(1)
+  } catch {
+    // ignore
+  }
+  targetWindow.moveTop()
   targetWindow.focus()
   if (process.platform === 'darwin') {
     app.focus({ steal: true })
+    try {
+      app.dock?.show()
+    } catch {
+      // ignore
+    }
   }
+  const firstShow = !mainWindowHasShown
+  mainWindowHasShown = true
+  // Launch grace only on first reveal - not every dock re-focus.
+  if (firstShow) noteMainWindowShown()
+}
+
+function focusMainWindow(): void {
+  // Notch panel first out of the way - otherwise dock activation lands on the
+  // overlay and the board never comes forward (needs a second dock click).
+  demoteNotchOverlayForAppActivate()
+
+  const targetWindow = getMainBrowserWindow()
+  if (!targetWindow) {
+    if (app.isReady()) createWindow()
+    return
+  }
+  revealMainWindow(targetWindow)
+  onMainAppFocused()
+  stopKeyboardAlertFlashIfNeededOnFocus()
 }
 
 function applyDockIcon(): void {
@@ -203,6 +291,7 @@ const manualMacUpdateMessage = (version: string | null): string =>
     : 'This macOS build is not Developer ID signed, so automatic macOS updates are disabled.'
 
 const createWindow = (): void => {
+  const isMac = process.platform === 'darwin'
   const mainWindow = new BrowserWindow({
     width: 1440,
     height: 940,
@@ -212,8 +301,15 @@ const createWindow = (): void => {
     backgroundColor: '#111111',
     icon: path.join(app.getAppPath(), 'build', 'icon.png'),
     show: false,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 12, y: 14 },
+    ...(isMac
+      ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 12, y: 14 }
+        }
+      : {
+          frame: false,
+          autoHideMenuBar: true
+        }),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -222,37 +318,63 @@ const createWindow = (): void => {
     }
   })
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.maximize()
-    mainWindow.show()
-    mainWindow.focus()
-    if (process.platform === 'darwin') {
-      app.focus({ steal: true })
-    }
-    // Notch must not sync before the main window is up: a panel created during
-    // boot can steal activation and leave the app feeling "opened then lost".
-    if (store.getNotchOverlaySettings().enabled) {
-      syncNotchOverlay()
-    }
+  const revealOnce = (): void => {
+    if (mainWindow.isDestroyed()) return
+    // Keep notch dark while the board claims the screen.
+    demoteNotchOverlayForAppActivate()
+    revealMainWindow(mainWindow)
+    onMainAppFocused()
+  }
+
+  mainWindow.once('ready-to-show', () => {
+    revealOnce()
   })
+  // ready-to-show can stall; never leave the dock bouncing with no window.
+  mainWindow.webContents.once('did-finish-load', () => {
+    setTimeout(() => {
+      if (!mainWindow.isDestroyed() && !mainWindow.isVisible()) revealOnce()
+    }, 50)
+  })
+  setTimeout(() => {
+    if (!mainWindow.isDestroyed() && !mainWindow.isVisible()) revealOnce()
+  }, 2500)
   mainWindow.on('focus', () => {
-    if (store.getNotchOverlaySettings().enabled) syncNotchOverlay()
+    // Dismiss only - do not re-enter sync (avoids flash mid-retract).
+    if (store.getNotchOverlaySettings().enabled) onMainAppFocused()
+    stopKeyboardAlertFlashIfNeededOnFocus()
   })
   mainWindow.on('blur', () => {
-    if (store.getNotchOverlaySettings().enabled) syncNotchOverlay()
+    // Defer slightly so macOS has resigned active - otherwise launch-grace
+    // still thinks we're frontmost and keeps the notch dark on first leave.
+    setTimeout(() => {
+      if (!mainWindow.isDestroyed() && !mainWindow.isFocused()) {
+        syncNotchIfEnabled()
+      }
+    }, 40)
+    // Resume keyboard flash if something still needs you while you're in another app.
+    resumeKeyboardAlertFlashIfNeeded()
   })
   mainWindow.on('show', () => {
-    if (store.getNotchOverlaySettings().enabled) syncNotchOverlay()
+    if (store.getNotchOverlaySettings().enabled) onMainAppFocused()
   })
   mainWindow.on('hide', () => {
-    if (store.getNotchOverlaySettings().enabled) syncNotchOverlay()
+    syncNotchIfEnabled()
+    resumeKeyboardAlertFlashIfNeeded()
   })
   mainWindow.on('minimize', () => {
-    if (store.getNotchOverlaySettings().enabled) syncNotchOverlay()
+    syncNotchIfEnabled()
+    resumeKeyboardAlertFlashIfNeeded()
   })
   mainWindow.on('restore', () => {
-    if (store.getNotchOverlaySettings().enabled) syncNotchOverlay()
+    // Restoring is coming back to the board - focus path, not notch sync.
+    if (store.getNotchOverlaySettings().enabled) onMainAppFocused()
   })
+  const sendMaximizedChanged = (): void => {
+    if (mainWindow.isDestroyed()) return
+    mainWindow.webContents.send('window:maximized-changed', mainWindow.isMaximized())
+  }
+  mainWindow.on('maximize', sendMaximizedChanged)
+  mainWindow.on('unmaximize', sendMaximizedChanged)
   mainWindow.on('close', (event) => {
     if (isQuitConfirmed) return
     event.preventDefault()
@@ -290,6 +412,13 @@ const registerIpc = (): void => {
     }
   })
   ipcMain.handle('task:detail', async (_event, input: GetTaskDetailInput) => {
+    // Pause flash while viewing; resumes on blur if the task still needs you.
+    pauseKeyboardAlertFlashForTask(input.taskId)
+    const runContext = store.getTaskRunContext(input.taskId)
+    if (runContext?.project) {
+      // Keep local project memory out of commits whenever a task is opened.
+      void ensureProjectMemoryGitignoredForRoots(runContext.project.path, runContext.task.worktreePath)
+    }
     const detail = store.getTaskDetail(input)
     const conversations = await Promise.all(
       detail.conversations.map(async (entry) => ({
@@ -299,6 +428,11 @@ const registerIpc = (): void => {
     )
     return { ...detail, conversations }
   })
+  ipcMain.handle(
+    'task:readWorkspaceFile',
+    (_event, input: { taskId: string; filePath: string }) =>
+      readTaskWorkspaceFile(store, input.taskId, input.filePath)
+  )
   ipcMain.handle('search:workspace', (_event, input: SearchWorkspaceInput) => store.searchWorkspace(input))
   ipcMain.handle('search:recordOpen', (_event, input: RecordSearchOpenInput) => store.recordSearchOpen(input))
   ipcMain.handle('project:create', (_event, input: CreateProjectInput) => store.createProject(input))
@@ -322,11 +456,19 @@ const registerIpc = (): void => {
   ipcMain.handle('tab:rename', (_event, input: RenameInput) => store.renameTab(input))
   ipcMain.handle('tab:updateMeta', (_event, input: UpdateTabMetaInput) => store.updateTabMeta(input))
   ipcMain.handle('tab:reorder', (_event, input: ReorderTabsInput) => store.reorderTabs(input))
-  ipcMain.handle('tab:close', (_event, tabId: string) => store.closeTab(tabId))
-  ipcMain.handle('tab:reopen', (_event, tabId: string) => store.reopenTab(tabId))
+  ipcMain.handle('tab:close', (_event, tabId: string) => {
+    store.closeTab(tabId)
+    // Notch counts ignore closed tabs - refresh immediately.
+    syncNotchIfEnabled()
+  })
+  ipcMain.handle('tab:reopen', (_event, tabId: string) => {
+    store.reopenTab(tabId)
+    syncNotchIfEnabled()
+  })
   ipcMain.handle('tab:delete', async (_event, tabId: string) => {
     await cleanupTasksGitWorkspace(store.listTasksForCleanup({ tabId }))
     store.deleteTab(tabId)
+    syncNotchIfEnabled()
   })
   ipcMain.handle('tab:active', (_event, tabId: string) => store.setActiveTab(tabId))
   ipcMain.handle('lane:create', (_event, input: CreateLaneInput) => store.createLane(input))
@@ -378,6 +520,24 @@ const registerIpc = (): void => {
   ipcMain.handle('task:message', async (_event, input: SendTaskMessageInput) => {
     return sendTaskMessageAndMaybeRun(input)
   })
+  ipcMain.handle(
+    'task:queuedUpdate',
+    (_event, input: { taskId: string; messageId: string; content: string }) => {
+      if (input.taskId.startsWith('dev-running-')) {
+        return updateNotchQueuedMessage(input.taskId, input.messageId, input.content)
+      }
+      return updateQueuedTaskMessage(input.taskId, input.messageId, input.content)
+    }
+  )
+  ipcMain.handle(
+    'task:queuedDelete',
+    (_event, input: { taskId: string; messageId: string }) => {
+      if (input.taskId.startsWith('dev-running-')) {
+        return removeNotchQueuedMessage(input.taskId, input.messageId)
+      }
+      return removeQueuedTaskMessage(input.taskId, input.messageId)
+    }
+  )
   ipcMain.handle('task:runCursor', (_event, taskId: string) => startCursorTask(taskId))
   ipcMain.handle('task:retryPrompt', (_event, taskId: string) => retryTaskPrompt(taskId))
   ipcMain.handle('task:stop', async (_event, taskId: string) => {
@@ -395,12 +555,46 @@ const registerIpc = (): void => {
     return { started: true, message: 'Task stopped.' }
   })
   ipcMain.handle('task:status', (_event, input: UpdateTaskStatusInput) => store.updateTaskStatus(input))
-  ipcMain.handle('task:read', (_event, taskId: string) => store.markTaskRead(taskId))
+  ipcMain.handle('task:read', (_event, taskId: string) => {
+    store.markTaskRead(taskId)
+    // Viewing in the board consumes the finish nudge - don't replay it on the notch later.
+    clearNotchFinishForTask(taskId)
+    // Marked read: permanently clear keyboard alert for this task.
+    clearKeyboardAlertFlashForTask(taskId)
+  })
   ipcMain.handle('cursor:status', () => cursorAdapter.status())
-  ipcMain.handle('cursor:listModels', () => listAgentModels())
-  ipcMain.handle('cursor:installCli', () => cursorAdapter.installCli())
+  ipcMain.handle('agentCli:getSettings', () => store.getAgentCliSettings())
+  ipcMain.handle('agentCli:updateSettings', (_event, settings: Partial<AgentCliSettings>) =>
+    store.updateAgentCliSettings(settings)
+  )
+  ipcMain.handle('agentCli:snapshot', async (_event, options?: { fresh?: boolean; source?: 'remembered' | 'live' }) => {
+    const settings = store.getAgentCliSettings()
+    if (options?.source === 'remembered') {
+      return getAgentCliSnapshot(settings, { source: 'remembered' })
+    }
+    const shouldProbe = Boolean(options?.fresh || options?.source === 'live')
+    if (shouldProbe) invalidateAgentCliStatusCache()
+    const snapshot = await getAgentCliSnapshot(settings, {
+      ...options,
+      fresh: shouldProbe || options?.fresh
+    })
+    // Persist live probe results so the next launch paints instantly.
+    if (shouldProbe) {
+      store.rememberAgentCliProviders(rememberedProvidersFromSnapshot(snapshot))
+    }
+    return snapshot
+  })
+  ipcMain.handle('cursor:listModels', async () => {
+    const active = store.getAgentCliSettings().activeCli
+    return listActiveAgentModels(active)
+  })
+  ipcMain.handle('cursor:installCli', async () => {
+    invalidateAgentCliStatusCache('cursor')
+    return cursorAdapter.installCli()
+  })
   ipcMain.handle('cursor:installTerminal', () => openCursorInstallTerminal())
   ipcMain.handle('cursor:setup', () => openCursorSetup())
+  ipcMain.handle('agentCli:openSetup', (_event, id: AgentCliId) => openAgentCliSetup(id))
   ipcMain.handle('updates:get', () => updateInfo)
   ipcMain.handle('updates:check', () => checkForUpdates())
   ipcMain.handle('updates:download', () => downloadUpdate())
@@ -431,9 +625,16 @@ const registerIpc = (): void => {
   ipcMain.handle('notch:getSettings', () => store.getNotchOverlaySettings())
   ipcMain.handle('notch:updateSettings', (_event, settings: NotchOverlaySettings) => {
     const next = store.updateNotchOverlaySettings(settings)
+    // Enabled off → purge; other toggles are applied inside sync (finish chat, etc.).
     syncNotchOverlay()
     return next
   })
+  ipcMain.handle('keyboardAlert:capability', () => getKeyboardAlertCapability())
+  ipcMain.handle('keyboardAlert:getSettings', () => store.getKeyboardAlertSettings())
+  ipcMain.handle('keyboardAlert:updateSettings', (_event, settings: KeyboardAlertSettings) =>
+    store.updateKeyboardAlertSettings(settings)
+  )
+  ipcMain.handle('keyboardAlert:test', () => testKeyboardAlertFlash())
   ipcMain.handle('notch:getSnapshot', () => getNotchOverlaySnapshot())
   ipcMain.handle('notch:openTask', (_event, taskId: string) => {
     openTaskFromNotch(taskId)
@@ -448,6 +649,23 @@ const registerIpc = (): void => {
     dismissNotchFinishChat(options)
   )
   ipcMain.handle('notch:reopen', () => reopenNotchFinishChat())
+  ipcMain.handle('notch:openRunningOverview', () => openNotchRunningOverview())
+  ipcMain.handle('notch:openDoneOverview', () => openNotchDoneOverview())
+  ipcMain.handle('notch:closeRunningOverview', () => closeNotchRunningOverview())
+  ipcMain.handle('notch:selectRunningTask', (_event, taskId: string) =>
+    selectNotchRunningTask(taskId)
+  )
+  ipcMain.handle('notch:closeRunningDetail', () => closeNotchRunningDetail())
+  ipcMain.handle(
+    'notch:queuedUpdate',
+    (_event, input: { taskId: string; messageId: string; content: string }) =>
+      updateNotchQueuedMessage(input.taskId, input.messageId, input.content)
+  )
+  ipcMain.handle(
+    'notch:queuedDelete',
+    (_event, input: { taskId: string; messageId: string }) =>
+      removeNotchQueuedMessage(input.taskId, input.messageId)
+  )
   ipcMain.handle('notch:unpark', () => unparkNotchFinishChat())
   ipcMain.handle('notch:park', () => parkNotchFinishChat())
   ipcMain.handle('notch:devFinishTest', (_event, delayMs?: number) => {
@@ -465,21 +683,20 @@ const registerIpc = (): void => {
     )
     return { ok, delayMs: 1500 }
   })
-  ipcMain.handle('notch:marketingDemoStart', () => {
+  ipcMain.handle('notch:devRunningTest', (_event, delayMs?: number) => {
     if (!is.dev) return { ok: false as const, reason: 'Dev only' }
-    // Marketing demo may simulate the island on Windows; only persist settings on macOS.
-    if (process.platform === 'darwin') {
-      const current = store.getNotchOverlaySettings()
-      if (!current.enabled) {
-        store.updateNotchOverlaySettings({ ...current, enabled: true, showFinishChat: true })
-      }
+    if (process.platform !== 'darwin') {
+      return { ok: false as const, reason: 'Notch running test is only available on macOS.' }
     }
-    const ok = startNotchMarketingDemo()
-    return { ok }
-  })
-  ipcMain.handle('notch:marketingDemoStop', () => {
-    stopNotchMarketingDemo()
-    return { ok: true as const }
+    const current = store.getNotchOverlaySettings()
+    if (!current.enabled) {
+      store.updateNotchOverlaySettings({ ...current, enabled: true })
+      syncNotchOverlay()
+    }
+    const ok = scheduleDevNotchRunningTest(
+      typeof delayMs === 'number' && Number.isFinite(delayMs) ? delayMs : undefined
+    )
+    return { ok, delayMs: 0 }
   })
   ipcMain.on('notch:mousePassthrough', (_event, passthrough: boolean) => {
     setNotchOverlayMousePassthrough(Boolean(passthrough))
@@ -488,7 +705,29 @@ const registerIpc = (): void => {
     await sendReplyFromNotch(input.taskId, input.content)
   })
   ipcMain.handle('onboarding:getComplete', () => store.getOnboardingComplete())
-  ipcMain.handle('onboarding:markComplete', () => store.markOnboardingComplete())
+  ipcMain.handle('onboarding:markComplete', () => {
+    store.markOnboardingComplete()
+    broadcastStateChanged()
+  })
+  ipcMain.handle('window:minimize', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize()
+  })
+  ipcMain.handle('window:maximize', (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (!window) return false
+    if (window.isMaximized()) {
+      window.unmaximize()
+      return false
+    }
+    window.maximize()
+    return true
+  })
+  ipcMain.handle('window:close', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.close()
+  })
+  ipcMain.handle('window:isMaximized', (event) => {
+    return BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false
+  })
   ipcMain.on('app:userActivity', () => {
     lastRendererActivityAt = Date.now()
   })
@@ -895,6 +1134,36 @@ const clearTaskMessageQueue = (taskId: string): void => {
   taskMessageQueues.delete(taskId)
 }
 
+const updateQueuedTaskMessage = (
+  taskId: string,
+  messageId: string,
+  content: string
+): boolean => {
+  const trimmed = content.trim()
+  if (!trimmed) return false
+  const queue = taskMessageQueues.get(taskId)
+  if (!queue) return false
+  const item = queue.find((entry) => entry.id === messageId)
+  if (!item) return false
+  item.content = trimmed
+  broadcastStateChanged()
+  return true
+}
+
+const removeQueuedTaskMessage = (taskId: string, messageId: string): boolean => {
+  const queue = taskMessageQueues.get(taskId)
+  if (!queue) return false
+  const next = queue.filter((entry) => entry.id !== messageId)
+  if (next.length === queue.length) return false
+  if (next.length === 0) {
+    taskMessageQueues.delete(taskId)
+  } else {
+    taskMessageQueues.set(taskId, next)
+  }
+  broadcastStateChanged()
+  return true
+}
+
 const incrementPatchVersion = (version: string): string => {
   const parts = normalizeVersion(version).split('.').map((part) => Number.parseInt(part, 10) || 0)
   while (parts.length < 3) parts.push(0)
@@ -1072,8 +1341,52 @@ const retryTaskPrompt = async (taskId: string): Promise<RunTaskResult> => {
   return startCursorTask(taskId)
 }
 
+const openAgentCliSetup = async (id: AgentCliId): Promise<void> => {
+  invalidateAgentCliStatusCache(id)
+  switch (id) {
+    case 'cursor':
+      await openCursorInstallTerminal()
+      return
+    case 'claude':
+      await openClaudeSetupTerminal()
+      return
+    case 'codex':
+      await openCodexSetupTerminal()
+      return
+  }
+}
+
 const openCursorInstallTerminal = async (): Promise<void> => {
+  if (process.platform === 'win32') {
+    ensureWindowsAgentPath()
+    const agentDir = windowsCursorAgentDir().replace(/'/g, "''")
+    const psScript = `
+$ErrorActionPreference = 'Continue'
+$agentDir = '${agentDir}'
+if ($env:PATH -notlike "*$agentDir*") { $env:PATH = "$agentDir;" + $env:PATH }
+if (-not (Test-Path (Join-Path $agentDir 'agent.exe'))) {
+  Write-Host 'Installing Cursor Agent...'
+  irm 'https://cursor.com/install?win32=true' | iex
+  if ($env:PATH -notlike "*$agentDir*") { $env:PATH = "$agentDir;" + $env:PATH }
+}
+Write-Host ''
+Write-Host 'Sign in to Cursor Agent (a browser window should open).'
+Write-Host 'If nothing opens, copy any URL printed below into your browser.'
+Write-Host ''
+$agentExe = Join-Path $agentDir 'agent.exe'
+if (Test-Path $agentExe) { & $agentExe login } else { agent login }
+Write-Host ''
+if (Test-Path $agentExe) { & $agentExe status } else { agent status }
+Write-Host ''
+Write-Host 'Done. Return to VibeBoard. It will reconnect automatically.'
+Read-Host 'Press Enter to close'
+`.trim()
+    await openWindowsPowerShell(psScript)
+    return
+  }
+
   const command = [
+    'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"',
     'if ! command -v agent >/dev/null 2>&1; then',
     cursorInstallCommand,
     'fi',
@@ -1086,13 +1399,209 @@ const openCursorInstallTerminal = async (): Promise<void> => {
     'echo "Done. Return to VibeBoard."',
     'read -k 1 "?Press any key to close."'
   ].join('; ')
+  await openUnixTerminalScript(command, agentCliDocsUrl('cursor'))
+}
+
+const openClaudeSetupTerminal = async (): Promise<void> => {
+  if (process.platform === 'win32') {
+    const psScript = `
+$ErrorActionPreference = 'Continue'
+$localBin = Join-Path $env:USERPROFILE '.local\\bin'
+$npmBin = Join-Path $env:APPDATA 'npm'
+function Refresh-SessionPath {
+  $user = [Environment]::GetEnvironmentVariable('PATH', 'User')
+  $machine = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+  $env:PATH = "$localBin;$npmBin;$user;$machine"
+}
+Refresh-SessionPath
+$claudeExe = Join-Path $localBin 'claude.exe'
+if (-not (Test-Path $claudeExe) -and -not (Get-Command claude -ErrorAction SilentlyContinue)) {
+  Write-Host 'Installing Claude Code CLI...'
+  ${claudeWindowsInstallCommand}
+  Refresh-SessionPath
+}
+if (Test-Path $claudeExe) {
+  $claude = $claudeExe
+} elseif (Get-Command claude -ErrorAction SilentlyContinue) {
+  $claude = (Get-Command claude).Source
+} else {
+  Write-Host 'Claude CLI was not found after install. Open the docs, then try again.'
+  Start-Process '${agentCliDocsUrl('claude')}'
+  Read-Host 'Press Enter to close'
+  exit 1
+}
+Write-Host ''
+Write-Host 'Sign in to Claude Code (a browser window should open).'
+Write-Host ''
+& $claude auth login
+Write-Host ''
+& $claude auth status
+Write-Host ''
+Write-Host 'Done. Return to VibeBoard. It will reconnect automatically.'
+Read-Host 'Press Enter to close'
+`.trim()
+    await openWindowsPowerShell(psScript)
+    return
+  }
+
+  const command = [
+    'export PATH="$HOME/.local/bin:$HOME/.claude/bin:$HOME/.claude/local:/opt/homebrew/bin:/usr/local/bin:$PATH"',
+    'if ! command -v claude >/dev/null 2>&1; then',
+    `  echo "Installing Claude Code CLI..."`,
+    `  ${claudeUnixInstallCommand}`,
+    'fi',
+    'echo "Claude Code login"',
+    'claude auth login',
+    'echo',
+    'claude auth status',
+    'echo',
+    'echo "Done. Return to VibeBoard."',
+    'read -k 1 "?Press any key to close."'
+  ].join('; ')
+  await openUnixTerminalScript(command, agentCliDocsUrl('claude'))
+}
+
+const openCodexSetupTerminal = async (): Promise<void> => {
+  const existing = await resolveProviderCommand('codex')
+  const chatGptBundle =
+    process.platform === 'darwin' && existsSync('/Applications/ChatGPT.app/Contents/Resources/codex')
+      ? '/Applications/ChatGPT.app/Contents/Resources/codex'
+      : null
+  const codexBin = existing ?? chatGptBundle ?? 'codex'
+
+  if (process.platform === 'win32') {
+    const psScript = `
+$ErrorActionPreference = 'Continue'
+$localBin = Join-Path $env:USERPROFILE '.local\\bin'
+$npmBin = Join-Path $env:APPDATA 'npm'
+function Refresh-SessionPath {
+  $user = [Environment]::GetEnvironmentVariable('PATH', 'User')
+  $machine = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+  $env:PATH = "$localBin;$npmBin;$user;$machine"
+}
+Refresh-SessionPath
+if (-not (Get-Command codex -ErrorAction SilentlyContinue)) {
+  if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    Write-Host 'Node.js/npm is required to install Codex CLI on Windows.'
+    Write-Host 'Install Node.js LTS, reopen this window, then click Install again.'
+    Start-Process 'https://nodejs.org/en/download'
+    Read-Host 'Press Enter to close'
+    exit 1
+  }
+  Write-Host 'Installing Codex CLI via npm...'
+  ${codexNpmInstallCommand}
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host 'npm install failed. See errors above, or read the Codex docs.'
+    Start-Process '${agentCliDocsUrl('codex')}'
+    Read-Host 'Press Enter to close'
+    exit 1
+  }
+  Refresh-SessionPath
+}
+$codexCmd = Get-Command codex -ErrorAction SilentlyContinue
+if (-not $codexCmd) {
+  Write-Host 'Codex CLI was not found after install.'
+  Start-Process '${agentCliDocsUrl('codex')}'
+  Read-Host 'Press Enter to close'
+  exit 1
+}
+Write-Host ''
+Write-Host 'Sign in to Codex (ChatGPT or API key).'
+Write-Host ''
+& $codexCmd.Source login
+Write-Host ''
+& $codexCmd.Source login status
+Write-Host ''
+Write-Host 'Done. Return to VibeBoard. It will reconnect automatically.'
+Read-Host 'Press Enter to close'
+`.trim()
+    await openWindowsPowerShell(psScript)
+    return
+  }
+
+  // Prefer ChatGPT.app when present; otherwise install the npm Codex CLI.
+  if (process.platform === 'darwin' && !existing && !chatGptBundle) {
+    void shell.openExternal('https://chatgpt.com/download')
+  }
+
+  const quotedBin = JSON.stringify(codexBin)
+  const command = [
+    'export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"',
+    `CODEX_BIN=${quotedBin}`,
+    'if [ ! -x "$CODEX_BIN" ] && ! command -v codex >/dev/null 2>&1; then',
+    '  echo "Installing Codex CLI via npm..."',
+    `  ${codexNpmInstallCommand}`,
+    '  CODEX_BIN="$(command -v codex)"',
+    'elif command -v codex >/dev/null 2>&1; then',
+    '  CODEX_BIN="$(command -v codex)"',
+    'fi',
+    'echo "Codex login"',
+    'echo "Sign in with ChatGPT or an API key when prompted."',
+    '"$CODEX_BIN" login',
+    'echo',
+    '"$CODEX_BIN" login status',
+    'echo',
+    'echo "Done. Return to VibeBoard."',
+    'read -k 1 "?Press any key to close."'
+  ].join('; ')
+  await openUnixTerminalScript(command, agentCliDocsUrl('codex'))
+}
+
+const openWindowsPowerShell = async (psScript: string): Promise<void> => {
+  // Write a temp .ps1 so multiline if-blocks and installers are reliable
+  // (long -Command strings break quoting / length limits on Windows).
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'vibeboard-cli-setup-'))
+  const scriptPath = path.join(dir, 'setup.ps1')
+  writeFileSync(scriptPath, `\uFEFF${psScript}\r\n`, 'utf8')
+
+  // Empty title ("") is required so `start` does not treat powershell.exe as the window title.
+  spawn(
+    'cmd.exe',
+    [
+      '/c',
+      'start',
+      '""',
+      'powershell.exe',
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      scriptPath
+    ],
+    {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true
+    }
+  ).unref()
+}
+
+const openUnixTerminalScript = async (command: string, docsUrl: string): Promise<void> => {
   if (process.platform === 'darwin') {
-    await execFileAsync('osascript', ['-e', `tell application "Terminal" to do script ${JSON.stringify(command)}`])
+    await execFileAsync('osascript', [
+      '-e',
+      `tell application "Terminal" to do script ${JSON.stringify(command)}`
+    ])
     await execFileAsync('osascript', ['-e', 'tell application "Terminal" to activate'])
     return
   }
 
-  await shell.openExternal('https://cursor.com/docs/cli/installation')
+  const linuxTerminals: Array<{ bin: string; args: string[] }> = [
+    { bin: 'x-terminal-emulator', args: ['-e', 'bash', '-lc', `${command}; exec bash`] },
+    { bin: 'gnome-terminal', args: ['--', 'bash', '-lc', `${command}; exec bash`] },
+    { bin: 'konsole', args: ['-e', 'bash', '-lc', `${command}; exec bash`] },
+    { bin: 'xterm', args: ['-e', 'bash', '-lc', `${command}; exec bash`] }
+  ]
+  for (const terminal of linuxTerminals) {
+    try {
+      spawn(terminal.bin, terminal.args, { detached: true, stdio: 'ignore' }).unref()
+      return
+    } catch {
+      // try next
+    }
+  }
+
+  await shell.openExternal(docsUrl)
 }
 
 const openCursorSetup = async (): Promise<void> => {
@@ -1110,22 +1619,14 @@ const broadcastStateChanged = (): void => {
     window.webContents.send('state:changed')
   }
   // Notch is optional: only sync when enabled so board updates stay lightweight.
-  if (store.getNotchOverlaySettings().enabled) {
-    syncNotchOverlay()
-  }
+  syncNotchIfEnabled()
 }
 
 const openTaskFromNotification = (taskId: string): void => {
-  const targetWindow =
-    [...windows].find((window) => !window.isDestroyed()) ??
-    BrowserWindow.getAllWindows().find((window) => !isNotchOverlayWindow(window) && !window.isDestroyed())
+  pauseKeyboardAlertFlashForTask(taskId)
+  focusMainWindow()
+  const targetWindow = getMainBrowserWindow()
   if (!targetWindow || targetWindow.webContents.isDestroyed()) return
-
-  if (targetWindow.isMinimized()) {
-    targetWindow.restore()
-  }
-  targetWindow.show()
-  targetWindow.focus()
   targetWindow.webContents.send('notifications:opened', { taskId })
 }
 
@@ -1310,6 +1811,13 @@ const handleTaskStatusChange = (event: TaskStatusChangeEvent): void => {
   }
 
   if (!deferForQueuedMessages) {
+    handleKeyboardAlertForStatus({
+      newStatus: event.newStatus,
+      oldStatus: event.oldStatus,
+      taskId: event.task.id,
+      runningCount: runningTaskCount,
+      runningCountBeforeChange: runningTaskCountBeforeChange
+    })
     handleNotchOverlayStatusChange({
       task: event.task,
       oldStatus: event.oldStatus,
@@ -1390,6 +1898,10 @@ app.whenReady().then(() => {
   if (!gotSingleInstanceLock) return
   electronApp.setAppUserModelId(appUserModelId)
   applyDockIcon()
+  // Drop the default Electron File/Edit/View/Window menu on Windows/Linux.
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null)
+  }
   // Dev restarts often leave a previous Electron child alive with its notch panel.
   reapStaleDevElectronProcesses()
   // Wipe any leftover notch panels from a previous / crashed session in this process.
@@ -1397,20 +1909,78 @@ app.whenReady().then(() => {
   store = new VibeBoardStore()
   store.recoverInterruptedProcessingTasks()
   store.setTaskStatusListener(handleTaskStatusChange)
+  const isMainAppFocused = (): boolean => {
+    const focused = BrowserWindow.getFocusedWindow()
+    if (focused && !focused.isDestroyed() && !isNotchOverlayWindow(focused)) {
+      return true
+    }
+    return [...windows].some((window) => !window.isDestroyed() && window.isFocused())
+  }
+
   bindNotchOverlayDeps({
     getSettings: () => store.getNotchOverlaySettings(),
     getRunningCount: () => store.getRunningTaskCount(),
     getAttentionCount: () => store.getAttentionTaskCount(),
     getDoneUnreadCount: () => store.getDoneUnreadTaskCount(),
     getDoneReadCount: () => store.getDoneReadTaskCount(),
+    getRunningAgents: () =>
+      store.listRunningTasksForNotch().map((task) => ({
+        taskId: task.id,
+        title: task.title,
+        projectName: task.projectName,
+        runStartedAt: task.runStartedAt,
+        queuedCount: taskMessageQueues.get(task.id)?.length ?? 0
+      })),
+    getDoneAgents: () =>
+      store.listDoneTasksForNotch().map((task) => ({
+        taskId: task.id,
+        title: task.title,
+        projectName: task.projectName,
+        runStartedAt: task.runStartedAt,
+        queuedCount: taskMessageQueues.get(task.id)?.length ?? 0
+      })),
+    getSystemTail: (taskId) => store.getRecentSystemMessages(taskId, 16),
+    getQueuedMessages: (taskId) =>
+      (taskMessageQueues.get(taskId) ?? []).map((item) => ({
+        id: item.id,
+        content: item.content
+      })),
+    getTaskNotchMeta: (taskId) => {
+      const task = store.getState().tasks.find((item) => item.id === taskId)
+      if (!task) return null
+      return {
+        title: task.title,
+        projectName: store.getBoardLabelForTask(task),
+        status: task.status,
+        runStartedAt: task.runStartedAt ?? null
+      }
+    },
+    isTaskOnOpenTab: (taskId) => store.isTaskOnOpenTab(taskId),
+    isTaskFinishPending: (taskId) => store.isTaskFinishPending(taskId),
     getLatestAssistantReply: (taskId) => store.getLatestAssistantMessage(taskId),
+    getBoardLabelForTask: (task) => store.getBoardLabelForTask(task),
     onOpenTask: (taskId) => openTaskFromNotification(taskId),
     onSendReply: async (taskId, content) => {
       await sendTaskMessageAndMaybeRun({ taskId, content, attachments: [] })
       broadcastStateChanged()
     },
-    isMainAppFocused: () =>
-      [...windows].some((window) => !window.isDestroyed() && window.isFocused())
+    onUpdateQueuedMessage: (taskId, messageId, content) =>
+      updateQueuedTaskMessage(taskId, messageId, content),
+    onRemoveQueuedMessage: (taskId, messageId) =>
+      removeQueuedTaskMessage(taskId, messageId),
+    isMainAppFocused,
+    hasMainWindowBeenShown: () => mainWindowHasShown
+  })
+  bindKeyboardAlertDeps({
+    getSettings: () => store.getKeyboardAlertSettings(),
+    isMainAppFocused,
+    getAlertTaskIds: () => {
+      const settings = store.getKeyboardAlertSettings()
+      return store.getKeyboardAlertTaskIds({
+        includeAttention: settings.flashOnTaskFailed,
+        includeDoneUnread: settings.flashOnTaskCompleted
+      })
+    }
   })
   registerIpc()
   registerUpdaterEvents()
@@ -1426,12 +1996,34 @@ app.whenReady().then(() => {
   }, 3000)
 
   app.on('activate', () => {
+    // Dock icon / Cmd+Tab: demote notch panel, then force the board on screen.
     focusMainWindow()
   })
+
+  // Leaving the app is the reliable signal to show the notch (window blur can
+  // race ahead of resign-active and get ignored during launch grace).
+  app.on('did-resign-active', () => {
+    syncNotchIfEnabled()
+  })
+
+  // Extra safety: if something left us "running" with no visible board, recover.
+  if (process.platform === 'darwin') {
+    app.on('did-become-active', () => {
+      const main = getMainBrowserWindow()
+      if (!main) {
+        focusMainWindow()
+        return
+      }
+      if (!main.isVisible() || main.isMinimized()) {
+        focusMainWindow()
+      }
+    })
+  }
 })
 
 app.on('window-all-closed', () => {
   destroyNotchOverlay()
+  destroyKeyboardAlertFlash()
   if (process.platform !== 'darwin') {
     app.quit()
   }
@@ -1440,6 +2032,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', (event) => {
   // Always kill notch panels first so they cannot outlive the quit flow.
   destroyNotchOverlay()
+  destroyKeyboardAlertFlash()
   if (isQuitConfirmed) {
     return
   }
@@ -1449,6 +2042,7 @@ app.on('before-quit', (event) => {
 
 app.on('will-quit', () => {
   destroyNotchOverlay()
+  destroyKeyboardAlertFlash()
 })
 
 /** Kill leftover Electron children from prior `npm run dev` runs (ghost notch panels). */
