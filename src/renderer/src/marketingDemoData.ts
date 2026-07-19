@@ -1,9 +1,5 @@
 import type { CodeChange, ConversationEntry, Lane, Project, Task } from '../../shared/types'
-import notchDemoBackdrop from './assets/notch-demo-backdrop.png'
-
 export const MARKETING_PRODUCT_DEMO_MS = 21000
-/** Notch sequence length after the 3-2-1 countdown (main process demo). */
-export const MARKETING_NOTCH_DEMO_MS = 10000
 export const MARKETING_DEMO_COUNTDOWN_MS = 2700
 export const MARKETING_DEMO_FOLLOW_UP =
   'Looks good. Ship the session cookie path fix and note it in the PR.'
@@ -11,7 +7,6 @@ export const MARKETING_DEMO_AGENT_REPLY =
   'On it. Landing the cookie path fix on the branch and adding a short note in the PR.'
 export const MARKETING_DEMO_AGENT_STATUS = 'Still working on the session cookie path fix.'
 
-export const MARKETING_NATURE_BACKDROP_URL = notchDemoBackdrop
 
 const tabId = 'marketing-demo-tab'
 const projectId = 'marketing-demo-project'

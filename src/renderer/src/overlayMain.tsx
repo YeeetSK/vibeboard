@@ -1,6 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { OverlayApp } from './OverlayApp'
+import { OverlayApp } from './notch'
 import './fonts.css'
 import './overlay.css'
 
