@@ -1,0 +1,19 @@
+---
+description: Never use inset left accent bars or blocky corner highlight chrome
+alwaysApply: true
+---
+
+# No inset accent bars
+
+Do not use left-edge accent bars for selection/diff/highlight states.
+
+Forbidden patterns:
+- `box-shadow: inset Npx 0 0 <color>` (or any inset shadow used as a left rail)
+- Thick left borders used as a “selected row” indicator
+- Chamfered / blocky corner treatments on highlight rails
+
+Prefer instead:
+- Flat background fills only (e.g. soft green/red wash on the whole row/cell/line)
+- Optional subtle `mark` / text highlight without edge rails
+
+This applies especially to markdown diff preview, tables, lists, and code line highlights.
