@@ -1,34 +1,44 @@
-[changelog]
-header = "# VibeBoard\n\n"
-body = """
-{% if version %}## {{ version | trim_start_matches(pat="v") }}{% else %}## Unreleased{% endif %}
-{% for group, commits in commits | group_by(attribute="group") %}
+[remote.github]
+owner = "YeeetSK"
+repo = "vibeboard"
 
-### {{ group | upper_first }}
-{% for commit in commits %}
-- {{ commit.message | upper_first }}\
-{% endfor %}
-{% endfor %}
+[changelog]
+header = ""
+body = """
+{%- macro commit_author(commit) -%}
+{%- if commit.remote.username -%}
+[{{ commit.remote.username }}](https://github.com/{{ commit.remote.username }})
+{%- else -%}
+{{ commit.author.name }}
+{%- endif -%}
+{%- endmacro -%}
+{%- for group, commits in commits | group_by(attribute="group") %}
+## {{ group | upper_first }}
+{% for commit in commits -%}
+{%- if group == "reverts" -%}
+* [{{ commit.id | truncate(length=7, end="") }}](https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/commit/{{ commit.id }}) ({{ self::commit_author(commit=commit) }})
+{% else -%}
+* [{{ commit.id | truncate(length=7, end="") }}](https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/commit/{{ commit.id }}) : {{ commit.message | trim | upper_first }} ({{ self::commit_author(commit=commit) }})
+{% endif -%}
+{% endfor -%}
+{% endfor -%}
 """
 trim = true
 footer = ""
+postprocessors = []
 
 [git]
 conventional_commits = true
 filter_unconventional = false
 split_commits = false
 commit_parsers = [
-  { message = "^feat", group = "features" },
-  { message = "^fix", group = "fixes" },
-  { message = "^perf", group = "performance" },
-  { message = "^refactor", group = "refactors" },
-  { message = "^docs", group = "documentation" },
-  { message = "^style", group = "style" },
-  { message = "^test", group = "tests" },
-  { message = "^chore", group = "maintenance" },
-  { message = ".*", group = "changes" }
+  { message = "^[Rr]evert", group = "reverts" },
+  { message = ".*", group = "commits" },
 ]
-protect_breaking_commits = true
+link_parsers = [
+  { pattern = "#(\\d+)", href = "https://github.com/YeeetSK/vibeboard/issues/$1" },
+]
+protect_breaking_commits = false
 filter_commits = false
 tag_pattern = "v[0-9]*"
 skip_tags = ""

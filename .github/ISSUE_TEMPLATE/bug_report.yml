@@ -30,6 +30,41 @@ body:
       description: What should happen?
 
   - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Boards and lanes
+        - Projects and tabs
+        - Tasks and chat
+        - Code changes / diffs
+        - Agent CLIs
+        - Run modes and worktrees
+        - Search
+        - Notifications
+        - Notch overlay (macOS)
+        - Keyboard backlight (macOS)
+        - Appearance
+        - Updates and releases
+        - Packaging / installers
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: agent_cli
+    attributes:
+      label: Agent CLI
+      description: Which agent CLI were you using (if relevant)?
+      options:
+        - Cursor
+        - Claude Code
+        - Codex
+        - Not sure / N/A
+    validations:
+      required: true
+
+  - type: dropdown
     id: platform
     attributes:
       label: Platform
@@ -45,7 +80,8 @@ body:
     id: version
     attributes:
       label: VibeBoard version
-      placeholder: "0.1.5"
+      description: From About / the release you installed.
+      placeholder: "0.1.17"
 
   - type: textarea
     id: attachments
