@@ -659,6 +659,21 @@ export function App(): ReactElement {
   const [globalSearchQuery, setGlobalSearchQuery] = useState('')
   const [globalSearchResults, setGlobalSearchResults] = useState<SearchResult[]>([])
   const [isGlobalSearchOpen, setGlobalSearchOpen] = useState(false)
+  const searchStateVersion = useMemo(
+    () =>
+      [
+        state.projects.map((project) => `${project.id}:${project.name}:${project.path}`).join('|'),
+        state.tabs.map((tab) => `${tab.id}:${tab.name}:0:${tab.activeProjectId ?? ''}`).join('|'),
+        state.closedTabs.map((tab) => `${tab.id}:${tab.name}:1:${tab.activeProjectId ?? ''}`).join('|'),
+        state.lanes.map((lane) => `${lane.id}:${lane.name}`).join('|'),
+        state.tasks.map((task) => `${task.id}:${task.title}:${task.status}:${task.tabId}:${task.laneId}`).join('|')
+      ].join('||'),
+    [state.closedTabs, state.lanes, state.projects, state.tabs, state.tasks]
+  )
+  const visibleGlobalSearchResults = useMemo(
+    () => filterSearchResultsForState(globalSearchResults, state),
+    [globalSearchResults, state]
+  )
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo>(emptyUpdateInfo)
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(emptyNotificationSettings)
   const [isSettingsOpen, setSettingsOpen] = useState(false)
@@ -908,7 +923,7 @@ export function App(): ReactElement {
       cancelled = true
       window.clearTimeout(timerId)
     }
-  }, [globalSearchQuery, isGlobalSearchOpen])
+  }, [globalSearchQuery, isGlobalSearchOpen, searchStateVersion])
 
   useEffect(() => {
     if (selectedTask?.id.startsWith('md-task-')) {
@@ -1650,6 +1665,9 @@ export function App(): ReactElement {
         ...prev,
         tasks: prev.tasks.filter((item) => item.id !== id)
       }))
+      setGlobalSearchResults((results) =>
+        results.filter((result) => result.taskId !== id && !(result.kind === 'task' && result.id === `task:${id}`))
+      )
 
       try {
         await window.vibeboard.deleteTask(id)
@@ -2561,7 +2579,7 @@ export function App(): ReactElement {
       {isGlobalSearchOpen && (
         <CommandSearchPalette
           query={globalSearchQuery}
-          results={globalSearchResults}
+          results={visibleGlobalSearchResults}
           onChange={setGlobalSearchQuery}
           onClose={() => {
             setGlobalSearchOpen(false)
@@ -8504,6 +8522,53 @@ function formatSearchMatch(value: string): string {
   const compact = value.replace(/\s+/g, ' ').trim()
   if (compact.length <= 96) return compact
   return `${compact.slice(0, 96)}...`
+}
+
+function taskStatusLabel(status: Task['status']): string {
+  if (status === 'processing') return 'Running'
+  if (status === 'attention') return 'Needs you'
+  if (status === 'done_unread') return 'Done unread'
+  if (status === 'done_read') return 'Done'
+  return 'Idle'
+}
+
+function filterSearchResultsForState(results: SearchResult[], state: AppState): SearchResult[] {
+  const projects = new Set(state.projects.map((project) => project.id))
+  const openTabs = new Set(state.tabs.map((tab) => tab.id))
+  const closedTabs = new Set(state.closedTabs.map((tab) => tab.id))
+  const allTabs = new Set([...openTabs, ...closedTabs])
+  const tasks = new Map(state.tasks.map((task) => [task.id, task]))
+  const lanes = new Map(state.lanes.map((lane) => [lane.id, lane]))
+
+  return results
+    .filter((result) => {
+      if (result.projectId && !projects.has(result.projectId)) return false
+      if (result.tabId && !allTabs.has(result.tabId)) return false
+      if (result.taskId && !tasks.has(result.taskId)) return false
+      return true
+    })
+    .map((result) => {
+      const isClosedTab = result.tabId ? closedTabs.has(result.tabId) : result.isClosedTab
+      const task = result.taskId ? tasks.get(result.taskId) : null
+      const laneName = task ? lanes.get(task.laneId)?.name : null
+      const taskStatus = task?.status ?? result.taskStatus
+      const meta =
+        task && taskStatus
+          ? [taskStatusLabel(taskStatus), laneName].filter(Boolean).join(' · ')
+          : result.kind === 'tab' && result.tabId
+            ? isClosedTab
+              ? 'Closed'
+              : 'Open'
+            : result.meta
+
+      return {
+        ...result,
+        title: task?.title ?? result.title,
+        meta,
+        taskStatus,
+        isClosedTab
+      }
+    })
 }
 
 function shouldShowSearchMatch(result: SearchResult): boolean {
